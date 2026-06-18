@@ -1,0 +1,5 @@
+# Configuration for `dart run dependency_validator`.
+#
+# `meta` provides `@immutable`/`@protected` annotations the validator can miss,
+# so it is allow-listed here.
+allow_pinned_deps: true

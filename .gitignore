@@ -1,0 +1,18 @@
+# https://dart.dev/tools/private-files
+# Created by `dart pub`
+.dart_tool/
+
+# Avoid committing pubspec.lock for library packages; see
+# https://dart.dev/tools/pub/private-files#pubspec-lock.
+pubspec.lock
+
+# Generated API documentation.
+doc/api/
+
+# Generated dev TLS certificates (see tool/gen-dev-certs.sh).
+/certs/
+*.srl
+
+.DS_Store
+build/
+tmp/
