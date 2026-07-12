@@ -12,7 +12,6 @@ export 'src/application/hub/audit_log.dart';
 export 'src/application/hub/event_aggregator.dart';
 export 'src/application/hub/hub_config.dart';
 export 'src/application/hub/hub_metrics.dart';
-export 'src/application/hub/node_registry.dart';
 export 'src/application/hub/omny_server_hub.dart';
 
 // Metrics.
@@ -29,8 +28,16 @@ export 'src/infrastructure/persistence/json_directory/json_directory_repositorie
 export 'src/infrastructure/persistence/sqlite/sqlite_repositories.dart';
 
 // Transport (server endpoint + connection adapter).
-export 'src/infrastructure/transport/web_socket_connection.dart';
-export 'src/infrastructure/transport/ws_server_endpoint.dart';
+export 'src/infrastructure/auth/node_connection_authenticator.dart';
+export 'src/infrastructure/node/node_mapping.dart';
+
+// The node registry and control channel are omnyhub's. Re-export the types the
+// Hub's own API hands back, so callers need not depend on omnyhub directly.
+// Deliberately narrow: omnyhub's NodeDescriptor, NodeId, NodeStatus and
+// Principal all collide with OmnyServer's own, and OmnyServer's are the ones
+// its API speaks in.
+export 'package:omnyhub/omnyhub.dart'
+    show NodeEvent, NodeEventKind, NodeRegistry, RegisteredNode;
 
 // Auth infrastructure.
 export 'src/infrastructure/auth/authorized_keys_store.dart';

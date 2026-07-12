@@ -1,9 +1,8 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
 
-import '../../domain/entities/heartbeat.dart';
+import 'package:omnyhub/omnyhub_node.dart' as omnyhub;
+
 import '../../domain/entities/node_capabilities.dart';
 import '../../domain/entities/node_descriptor.dart';
 import '../../domain/entities/node_status.dart';
@@ -11,18 +10,21 @@ import '../../domain/entities/platform_info.dart';
 import '../../domain/entities/resource_metrics.dart';
 import '../../domain/formula/formula_result.dart';
 import '../../domain/value_objects/node_id.dart';
-import '../../infrastructure/transport/web_socket_connection.dart';
-import '../../protocol/control_message.dart';
-import '../../protocol/omny_connection.dart';
-import '../../protocol/omny_frame.dart';
-import '../../protocol/protocol_version.dart';
+import '../../infrastructure/node/node_mapping.dart';
+import '../../protocol/operations.dart';
 import '../../shared/errors/omnyserver_exception.dart';
 import 'agent_state.dart';
 import 'node_agent_config.dart';
+import 'node_handshake.dart';
 
 /// The Node agent runtime: connects to the Hub over WSS, authenticates,
 /// registers, maintains a heartbeat with live status, executes Hub-dispatched
 /// operations, and reconnects automatically when the connection drops.
+///
+/// The connection lifecycle — dialling, the in-band handshake, registration, the
+/// heartbeat timer, exponential backoff, RPC correlation — is omnyhub's
+/// [omnyhub.NodeRuntime]. What lives here is OmnyServer's: what a node
+/// advertises about itself, what it reports, and what it will do when asked.
 class NodeAgent {
   /// The agent configuration.
   final NodeAgentConfig config;
@@ -30,10 +32,8 @@ class NodeAgent {
   final StreamController<AgentState> _states =
       StreamController<AgentState>.broadcast();
   AgentState _state = AgentState.offline;
-  Completer<void>? _firstConnected;
-  OmnyConnection? _connection;
-  Timer? _heartbeatTimer;
-  int _sequence = 0;
+  StreamSubscription<omnyhub.NodeState>? _runtimeStates;
+  omnyhub.NodeRuntime? _runtime;
   bool _running = false;
 
   /// Creates an agent from [config].
@@ -51,97 +51,126 @@ class NodeAgent {
   void _log(String message) => config.logger?.call(message);
 
   void _setState(AgentState state) {
+    if (_state == state) return;
     _state = state;
     if (!_states.isClosed) _states.add(state);
   }
 
   /// Starts the agent and resolves once it is first connected and registered.
   ///
-  /// Throws an [AuthException] if authentication is rejected on the first
-  /// attempt (the agent does not reconnect after an auth failure). Transient
-  /// transport failures are retried with backoff.
-  Future<void> start() {
+  /// Throws an [AuthException] if authentication is rejected (the agent does not
+  /// reconnect after an auth failure — a rejected credential is not fixed by
+  /// trying again). Transient transport failures are retried with backoff.
+  Future<void> start() async {
     if (_running) {
       throw StateError('agent already started');
     }
     _running = true;
-    _firstConnected = Completer<void>();
-    unawaited(_loop());
-    return _firstConnected!.future;
+
+    final runtime = omnyhub.NodeRuntime(_buildConfig());
+    _runtime = runtime;
+
+    final ready = Completer<void>();
+    _runtimeStates = runtime.states.listen((state) {
+      _setState(_mapState(state));
+      if (state == omnyhub.NodeState.ready && !ready.isCompleted) {
+        _log('registered as ${config.nodeId}');
+        ready.complete();
+      }
+      // A terminal failure ends the runtime; surface it to whoever is waiting on
+      // start() instead of leaving them hanging on a node that will never come up.
+      if (state == omnyhub.NodeState.stopped && !ready.isCompleted) {
+        final error = runtime.terminalError;
+        ready.completeError(
+          error ?? const TransportException('node stopped before registering'),
+        );
+      }
+    });
+
+    await runtime.start();
+    try {
+      await ready.future;
+    } on Object {
+      _running = false;
+      rethrow;
+    }
   }
 
   /// Stops the agent and closes the connection.
   Future<void> stop() async {
     _running = false;
-    _heartbeatTimer?.cancel();
-    await _connection?.close();
+    await _runtime?.stop();
+    _runtime = null;
+    await _runtimeStates?.cancel();
+    _runtimeStates = null;
     _setState(AgentState.offline);
     if (!_states.isClosed) await _states.close();
   }
 
-  Future<void> _loop() async {
-    var attempt = 0;
-    while (_running) {
-      try {
-        _setState(AgentState.connecting);
-        final connection = await WebSocketConnection.connect(
-          config.hubUri,
-          securityContext: config.securityContext,
-          onBadCertificate: config.onBadCertificate,
-        );
-        _connection = connection;
-        await _handshakeAndRegister(connection);
-        attempt = 0;
-        _setState(AgentState.connected);
-        if (!(_firstConnected?.isCompleted ?? true)) {
-          _firstConnected!.complete();
-        }
-        await _serve(connection);
-      } on AuthException catch (e) {
-        _setState(AgentState.authenticationFailed);
-        _log('authentication failed: ${e.message}');
-        if (!(_firstConnected?.isCompleted ?? true)) {
-          _firstConnected!.completeError(e);
-        }
-        _running = false;
-        return;
-      } on Object catch (e) {
-        _log('connection lost: $e');
-      }
-      if (!_running) break;
-      _setState(AgentState.reconnecting);
-      await Future<void>.delayed(config.reconnect.delayFor(attempt));
-      attempt++;
-    }
-  }
+  /// Pushes a batch of log [lines] to the Hub (one-way, best-effort).
+  void sendLogs(List<String> lines, {String source = 'agent'}) =>
+      _runtime?.notify(
+        Operations.logs,
+        payload: LogBatch(
+          nodeId: config.nodeId,
+          source: source,
+          lines: lines,
+        ).toJson(),
+      );
 
-  Future<void> _handshakeAndRegister(OmnyConnection connection) async {
-    connection.sendMessage(
-      Hello(
-        role: PeerRole.node,
-        protocolVersion: ProtocolVersion.current.label,
-        agentVersion: config.agentVersion,
-      ),
+  /// Pushes a status snapshot to the Hub outside the heartbeat cadence.
+  Future<void> reportStatus() async {
+    final runtime = _runtime;
+    if (runtime == null) return;
+    runtime.notify(
+      Operations.status,
+      payload: StatusReport(
+        nodeId: config.nodeId,
+        status: await _status(),
+      ).toJson(),
     );
-
-    final challengeMsg = await _expect<AuthChallenge>(connection);
-    final challenge = Uint8List.fromList(base64.decode(challengeMsg.nonce));
-    final credential = await config.credentials.provide(challenge: challenge);
-    connection.sendMessage(AuthSubmit(credential));
-
-    final authReply = await _expectAny(connection);
-    if (authReply is AuthFail) {
-      throw AuthException(authReply.reason);
-    }
-    if (authReply is! AuthOk) {
-      throw const ProtocolException('expected auth result');
-    }
-
-    final descriptor = await _buildDescriptor();
-    connection.sendMessage(NodeRegister(descriptor));
-    await _expect<NodeRegistered>(connection);
-    _log('registered as ${config.nodeId}');
   }
+
+  omnyhub.NodeConfig _buildConfig() => omnyhub.NodeConfig(
+    hubUri: config.controlUri,
+    nodeId: omnyhub.NodeId(config.nodeId),
+    securityContext: config.securityContext,
+    onBadCertificate: config.onBadCertificate,
+    heartbeatInterval: config.heartbeatInterval,
+    reconnect: omnyhub.ReconnectPolicy(
+      initial: config.reconnect.initial,
+      max: config.reconnect.max,
+      factor: config.reconnect.factor,
+    ),
+    agentVersion: config.agentVersion,
+    // The descriptor is rebuilt per attempt so a node that gains a capability
+    // (a GPU driver lands, Docker gets installed) advertises it on reconnect.
+    descriptorBuilder: () async => (await _buildDescriptor()).toHub(),
+    onHandshake: (connection) => runNodeHandshake(
+      connection,
+      credentials: (challenge) =>
+          config.credentials.provide(challenge: challenge),
+      agentVersion: config.agentVersion,
+    ),
+    heartbeatPayload: () async => {'status': (await _status()).toJson()},
+    onRequest: _onRequest,
+    // A rejected credential is terminal: retrying would hammer the Hub with the
+    // same key it just refused.
+    isTerminal: (error) =>
+        error is AuthException || error is omnyhub.UnauthorizedException,
+  );
+
+  AgentState _mapState(omnyhub.NodeState state) => switch (state) {
+    omnyhub.NodeState.ready => AgentState.connected,
+    omnyhub.NodeState.connecting ||
+    omnyhub.NodeState.registering => AgentState.connecting,
+    omnyhub.NodeState.backoff => AgentState.reconnecting,
+    omnyhub.NodeState.disconnected => AgentState.offline,
+    omnyhub.NodeState.stopped =>
+      _runtime?.terminalError == null
+          ? AgentState.offline
+          : AgentState.authenticationFailed,
+  };
 
   Future<NodeDescriptor> _buildDescriptor() async {
     final capabilities =
@@ -155,38 +184,6 @@ class NodeAgent {
       online: true,
       labels: config.labels,
       capabilities: capabilities,
-    );
-  }
-
-  Future<void> _serve(OmnyConnection connection) async {
-    _sequence = 0;
-    _heartbeatTimer = Timer.periodic(
-      config.heartbeatInterval,
-      (_) => unawaited(_sendHeartbeat(connection)),
-    );
-    // Send an immediate first heartbeat so status is available promptly.
-    await _sendHeartbeat(connection);
-
-    await for (final frame in connection.incoming) {
-      if (frame is ControlFrame) {
-        await _onMessage(connection, frame.message);
-      }
-    }
-    _heartbeatTimer?.cancel();
-  }
-
-  Future<void> _sendHeartbeat(OmnyConnection connection) async {
-    if (!connection.isOpen) return;
-    final status = await _status();
-    connection.sendMessage(
-      NodeHeartbeat(
-        Heartbeat(
-          nodeId: NodeId(config.nodeId),
-          sequence: ++_sequence,
-          sentAt: config.clock.now(),
-          status: status,
-        ),
-      ),
     );
   }
 
@@ -207,26 +204,32 @@ class NodeAgent {
     );
   }
 
-  Future<void> _onMessage(
-    OmnyConnection connection,
-    ControlMessage message,
+  /// Dispatches an operation the Hub invoked on this node.
+  ///
+  /// Throwing yields a failed response, so the Hub never waits out its timeout
+  /// on an operation this node cannot serve.
+  Future<Map<String, dynamic>> _onRequest(
+    String action,
+    Map<String, dynamic> payload,
   ) async {
-    switch (message) {
-      case NodeHeartbeatAck():
-        break;
-      case CommandRequest():
-        connection.sendMessage(await _runCommand(message));
-      case FormulaRun():
-        connection.sendMessage(await _runFormula(message));
-      case PresetApply():
-        connection.sendMessage(await _applyPreset(message));
-      case ServiceControl():
-        connection.sendMessage(await _controlService(message));
-      case NodeControl():
-        connection.sendMessage(await _controlNode(message));
-      default:
-        break;
-    }
+    return switch (action) {
+      Operations.command => (await _runCommand(
+        CommandRequest.fromJson(payload),
+      )).toJson(),
+      Operations.formula => (await _runFormula(
+        FormulaRun.fromJson(payload),
+      )).toJson(),
+      Operations.preset => (await _applyPreset(
+        PresetApply.fromJson(payload),
+      )).toJson(),
+      Operations.service => (await _controlService(
+        ServiceControl.fromJson(payload),
+      )).toJson(),
+      Operations.control => (await _controlNode(
+        NodeControl.fromJson(payload),
+      )).toJson(),
+      _ => throw ProtocolException('unsupported operation: $action'),
+    };
   }
 
   Future<CommandResult> _runCommand(CommandRequest request) async {
@@ -304,17 +307,4 @@ class NodeAgent {
     message: 'formula execution not configured on this node',
     finishedAt: config.clock.now(),
   );
-
-  Future<T> _expect<T extends ControlMessage>(OmnyConnection connection) async {
-    final message = await _expectAny(connection);
-    if (message is T) return message;
-    throw ProtocolException('expected ${T.toString()}, got ${message.type}');
-  }
-
-  Future<ControlMessage> _expectAny(OmnyConnection connection) async {
-    await for (final frame in connection.incoming) {
-      if (frame is ControlFrame) return frame.message;
-    }
-    throw const TransportException('connection closed during handshake');
-  }
 }

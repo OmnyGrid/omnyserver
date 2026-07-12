@@ -74,16 +74,29 @@ void _addApiOptions(ArgParser parser) {
   parser
     ..addOption(
       'api',
-      help: 'Hub HTTP API base URL.',
-      defaultsTo: 'http://127.0.0.1:8080',
+      help: 'Hub HTTP API base URL (shares the Hub port).',
+      defaultsTo: 'https://127.0.0.1:8443',
     )
-    ..addOption('token', help: 'Bearer token for the Hub HTTP API.');
+    ..addOption('token', help: 'Bearer token for the Hub HTTP API.')
+    ..addOption('ca', help: "CA certificate (PEM) trusting the Hub's cert.")
+    ..addFlag(
+      'insecure',
+      negatable: false,
+      help: 'Skip TLS verification (dev Hubs only).',
+    );
 }
 
-HubApiClient _apiClientFrom(ArgResults args) => HubApiClient(
-  Uri.parse(args['api'] as String),
-  token: args['token'] as String?,
-);
+HubApiClient _apiClientFrom(ArgResults args) {
+  final ca = args['ca'] as String?;
+  return HubApiClient(
+    Uri.parse(args['api'] as String),
+    token: args['token'] as String?,
+    securityContext: ca == null
+        ? null
+        : (SecurityContext(withTrustedRoots: true)..setTrustedCertificates(ca)),
+    allowBadCertificate: args['insecure'] as bool,
+  );
+}
 
 // ---------------------------------------------------------------------------
 // hub
@@ -108,12 +121,15 @@ class HubStartCommand extends Command<void> {
   /// Creates the hub-start command.
   HubStartCommand() {
     argParser
-      ..addOption('host', defaultsTo: '0.0.0.0', help: 'WSS bind host.')
-      ..addOption('port', defaultsTo: '8443', help: 'WSS bind port.')
+      ..addOption('host', defaultsTo: '0.0.0.0', help: 'TLS bind host.')
+      ..addOption('port', defaultsTo: '8443', help: 'TLS bind port.')
       ..addOption('cert', help: 'TLS certificate chain (PEM).')
       ..addOption('key', help: 'TLS private key (PEM).')
-      ..addOption('api-host', defaultsTo: '0.0.0.0', help: 'HTTP API host.')
-      ..addOption('api-port', defaultsTo: '8080', help: 'HTTP API port.')
+      ..addOption(
+        'node-path',
+        defaultsTo: '/node',
+        help: 'Path the node control channel is mounted at.',
+      )
       ..addOption('api-token', help: 'Bearer token required by the HTTP API.')
       ..addMultiOption(
         'grant',
@@ -125,7 +141,9 @@ class HubStartCommand extends Command<void> {
   String get name => 'start';
 
   @override
-  String get description => 'Start the Hub (WSS) and its HTTP API.';
+  String get description =>
+      'Start the Hub: the node control channel and the HTTP API, on one '
+      'TLS port.';
 
   @override
   Future<void> run() async {
@@ -142,17 +160,21 @@ class HubStartCommand extends Command<void> {
       ..usePrivateKey(key);
 
     final grants = _parseGrants(args['grant'] as List<String>);
+    final nodePath = args['node-path'] as String;
     final hub = OmnyServerHub(
       HubConfig(
         host: args['host'] as String,
         port: int.parse(args['port'] as String),
+        nodeMount: nodePath,
         securityContext: context,
         authenticator: TokenAuthenticator(grants),
         logger: stdout.writeln,
       ),
     );
-    await hub.start();
 
+    // One listener, two surfaces: nodes upgrade to a WebSocket on `nodePath`,
+    // operators call the REST API on the same host and port. The API rides the
+    // Hub's TLS instead of a second plaintext socket.
     final events = EventAggregator()..attach(hub.config.eventBus);
     final metrics = HubMetrics(hub.registry)..attach(hub.config.eventBus);
     final api = HttpApiServer(
@@ -160,16 +182,26 @@ class HubStartCommand extends Command<void> {
       apiToken: args['api-token'] as String?,
       events: events,
       metrics: metrics,
-      host: args['api-host'] as String,
-      port: int.parse(args['api-port'] as String),
     );
-    await api.start();
+    for (final middleware in api.buildMiddleware()) {
+      hub.use(middleware);
+    }
+    for (final service in api.buildServices()) {
+      hub.registerService(
+        service,
+        authenticator: service.name == HttpApiServer.apiServiceName
+            ? api.tokenAuthenticator()
+            : null,
+      );
+    }
 
-    stdout.writeln('Hub WSS:  wss://${args['host']}:${hub.port}');
-    stdout.writeln('Hub API:  http://${args['api-host']}:${api.boundPort}');
+    await hub.start();
+
+    final host = args['host'] as String;
+    stdout.writeln('Hub nodes: wss://$host:${hub.port}$nodePath');
+    stdout.writeln('Hub API:   https://$host:${hub.port}/api/v1');
     stdout.writeln('Press Ctrl-C to stop.');
     await _awaitSignal();
-    await api.close();
     await hub.close();
   }
 

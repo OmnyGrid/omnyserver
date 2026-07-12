@@ -61,7 +61,6 @@ export 'src/domain/events/omny_event.dart';
 // Protocol.
 export 'src/protocol/control_message.dart';
 export 'src/protocol/control_message_codec.dart';
-export 'src/protocol/frame_codec.dart';
-export 'src/protocol/omny_connection.dart';
-export 'src/protocol/omny_frame.dart';
+export 'src/protocol/handshake.dart';
+export 'src/protocol/operations.dart';
 export 'src/protocol/protocol_version.dart';

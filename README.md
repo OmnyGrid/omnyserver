@@ -75,8 +75,8 @@ lib/
   src/
     domain/         value objects, entities, Formula, auth & repository contracts, events
     application/    OmnyServerHub, NodeAgent, NodeFormulaService, EventAggregator
-    infrastructure/ wss transport, auth, monitors, capabilities, persistence, http, metrics
-    protocol/       ControlMessage + codec, OmnyConnection (transport port)
+    infrastructure/ auth, monitors, capabilities, persistence, http, metrics
+    protocol/       handshake messages + codec, operation payloads
     shared/         errors, json helpers, clock, ids
 ```
 
@@ -153,11 +153,11 @@ dart run bin/omnyserver.dart node start \
 ### Discover and operate (via the REST API)
 
 ```sh
-omnyserver nodes list                 --api http://hub:8080 --token api-secret
-omnyserver node status  worker-01     --api http://hub:8080 --token api-secret
-omnyserver node restart worker-01     --api http://hub:8080 --token api-secret
-omnyserver formula run docker worker-01 --action verify --api http://hub:8080 --token api-secret
-omnyserver preset apply docker-host.json worker-01 --api http://hub:8080 --token api-secret
+omnyserver nodes list                 --api https://hub:8443 --ca certs/ca.crt --token api-secret
+omnyserver node status  worker-01     --api https://hub:8443 --ca certs/ca.crt --token api-secret
+omnyserver node restart worker-01     --api https://hub:8443 --ca certs/ca.crt --token api-secret
+omnyserver formula run docker worker-01 --action verify --api https://hub:8443 --ca certs/ca.crt --token api-secret
+omnyserver preset apply docker-host.json worker-01 --api https://hub:8443 --ca certs/ca.crt --token api-secret
 ```
 
 The CLI's operational commands call the Hub's HTTP API — exactly the surface any
@@ -165,7 +165,8 @@ other client uses.
 
 ### HTTP API
 
-Versioned under `/api/v1`:
+Served over HTTPS on the Hub's own port, alongside the node control channel —
+one TLS listener, two surfaces. Versioned under `/api/v1`:
 
 | Method & path | Description |
 |---------------|-------------|
@@ -182,13 +183,23 @@ Versioned under `/api/v1`:
 
 ## How it works
 
+OmnyServer is built on [omnyhub](https://pub.dev/packages/omnyhub): the
+transport, node registry, heartbeat watchdog, RPC correlation and HTTP routing
+are the framework's. What OmnyServer adds is what is actually its own — identity,
+capability detection, formulas, presets, reconciliation, auditing and
+persistence.
+
 ### Connection flow
 
-1. A Node dials the Hub over `wss` and sends `Hello`.
+1. A Node dials the Hub over `wss` at `/node` and sends `Hello`.
 2. The Hub issues a challenge nonce; the Node answers with a token or a signed
    nonce. On success the Hub returns the resolved principal and roles.
-3. The Node registers its descriptor (identity, platform, capabilities, labels);
-   the Hub adds it to the live registry and begins receiving heartbeats.
+3. The Node registers its descriptor (identity, platform, capabilities, labels).
+   The Hub *authorizes* the registration — a node credential may enrol a node and
+   nothing else — then adds it to the live registry and begins receiving
+   heartbeats, each carrying a live status snapshot.
+4. The Hub dispatches operations (formula, preset, restart, …) as RPCs over the
+   same connection and correlates the replies.
 
 ### Security envelope
 
@@ -199,7 +210,7 @@ sensitive action is audited. See [doc/security.md](doc/security.md).
 ## Roadmap
 
 - Remote agent self-update and OS-update orchestration.
-- Additional transports (gRPC, QUIC, message bus) behind `OmnyConnection`.
+- Additional transports (gRPC, QUIC, message bus) behind omnyhub's `Transport`.
 - PostgreSQL and distributed persistence backends.
 - Richer reconciliation (dependency ordering, version comparison).
 - Web UI on top of the REST API; RBAC / multi-tenant authorization.

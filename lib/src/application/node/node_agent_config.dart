@@ -4,7 +4,7 @@ import '../../domain/entities/node_capabilities.dart';
 import '../../domain/entities/node_status.dart';
 import '../../domain/formula/formula_result.dart';
 import '../../infrastructure/auth/credential_provider.dart';
-import '../../protocol/control_message.dart';
+import '../../protocol/operations.dart';
 import '../../shared/utils/clock.dart';
 import '../../version.dart';
 import 'agent_state.dart';
@@ -32,8 +32,14 @@ typedef NodeControlHandler =
 
 /// Configuration for a [NodeAgent].
 class NodeAgentConfig {
-  /// The Hub `wss://` URL to dial.
+  /// The Hub `wss://` URL to dial (e.g. `wss://hub.example.com:8443`).
   final Uri hubUri;
+
+  /// The path the Hub mounts its node control channel at.
+  ///
+  /// Must match the Hub's `HubConfig.nodeMount`. The Hub serves the REST API and
+  /// the node channel on one listener, so the node has to say which it wants.
+  final String nodeMount;
 
   /// The operator-chosen node id.
   final String nodeId;
@@ -54,7 +60,11 @@ class NodeAgentConfig {
   final bool Function(X509Certificate cert, String host, int port)?
   onBadCertificate;
 
-  /// How often to send heartbeats.
+  /// How often to send heartbeats, if the Hub does not say.
+  ///
+  /// The Hub advertises the cadence it wants at registration and that wins — a
+  /// fleet's liveness budget is the Hub's to set, not each node's. This is the
+  /// fallback for a Hub that advertises none.
   final Duration heartbeatInterval;
 
   /// The reconnection backoff policy.
@@ -92,6 +102,7 @@ class NodeAgentConfig {
     required this.hubUri,
     required this.nodeId,
     required this.credentials,
+    this.nodeMount = '/node',
     this.displayName = '',
     this.labels = const {},
     this.securityContext,
@@ -108,4 +119,17 @@ class NodeAgentConfig {
     this.nodeControlHandler,
     this.logger,
   });
+
+  /// The control-channel URL the agent actually dials: [hubUri] with
+  /// [nodeMount] as its path.
+  ///
+  /// An operator configures the Hub (`wss://hub:8443`), not the mount, so the
+  /// path is filled in here. A [hubUri] that already carries one is respected —
+  /// that is how a node reaches a Hub mounted somewhere non-default, or one
+  /// behind a reverse proxy that rewrites the path.
+  Uri get controlUri {
+    final path = hubUri.path;
+    if (path.isEmpty || path == '/') return hubUri.replace(path: nodeMount);
+    return hubUri;
+  }
 }

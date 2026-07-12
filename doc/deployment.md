@@ -18,12 +18,17 @@ and `certs/server.key` (Hub key).
 dart run bin/omnyserver.dart hub start \
   --host 0.0.0.0 --port 8443 \
   --cert certs/server.crt --key certs/server.key \
-  --api-port 8080 --api-token api-secret \
+  --api-token api-secret \
   --grant alice:admin-token:admin \
   --grant node-account:node-token:node
 ```
 
-The Hub listens on `wss://…:8443`; its REST API and `/metrics` on `:8080`.
+The Hub serves **one TLS port**. Nodes upgrade to a WebSocket on
+`wss://…:8443/node`; the REST API, `/healthz` and `/metrics` are on
+`https://…:8443`. Only 8443 needs to be open.
+
+Use `--node-path` to mount the node channel somewhere other than `/node` (it
+must match the agents' `--hub` path).
 
 ## 3. Start a Node agent (on each managed server)
 
@@ -41,10 +46,10 @@ dispatched operations, and reconnects automatically if the link drops.
 ## 4. Operate via the CLI (through the HTTP API)
 
 ```sh
-dart run bin/omnyserver.dart nodes list      --api http://hub:8080 --token api-secret
-dart run bin/omnyserver.dart node status worker-01 --api http://hub:8080 --token api-secret
-dart run bin/omnyserver.dart formula run docker worker-01 --action verify --api http://hub:8080 --token api-secret
-dart run bin/omnyserver.dart preset apply docker-host.json worker-01 --api http://hub:8080 --token api-secret
+dart run bin/omnyserver.dart nodes list      --api https://hub:8443 --ca certs/ca.crt --token api-secret
+dart run bin/omnyserver.dart node status worker-01 --api https://hub:8443 --ca certs/ca.crt --token api-secret
+dart run bin/omnyserver.dart formula run docker worker-01 --action verify --api https://hub:8443 --ca certs/ca.crt --token api-secret
+dart run bin/omnyserver.dart preset apply docker-host.json worker-01 --api https://hub:8443 --ca certs/ca.crt --token api-secret
 ```
 
 ## 5. Run Hub/agent as an OS service
@@ -64,6 +69,6 @@ constructing `HubConfig`:
 
 ## Observability
 
-- Prometheus scrape target: `http://hub:8080/metrics`.
+- Prometheus scrape target: `https://hub:8443/metrics`.
 - Recent events: `GET /api/v1/events`. Audit: `GET /api/v1/audit`.
 - OpenAPI: `GET /api/v1/openapi.json`.

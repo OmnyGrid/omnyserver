@@ -40,7 +40,7 @@ export 'src/infrastructure/capabilities/command_detector.dart';
 export 'src/infrastructure/capabilities/gpu_detectors.dart';
 
 // Transport (client connection adapter).
-export 'src/infrastructure/transport/web_socket_connection.dart';
+export 'src/application/node/node_handshake.dart';
 
 // Identity.
 export 'src/infrastructure/identity/machine_id.dart';
