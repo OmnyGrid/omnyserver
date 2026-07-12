@@ -1,14 +1,17 @@
 #!/bin/bash
-# Start a local OmnyServer Hub (WSS + HTTP API) with dev certs and demo grants.
+# Start a local OmnyServer Hub with dev certs and demo grants.
+#
+# The Hub serves ONE TLS port: nodes upgrade to a WebSocket on $NODE_PATH, and
+# the REST API / /metrics are on the same host and port over HTTPS.
 #
 # Usage: ./run-hub.sh
-# Override with env vars: OMNYSERVER_HOST, OMNYSERVER_PORT, OMNYSERVER_API_PORT,
+# Override with env vars: OMNYSERVER_HOST, OMNYSERVER_PORT, OMNYSERVER_NODE_PATH,
 # OMNYSERVER_CERT, OMNYSERVER_KEY, OMNYSERVER_GRANT, OMNYSERVER_API_TOKEN.
 set -euo pipefail
 
 HOST="${OMNYSERVER_HOST:-127.0.0.1}"
 PORT="${OMNYSERVER_PORT:-8443}"
-API_PORT="${OMNYSERVER_API_PORT:-8080}"
+NODE_PATH="${OMNYSERVER_NODE_PATH:-/node}"
 CERT="${OMNYSERVER_CERT:-certs/server.crt}"
 KEY="${OMNYSERVER_KEY:-certs/server.key}"
 API_TOKEN="${OMNYSERVER_API_TOKEN:-api-secret}"
@@ -30,6 +33,7 @@ done
 
 exec dart run bin/omnyserver.dart hub start \
   --host "$HOST" --port "$PORT" \
+  --node-path "$NODE_PATH" \
   --cert "$CERT" --key "$KEY" \
-  --api-port "$API_PORT" --api-token "$API_TOKEN" \
+  --api-token "$API_TOKEN" \
   "${GRANT_ARGS[@]}"

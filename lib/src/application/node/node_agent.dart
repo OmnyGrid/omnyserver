@@ -73,6 +73,13 @@ class NodeAgent {
     final ready = Completer<void>();
     _runtimeStates = runtime.states.listen((state) {
       _setState(_mapState(state));
+      if (state == omnyhub.NodeState.ready) {
+        // Heartbeats are periodic, so the first one — and the status snapshot it
+        // carries — is a full interval away. Push a snapshot now instead, or the
+        // Hub reports no status at all for a node that just came up (15s by
+        // default). Fires on every (re)registration, not just the first.
+        unawaited(reportStatus());
+      }
       if (state == omnyhub.NodeState.ready && !ready.isCompleted) {
         _log('registered as ${config.nodeId}');
         ready.complete();
