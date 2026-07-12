@@ -27,6 +27,12 @@ The Hub serves **one TLS port**. Nodes upgrade to a WebSocket on
 `wss://…:8443/node`; the REST API, `/healthz` and `/metrics` are on
 `https://…:8443`. Only 8443 needs to be open.
 
+Add `--shell` and the same port also brokers [OmnyShell](https://github.com/OmnyGrid/omnyshell)
+sessions on `wss://…:8443/shell`, sharing the Hub's `--grant` credentials. Nodes
+join that fleet either with `omnyserver node start --with-shell` (one process,
+one service unit) or as a standalone `omnyshell` node/service pointed at the
+shell mount.
+
 Use `--node-path` to mount the node channel somewhere other than `/node` (it
 must match the agents' `--hub` path).
 

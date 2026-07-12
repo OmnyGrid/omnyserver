@@ -4,7 +4,8 @@
 # The Hub serves ONE TLS port: nodes upgrade to a WebSocket on $NODE_PATH, and
 # the REST API / /metrics are on the same host and port over HTTPS.
 #
-# Usage: ./run-hub.sh
+# Usage: ./run-hub.sh [extra omnyserver flags...]
+#   e.g. ./run-hub.sh --shell        # also serve OmnyShell nodes on /shell
 # Override with env vars: OMNYSERVER_HOST, OMNYSERVER_PORT, OMNYSERVER_NODE_PATH,
 # OMNYSERVER_CERT, OMNYSERVER_KEY, OMNYSERVER_GRANT, OMNYSERVER_API_TOKEN.
 set -euo pipefail
@@ -31,9 +32,10 @@ for g in $GRANTS; do
   GRANT_ARGS+=(--grant "$g")
 done
 
+# "$@" forwards anything else straight through (e.g. --shell).
 exec dart run bin/omnyserver.dart hub start \
   --host "$HOST" --port "$PORT" \
   --node-path "$NODE_PATH" \
   --cert "$CERT" --key "$KEY" \
   --api-token "$API_TOKEN" \
-  "${GRANT_ARGS[@]}"
+  "${GRANT_ARGS[@]}" "$@"

@@ -37,6 +37,12 @@ class HubConfig {
   /// hosted on the same listener, lives under `/api/v1` alongside it.
   final String nodeMount;
 
+  /// The path an OmnyShell broker is mounted at, when the Hub hosts one.
+  ///
+  /// OmnyShell nodes then connect to `wss://<host>:<port><shellMount>` — the
+  /// same port and certificate as everything else. See `ShellHub`.
+  final String shellMount;
+
   /// How often nodes should heartbeat. Advertised to each node at registration.
   final Duration heartbeatInterval;
 
@@ -75,6 +81,7 @@ class HubConfig {
     this.port = 8443,
     Authorizer? authorizer,
     this.nodeMount = '/node',
+    this.shellMount = '/shell',
     this.heartbeatInterval = const Duration(seconds: 15),
     this.heartbeatTimeout = const Duration(seconds: 45),
     this.requestTimeout = const Duration(seconds: 30),
