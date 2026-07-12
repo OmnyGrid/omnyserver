@@ -108,7 +108,7 @@ See [doc/architecture.md](doc/architecture.md), [doc/protocol.md](doc/protocol.m
 
 ```yaml
 dependencies:
-  omnyserver: ^0.2.0
+  omnyserver: ^0.2.1
 ```
 
 Or install the CLI:
@@ -152,6 +152,10 @@ final agent = NodeAgent(NodeAgentConfig(
   capabilityProvider: CapabilityScanner.standard().scan,
 ));
 await agent.start();
+
+// The node pushes a status snapshot as it registers, but it still has to reach
+// the Hub — give it a moment before reading.
+await Future<void>.delayed(const Duration(seconds: 1));
 
 final status = hub.getStatus(NodeId('demo-node'));
 print('${status?.cpu.coreCount} cores, ${status?.cpu.usagePercent}% used');
