@@ -1,3 +1,26 @@
+## 0.2.1
+
+### Fixed
+
+- **A node's status was unavailable for a full heartbeat interval after it
+  registered.** Heartbeats are periodic, so the snapshot they carry is one
+  interval away; on the default 15-second cadence the Hub reported *no status at
+  all* for a node that had just come up (`GET /api/v1/nodes/{id}/status` answered
+  `404` for ~18 seconds). The agent now pushes a snapshot on becoming ready — on
+  every (re)registration — so status is live immediately.
+
+  Introduced in 0.2.0: the pre-omnyhub agent sent an eager first heartbeat for
+  exactly this reason, and omnyhub's `NodeRuntime` beats only on its timer. The
+  test suite could not see it, because the harness uses a 200 ms cadence and a
+  beat always landed before the assertion.
+
+### Changed
+
+- `run-hub.sh` still passed `--api-port`, removed in 0.2.0 when the REST API moved
+  onto the Hub's TLS port. It now uses `--node-path`.
+- README: refreshed for the single-port model (the quick-start could not run as
+  written), full badge set, and an OmnyGrid ecosystem section.
+
 ## 0.2.0
 
 Hosts OmnyServer on [omnyhub](https://pub.dev/packages/omnyhub) — the HUB

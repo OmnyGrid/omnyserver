@@ -30,6 +30,27 @@ void main() {
     expect(status!.os.osName, isNotEmpty);
   });
 
+  test('status is available immediately, without waiting for a heartbeat', () async {
+    // Heartbeats are periodic, so the snapshot they carry is a full interval
+    // away — on the production 15s cadence the Hub would report no status at all
+    // for a node that just came up. The agent pushes one on registering instead.
+    //
+    // A long cadence is the whole point of this test: if it only passes because
+    // a beat landed, it is not testing anything.
+    final slow = await TestCluster.start(
+      heartbeatInterval: const Duration(seconds: 30),
+    );
+    addTearDown(slow.dispose);
+
+    await slow.startNode(id: 'worker-09');
+    await _eventually(
+      () => slow.hub.getStatus(NodeId('worker-09')) != null,
+      timeout: const Duration(seconds: 5),
+    );
+
+    expect(slow.hub.getStatus(NodeId('worker-09'))!.os.osName, isNotEmpty);
+  });
+
   test('an invalid token is rejected with an AuthException', () async {
     final agent = await cluster.buildNode(id: 'bad', token: 'wrong-token');
     await expectLater(agent.start(), throwsA(isA<AuthException>()));

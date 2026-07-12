@@ -3,6 +3,11 @@
 [![pub package](https://img.shields.io/pub/v/omnyserver.svg?logo=dart&logoColor=00b9fc)](https://pub.dev/packages/omnyserver)
 [![Null Safety](https://img.shields.io/badge/null-safety-brightgreen)](https://dart.dev/null-safety)
 [![Dart CI](https://github.com/OmnyGrid/omnyserver/actions/workflows/dart.yml/badge.svg?branch=master)](https://github.com/OmnyGrid/omnyserver/actions/workflows/dart.yml)
+[![GitHub Tag](https://img.shields.io/github/v/tag/OmnyGrid/omnyserver?logo=git&logoColor=white)](https://github.com/OmnyGrid/omnyserver/releases)
+[![New Commits](https://img.shields.io/github/commits-since/OmnyGrid/omnyserver/latest?logo=git&logoColor=white)](https://github.com/OmnyGrid/omnyserver/network)
+[![Last Commits](https://img.shields.io/github/last-commit/OmnyGrid/omnyserver?logo=git&logoColor=white)](https://github.com/OmnyGrid/omnyserver/commits/master)
+[![Pull Requests](https://img.shields.io/github/issues-pr/OmnyGrid/omnyserver?logo=github&logoColor=white)](https://github.com/OmnyGrid/omnyserver/pulls)
+[![Code size](https://img.shields.io/github/languages/code-size/OmnyGrid/omnyserver?logo=github&logoColor=white)](https://github.com/OmnyGrid/omnyserver)
 [![License](https://img.shields.io/github/license/OmnyGrid/omnyserver?logo=open-source-initiative&logoColor=green)](https://github.com/OmnyGrid/omnyserver/blob/master/LICENSE)
 
 A **distributed server-orchestration platform** written in **pure Dart**. A
@@ -12,25 +17,39 @@ one place.
 
 Nodes dial the Hub outbound over **WebSocket-on-TLS (`wss`)** — the same
 identity-centric, NAT-friendly model as its sibling
-[omnyshell](https://github.com/OmnyGrid/omnyshell): you address servers by
-**node identity**, not `host:port`.
+[omnyshell][omnyshell]: you address servers by **node identity**, not
+`host:port`. A node behind NAT needs no inbound port, and the Hub needs exactly
+one: the node channel and the REST API share a single TLS listener.
 
 ```text
-            CLI / REST API
-                  │
-                  ▼
-   Node ──wss──► HUB ◄──wss── Node ◄──wss── Node
+                       :8443 (TLS)
+        ┌──────────────────┴──────────────────┐
+        │  /node      → node control channel  │
+   ────►│  /api/v1    → REST API              │◄────  CLI / REST client
+        │  /metrics   → Prometheus            │
+        └──────────────────┬──────────────────┘
+                          HUB
+                ▲          ▲          ▲
+              wss│       wss│       wss│      (outbound; NAT-friendly)
+              Node       Node       Node
 ```
 
 ```sh
-omnyserver hub start  --cert certs/server.crt --key certs/server.key
-omnyserver node start --hub wss://hub:8443 --id worker-01 --token … --ca certs/ca.crt
-omnyserver nodes list
+omnyserver cert gen --out certs
+omnyserver hub start  --cert certs/server.crt --key certs/server.key \
+                      --api-token api-secret --grant node-account:node-token:node
+omnyserver node start --hub wss://hub:8443 --id worker-01 \
+                      --principal node-account --token node-token --ca certs/ca.crt
+omnyserver nodes list --api https://hub:8443 --ca certs/ca.crt --token api-secret
 ```
 
 Everything is available both as **first-class Dart APIs** and as the
 **`omnyserver` CLI** and a versioned **REST API** (`/api/v1`) ready for a future
 Web UI. Runs on **Linux, macOS and Windows**.
+
+Built on **[omnyhub][omnyhub]** — the transport, node registry, heartbeat
+watchdog, RPC correlation and HTTP routing are the framework's, so OmnyServer is
+only what is actually its own.
 
 ## API Documentation
 
@@ -57,7 +76,8 @@ See the [API Documentation][api_doc] for the full list of classes and APIs.
 - **Persistence** — repository abstractions with in-memory, JSON-directory and
   SQLite backends (PostgreSQL/distributed ready).
 - **HTTP API & metrics** — versioned REST API with OpenAPI, structured errors,
-  and Prometheus/OpenTelemetry-ready `/metrics`.
+  and Prometheus/OpenTelemetry-ready `/metrics`, served on the Hub's own TLS port
+  beside the node channel — one port to open, one certificate to manage.
 - **Events** — `NodeConnected`, `HeartbeatReceived`, `FormulaFinished`,
   `PresetApplied`, … with subscriptions and streaming.
 
@@ -88,7 +108,13 @@ See [doc/architecture.md](doc/architecture.md), [doc/protocol.md](doc/protocol.m
 
 ```yaml
 dependencies:
-  omnyserver: ^0.1.0
+  omnyserver: ^0.2.1
+```
+
+Or install the CLI:
+
+```sh
+dart pub global activate omnyserver
 ```
 
 Supported platforms: **Linux**, **macOS**, **Windows**. Requires the Dart SDK
@@ -126,6 +152,10 @@ final agent = NodeAgent(NodeAgentConfig(
   capabilityProvider: CapabilityScanner.standard().scan,
 ));
 await agent.start();
+
+// The node pushes a status snapshot as it registers, but it still has to reach
+// the Hub — give it a moment before reading.
+await Future<void>.delayed(const Duration(seconds: 1));
 
 final status = hub.getStatus(NodeId('demo-node'));
 print('${status?.cpu.coreCount} cores, ${status?.cpu.usagePercent}% used');
@@ -206,6 +236,23 @@ persistence.
 All transport is TLS. Authentication is pluggable (token / Ed25519 public key);
 authorization is role-based and fail-closed; identity is content-derived; every
 sensitive action is audited. See [doc/security.md](doc/security.md).
+
+## The OmnyGrid ecosystem
+
+OmnyServer is one of four packages sharing the same identity-centric,
+NAT-friendly model — nodes dial a Hub outbound, and you address them by identity
+rather than `host:port`.
+
+| Package | What it does |
+|---|---|
+| **[omnyhub][omnyhub]** | The HUB framework everything below is built on: transport, routing, auth, node registry and control plane. |
+| **omnyserver** (this) | Fleet orchestration — monitoring, capabilities, formulas, presets, desired-state reconciliation. |
+| **[omnyshell][omnyshell]** | Remote shell — SSH-like sessions brokered to a node by identity. |
+| **[omnydrive][omnydrive]** | File & git drive synchronization. |
+
+[omnyhub]: https://github.com/OmnyGrid/omnyhub
+[omnyshell]: https://github.com/OmnyGrid/omnyshell
+[omnydrive]: https://github.com/OmnyGrid/omnydrive
 
 ## Roadmap
 
