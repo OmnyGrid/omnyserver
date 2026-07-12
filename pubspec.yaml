@@ -29,8 +29,3 @@ dev_dependencies:
   dependency_validator: ^5.0.5
   lints: ^6.1.0
   test: ^1.31.1
-
-# TEMPORARY — remove once omnyshell 1.56.0 is published (PR #112).
-dependency_overrides:
-  omnyshell:
-    path: ../omnyshell
