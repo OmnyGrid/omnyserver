@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'package:args/args.dart';
 import 'package:args/command_runner.dart';
+import 'package:omnyshell/omnyshell_node.dart' as omnyshell;
 
 import '../../omnyserver_hub.dart';
 import '../../omnyserver_node.dart';
@@ -130,6 +131,16 @@ class HubStartCommand extends Command<void> {
         defaultsTo: '/node',
         help: 'Path the node control channel is mounted at.',
       )
+      ..addFlag(
+        'shell',
+        negatable: false,
+        help: 'Also serve OmnyShell nodes (same port, same certificate).',
+      )
+      ..addOption(
+        'shell-path',
+        defaultsTo: '/shell',
+        help: 'Path the OmnyShell broker is mounted at.',
+      )
       ..addOption('api-token', help: 'Bearer token required by the HTTP API.')
       ..addMultiOption(
         'grant',
@@ -161,16 +172,32 @@ class HubStartCommand extends Command<void> {
 
     final grants = _parseGrants(args['grant'] as List<String>);
     final nodePath = args['node-path'] as String;
+    final shellPath = args['shell-path'] as String;
+    final withShell = args['shell'] as bool;
     final hub = OmnyServerHub(
       HubConfig(
         host: args['host'] as String,
         port: int.parse(args['port'] as String),
         nodeMount: nodePath,
+        shellMount: shellPath,
         securityContext: context,
         authenticator: TokenAuthenticator(grants),
         logger: stdout.writeln,
       ),
     );
+
+    // An OmnyShell broker on the same listener, sharing the Hub's credentials —
+    // so one Hub serves both fleets and `omnyshell node start --hub …/shell`
+    // just works. It authenticates in band, so it takes no connection
+    // authenticator; OmnyServer's own handshake stays on the node route.
+    if (withShell) {
+      final shell = ShellHub.fromGrants(
+        grants,
+        mount: shellPath,
+        logger: stdout.writeln,
+      );
+      hub.registerService(shell.service());
+    }
 
     // One listener, two surfaces: nodes upgrade to a WebSocket on `nodePath`,
     // operators call the REST API on the same host and port. The API rides the
@@ -199,6 +226,9 @@ class HubStartCommand extends Command<void> {
 
     final host = args['host'] as String;
     stdout.writeln('Hub nodes: wss://$host:${hub.port}$nodePath');
+    if (withShell) {
+      stdout.writeln('Hub shell: wss://$host:${hub.port}$shellPath');
+    }
     stdout.writeln('Hub API:   https://$host:${hub.port}/api/v1');
     stdout.writeln('Press Ctrl-C to stop.');
     await _awaitSignal();
@@ -258,6 +288,22 @@ class NodeStartCommand extends Command<void> {
         'insecure',
         negatable: false,
         help: 'Accept any TLS certificate (dev only).',
+      )
+      ..addFlag(
+        'with-shell',
+        negatable: false,
+        help: 'Also run an OmnyShell node, so the Hub can open shell sessions.',
+      )
+      ..addOption(
+        'shell-path',
+        defaultsTo: '/shell',
+        help: "Path of the Hub's OmnyShell broker (with --with-shell).",
+      )
+      ..addMultiOption(
+        'shell-label',
+        help:
+            'OmnyShell node label "key=value" (repeatable), e.g. '
+            'allow-roles=admin.',
       );
   }
 
@@ -309,9 +355,92 @@ class NodeStartCommand extends Command<void> {
       ),
     );
     await agent.start();
-    stdout.writeln('Node "$id" connected to $hub. Press Ctrl-C to stop.');
+    stdout.writeln('Node "$id" connected to $hub.');
+
+    // The same machine, also serving shell sessions — one process, one service
+    // unit, one supervision target. It is an independent runtime speaking
+    // OmnyShell's protocol on the Hub's shell mount; the two share only the
+    // credentials and the certificate.
+    final shellNode = (args['with-shell'] as bool)
+        ? await _startShellNode(
+            hubUri: Uri.parse(hub),
+            shellPath: args['shell-path'] as String,
+            nodeId: id,
+            principal: args['principal'] as String,
+            token: token,
+            securityContext: context,
+            insecure: args['insecure'] as bool,
+            labels: _parseLabels(args['shell-label'] as List<String>),
+          )
+        : null;
+
+    stdout.writeln('Press Ctrl-C to stop.');
     await _awaitSignal();
+    await shellNode?.shutdown();
     await agent.stop();
+  }
+
+  /// Starts an OmnyShell node alongside the OmnyServer agent.
+  Future<omnyshell.NodeRuntime> _startShellNode({
+    required Uri hubUri,
+    required String shellPath,
+    required String nodeId,
+    required String principal,
+    required String token,
+    required SecurityContext? securityContext,
+    required bool insecure,
+    required Map<String, String> labels,
+  }) async {
+    final shellUri = hubUri.replace(path: shellPath);
+    final node = omnyshell.NodeRuntime(
+      omnyshell.NodeConfig(
+        hubUri: shellUri,
+        nodeId: omnyshell.NodeId(nodeId),
+        credentials: omnyshell.TokenCredentialProvider(
+          principal: principal,
+          token: token,
+        ),
+        backend: _shellBackend(),
+        labels: labels,
+        securityContext: securityContext,
+        onBadCertificate: insecure ? (cert, host, port) => true : null,
+        // Both runtimes persist a machine-keyed UID; without separate homes they
+        // would contend on the same file and warn about it changing under them.
+        home: OmnyServerHome.resolve(),
+        logger: stdout.writeln,
+      ),
+    );
+    await node.connect();
+    stdout.writeln('Shell node "$nodeId" connected to $shellUri.');
+    return node;
+  }
+
+  /// The PTY backend for shell sessions, matching what `omnyshell node start`
+  /// uses: a real PTY where one exists, decorating a plain pipe fallback.
+  /// `script(1)` is POSIX-only, so Windows takes the winpty path.
+  omnyshell.ShellBackend _shellBackend() {
+    final pipe = omnyshell.ProcessShellBackend();
+    return Platform.isWindows
+        ? omnyshell.WinptyShellBackend(
+            fallback: pipe,
+            onWarning: stderr.writeln,
+          )
+        : omnyshell.ScriptPtyShellBackend(
+            fallback: pipe,
+            onWarning: stderr.writeln,
+          );
+  }
+
+  Map<String, String> _parseLabels(List<String> raw) {
+    final labels = <String, String>{};
+    for (final entry in raw) {
+      final i = entry.indexOf('=');
+      if (i <= 0) {
+        throw CliError('invalid --shell-label "$entry" (want key=value)');
+      }
+      labels[entry.substring(0, i)] = entry.substring(i + 1);
+    }
+    return labels;
   }
 }
 

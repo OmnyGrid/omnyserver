@@ -81,16 +81,26 @@ class OmnyServerHub {
 
   void _log(String message) => config.logger?.call(message);
 
-  /// Registers an extra [service] (e.g. the REST API) on the Hub's listener, so
-  /// it shares the node channel's port and TLS. Must be called before [start].
+  /// Registers an extra [service] (e.g. the REST API, or an OmnyShell broker) on
+  /// the Hub's listener, so it shares the node channel's port and TLS. Must be
+  /// called before [start].
+  ///
+  /// [authenticator] gates the service's HTTP requests.
+  /// [connectionAuthenticator] runs an in-band handshake on its WebSocket
+  /// upgrades — supply one only if the service's own protocol does not
+  /// authenticate itself. OmnyServer's node handshake is confined to the node
+  /// channel, so a service registered here is *not* subjected to it.
   void registerService(
     omnyhub.Service service, {
     omnyhub.Authenticator? authenticator,
+    omnyhub.ConnectionAuthenticator? connectionAuthenticator,
   }) {
     if (_server != null) {
       throw StateError('cannot add services to a running Hub');
     }
-    _extraServices.add((service, authenticator));
+    _extraServices.add(
+      _HostedService(service, authenticator, connectionAuthenticator),
+    );
   }
 
   /// Installs extra [middleware] on the Hub's listener. Must be called before
@@ -102,7 +112,7 @@ class OmnyServerHub {
     _extraMiddleware.add(middleware);
   }
 
-  final List<(omnyhub.Service, omnyhub.Authenticator?)> _extraServices = [];
+  final List<_HostedService> _extraServices = [];
   final List<omnyhub.Middleware> _extraMiddleware = [];
 
   /// Binds the WSS endpoint and begins accepting connections.
@@ -116,8 +126,18 @@ class OmnyServerHub {
         ),
       ],
       middleware: _extraMiddleware,
-      // The node channel authenticates in-band, on the open socket, because the
-      // Ed25519 exchange needs a round trip the HTTP upgrade cannot carry.
+    );
+
+    // The OmnyServer handshake belongs to the node channel *alone*, so it is
+    // attached to that route rather than hub-wide. omnyhub resolves a route's
+    // connection authenticator as `route.connectionAuthenticator ?? hubWide` —
+    // a route's `null` means **inherit**, not *none*. A hub-wide one would
+    // therefore be imposed on every other WebSocket mount too: a co-hosted
+    // service speaking its own protocol (an OmnyShell broker, say, which
+    // authenticates in band and expects to speak first) would have its frames
+    // eaten by a handshake meant for someone else, and every peer rejected.
+    await server.registerService(
+      _gateway,
       connectionAuthenticator: NodeConnectionAuthenticator(
         authenticator: config.authenticator,
         onRejected: (principal, reason) => audit.record(
@@ -128,9 +148,12 @@ class OmnyServerHub {
         ),
       ),
     );
-    await server.registerService(_gateway);
-    for (final (service, authenticator) in _extraServices) {
-      await server.registerService(service, authenticator: authenticator);
+    for (final service in _extraServices) {
+      await server.registerService(
+        service.service,
+        authenticator: service.authenticator,
+        connectionAuthenticator: service.connectionAuthenticator,
+      );
     }
     await server.start();
     _server = server;
@@ -478,6 +501,20 @@ class OmnyServerHub {
 
   Principal _principalOf(omnyhub.Principal principal) =>
       Principal(id: PrincipalId(principal.id), roles: principal.roles);
+}
+
+/// A service hosted on the Hub's listener alongside the node channel, with the
+/// auth it should (or should not) be subjected to.
+class _HostedService {
+  final omnyhub.Service service;
+  final omnyhub.Authenticator? authenticator;
+  final omnyhub.ConnectionAuthenticator? connectionAuthenticator;
+
+  const _HostedService(
+    this.service,
+    this.authenticator,
+    this.connectionAuthenticator,
+  );
 }
 
 /// Bridges OmnyServer's [IdGenerator] to omnyhub's, so ids the gateway mints

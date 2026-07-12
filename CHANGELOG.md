@@ -1,3 +1,57 @@
+## 0.3.0
+
+One Hub, two kinds of node. An OmnyServer Hub can now also serve
+[OmnyShell](https://pub.dev/packages/omnyshell) nodes — same port, same
+certificate, same credentials — and one node process can be both an OmnyServer
+agent and an OmnyShell node.
+
+```sh
+# Hub: three surfaces on one TLS port
+omnyserver hub start --cert … --key … --shell
+#   /node    → OmnyServer node control channel
+#   /shell   → OmnyShell broker
+#   /api/v1  → REST API
+
+# Node: one process, both roles, one service unit
+omnyserver node start --hub wss://hub:8443 --id worker-01 --token … --with-shell
+
+# …or attach a standalone OmnyShell node to the same Hub:
+omnyshell node start --hub wss://hub:8443/shell --id worker-01 --token …
+omnyshell exec worker-01 'uptime' --hub wss://hub:8443/shell …
+```
+
+### Added
+
+- **`--shell` / `--shell-path` on `hub start`** mount an OmnyShell broker on the
+  Hub's listener (`ShellHub`, exported from `omnyserver_hub.dart`). It shares the
+  Hub's `--grant` token table, so one credential set serves both fleets and there
+  is nothing extra to provision. Authorization stays OmnyShell's: `admin` may open
+  a session on any node, other roles only on nodes whose `allow-roles` label names
+  them.
+- **`--with-shell` / `--shell-path` / `--shell-label` on `node start`** also run an
+  OmnyShell node in the same process — one binary, one service unit, one
+  supervision target. It uses the same PTY backend `omnyshell node start` does.
+- `HubConfig.shellMount` (default `/shell`), and a `connectionAuthenticator`
+  parameter on `OmnyServerHub.registerService()`.
+
+### Fixed
+
+- **OmnyServer's node handshake was imposed on every WebSocket mount.** It was
+  registered hub-wide, and omnyhub resolves a route's connection authenticator as
+  `route.connectionAuthenticator ?? hubWide` — a route's `null` means *inherit*,
+  not *none*. Any co-hosted WebSocket service would therefore have had OmnyServer's
+  handshake run against it: a peer speaking its own protocol would have had its
+  frames eaten by a handshake meant for someone else and been rejected after a
+  10-second timeout. The handshake is now attached to the node channel's route
+  alone. (Latent before this release, since nothing else was mounted; it is what
+  made co-hosting possible.)
+
+### Changed
+
+- Depends on `omnyshell ^1.56.0`.
+- `run-hub.sh` now forwards extra flags to the CLI, so `./run-hub.sh --shell`
+  works. It silently dropped them before.
+
 ## 0.2.1
 
 ### Fixed

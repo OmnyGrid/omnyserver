@@ -30,6 +30,7 @@ export 'src/infrastructure/persistence/sqlite/sqlite_repositories.dart';
 // Transport (server endpoint + connection adapter).
 export 'src/infrastructure/auth/node_connection_authenticator.dart';
 export 'src/infrastructure/node/node_mapping.dart';
+export 'src/infrastructure/shell/shell_hub.dart';
 
 // The node registry and control channel are omnyhub's. Re-export the types the
 // Hub's own API hands back, so callers need not depend on omnyhub directly.

@@ -25,6 +25,7 @@ one: the node channel and the REST API share a single TLS listener.
                        :8443 (TLS)
         ┌──────────────────┴──────────────────┐
         │  /node      → node control channel  │
+        │  /shell     → OmnyShell broker      │
    ────►│  /api/v1    → REST API              │◄────  CLI / REST client
         │  /metrics   → Prometheus            │
         └──────────────────┬──────────────────┘
@@ -41,6 +42,27 @@ omnyserver hub start  --cert certs/server.crt --key certs/server.key \
 omnyserver node start --hub wss://hub:8443 --id worker-01 \
                       --principal node-account --token node-token --ca certs/ca.crt
 omnyserver nodes list --api https://hub:8443 --ca certs/ca.crt --token api-secret
+```
+
+### Remote shell, from the same Hub
+
+Add `--shell` and the Hub also brokers [OmnyShell][omnyshell] sessions — same
+port, same certificate, same credentials. A node becomes shell-capable with
+`--with-shell`, in the same process:
+
+```sh
+omnyserver hub start  … --shell
+omnyserver node start … --with-shell --shell-label allow-roles=admin
+
+omnyshell exec worker-01 'uptime' --hub wss://hub:8443/shell \
+                                  --principal alice --token admin-token --ca certs/ca.crt
+```
+
+A standalone OmnyShell node or service can attach to the same Hub just as well —
+point it at the shell mount:
+
+```sh
+omnyshell service install node --hub wss://hub:8443/shell --id worker-01 --token …
 ```
 
 Everything is available both as **first-class Dart APIs** and as the
@@ -80,6 +102,9 @@ See the [API Documentation][api_doc] for the full list of classes and APIs.
   beside the node channel — one port to open, one certificate to manage.
 - **Events** — `NodeConnected`, `HeartbeatReceived`, `FormulaFinished`,
   `PresetApplied`, … with subscriptions and streaming.
+- **Remote shell** — the Hub can also broker [OmnyShell][omnyshell] sessions on
+  the same port and credentials (`--shell`), and a node can be both an OmnyServer
+  agent and an OmnyShell node in one process (`--with-shell`).
 
 ## Architecture
 
@@ -108,7 +133,7 @@ See [doc/architecture.md](doc/architecture.md), [doc/protocol.md](doc/protocol.m
 
 ```yaml
 dependencies:
-  omnyserver: ^0.2.1
+  omnyserver: ^0.3.0
 ```
 
 Or install the CLI:
@@ -247,7 +272,7 @@ rather than `host:port`.
 |---|---|
 | **[omnyhub][omnyhub]** | The HUB framework everything below is built on: transport, routing, auth, node registry and control plane. |
 | **omnyserver** (this) | Fleet orchestration — monitoring, capabilities, formulas, presets, desired-state reconciliation. |
-| **[omnyshell][omnyshell]** | Remote shell — SSH-like sessions brokered to a node by identity. |
+| **[omnyshell][omnyshell]** | Remote shell — SSH-like sessions brokered to a node by identity. An OmnyServer Hub can host its broker (`--shell`). |
 | **[omnydrive][omnydrive]** | File & git drive synchronization. |
 
 [omnyhub]: https://github.com/OmnyGrid/omnyhub
