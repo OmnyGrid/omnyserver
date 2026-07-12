@@ -1,7 +1,7 @@
 import '../../domain/entities/platform_info.dart';
 import '../../domain/formula/formula_context.dart';
 import '../../domain/formula/formula_result.dart';
-import '../../protocol/control_message.dart';
+import '../../protocol/operations.dart';
 import '../../shared/utils/clock.dart';
 import '../../version.dart';
 import 'formula_registry.dart';

@@ -1,6 +1,8 @@
 @TestOn('vm')
 library;
 
+import 'dart:io';
+
 import 'package:omnyserver/omnyserver_node.dart';
 import 'package:test/test.dart';
 
@@ -39,18 +41,28 @@ void main() {
       },
     );
 
-    test('os update runs the platform command', () async {
+    test('os update runs the platform command where one exists', () async {
       final exec = _RecordingExecutor();
       final service = UpdateService(executor: exec);
-      final (ok, _) = await service.handle(
+      final (ok, message) = await service.handle(
         const NodeControl(
           requestId: 'r',
           action: 'update',
           parameters: {'target': 'os'},
         ),
       );
-      expect(ok, isTrue);
-      expect(exec.calls, isNotEmpty);
+
+      // `UpdateService` only knows a package manager for Linux (apt) and macOS
+      // (softwareupdate). On anything else it must refuse cleanly rather than
+      // run something arbitrary — a node that cannot patch itself has to say so.
+      if (Platform.isLinux || Platform.isMacOS) {
+        expect(ok, isTrue);
+        expect(exec.calls, isNotEmpty);
+      } else {
+        expect(ok, isFalse);
+        expect(message, contains('not supported'));
+        expect(exec.calls, isEmpty);
+      }
     });
 
     test('non-update actions are acknowledged', () async {

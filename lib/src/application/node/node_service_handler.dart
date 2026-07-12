@@ -1,5 +1,5 @@
 import '../../infrastructure/service/service_controller.dart';
-import '../../protocol/control_message.dart';
+import '../../protocol/operations.dart';
 
 /// Answers Hub `ServiceControl` requests on the node by driving a
 /// [ServiceController] (systemd / launchd / Windows Service Manager).

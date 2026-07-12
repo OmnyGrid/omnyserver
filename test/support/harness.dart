@@ -60,9 +60,14 @@ class TestCluster {
   Uri get hubUri => Uri.parse('wss://127.0.0.1:${hub.port}');
 
   /// Starts a Hub on an ephemeral port with the given [tokens].
+  ///
+  /// [heartbeatInterval] is the cadence the Hub advertises to its nodes — the
+  /// Hub owns it, so a test that waits on heartbeats sets it here, not on the
+  /// agent. It defaults low so those tests do not wait on a production cadence.
   static Future<TestCluster> start({
     Map<String, TokenGrant>? tokens,
     Clock? clock,
+    Duration heartbeatInterval = const Duration(milliseconds: 200),
     Duration heartbeatTimeout = const Duration(seconds: 45),
     EventBus? eventBus,
     NodeRepository? nodeRepository,
@@ -87,6 +92,7 @@ class TestCluster {
         port: 0,
         securityContext: await TestCerts.serverContext(),
         authenticator: TokenAuthenticator(grants),
+        heartbeatInterval: heartbeatInterval,
         heartbeatTimeout: heartbeatTimeout,
         clock: clock ?? const SystemClock(),
         eventBus: eventBus,
@@ -156,6 +162,17 @@ class TestCluster {
     );
     _agents.add(agent);
     return agent;
+  }
+
+  /// Stops every agent, leaving the Hub running — for asserting how the Hub
+  /// behaves once its nodes are gone.
+  Future<void> stopNodes() async {
+    for (final agent in _agents) {
+      await agent.stop();
+    }
+    _agents.clear();
+    // Let the Hub observe the closed sockets before the caller asserts on it.
+    await Future<void>.delayed(const Duration(milliseconds: 100));
   }
 
   /// Stops all agents and the Hub.

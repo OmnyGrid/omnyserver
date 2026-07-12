@@ -1,7 +1,6 @@
 import 'dart:async';
-import 'dart:convert';
-import 'dart:math';
-import 'dart:typed_data';
+
+import 'package:omnyhub/omnyhub.dart' as omnyhub;
 
 import '../../domain/auth/principal.dart';
 import '../../domain/entities/audit_entry.dart';
@@ -12,30 +11,35 @@ import '../../domain/events/omny_event.dart';
 import '../../domain/formula/formula_action.dart';
 import '../../domain/repository/repositories.dart';
 import '../../domain/value_objects/node_id.dart';
-import '../../protocol/control_message.dart';
-import '../../protocol/omny_connection.dart';
-import '../../protocol/omny_frame.dart';
-import '../../protocol/protocol_version.dart';
+import '../../domain/value_objects/principal_id.dart';
+import '../../infrastructure/auth/node_connection_authenticator.dart';
+import '../../infrastructure/node/node_mapping.dart';
+import '../../protocol/operations.dart';
 import '../../shared/errors/error_codes.dart';
 import '../../shared/errors/omnyserver_exception.dart';
-import '../../infrastructure/transport/ws_server_endpoint.dart';
+import '../../shared/utils/clock.dart';
+import '../../shared/utils/id_generator.dart';
 import 'audit_log.dart';
 import 'hub_config.dart';
-import 'node_registry.dart';
 
-/// The central orchestrator: accepts node and client connections over WSS,
-/// authenticates them, maintains a live registry of nodes, aggregates status
-/// and events, and dispatches operations (restart, formula, preset, …) to
-/// nodes, correlating their results.
+/// The key OmnyServer's last status snapshot is cached under, in the omnyhub
+/// registry's per-node state bag.
+const String _statusState = 'status';
+
+/// The central orchestrator: accepts node connections over WSS, authenticates
+/// them, maintains a live registry, aggregates status and events, and dispatches
+/// operations (restart, formula, preset, …) to nodes, correlating their results.
 ///
 /// Everything the CLI and HTTP API expose is a method on this class — the wire
-/// protocol is an implementation detail of how it reaches the nodes.
+/// protocol is an implementation detail of how it reaches the nodes. That
+/// protocol is omnyhub's: this class hosts an [omnyhub.OmnyHub] with a
+/// [omnyhub.NodeGateway], which owns the transport, the registry, the heartbeat
+/// watchdog and the request/response correlation. What remains here is what is
+/// actually OmnyServer's: identity, auditing, events, persistence and the
+/// operation vocabulary.
 class OmnyServerHub {
   /// The hub configuration.
   final HubConfig config;
-
-  /// The live node registry.
-  final NodeRegistry registry = NodeRegistry();
 
   /// The audit log.
   late final AuditLog audit = AuditLog(
@@ -44,56 +48,119 @@ class OmnyServerHub {
     ids: config.idGenerator,
   );
 
-  final Map<String, Completer<ControlMessage>> _pending = {};
-  final Random _random = Random.secure();
-  WsServerEndpoint? _endpoint;
-  Timer? _watchdog;
+  late final omnyhub.NodeGateway _gateway = omnyhub.NodeGateway(
+    name: 'omnyserver-nodes',
+    mount: config.nodeMount,
+    clock: _HubClock(config.clock),
+    idGenerator: _HubIds(config.idGenerator),
+    heartbeatInterval: config.heartbeatInterval,
+    heartbeatTimeout: config.heartbeatTimeout,
+    // The Hub is the system of record for a known fleet: a node that goes away
+    // stays in the registry, marked offline, so its history survives.
+    retainNodes: true,
+    onRegister: _onRegister,
+    onHeartbeat: _onHeartbeat,
+    onNotify: _onNotify,
+    onDisconnect: (node, _) => _onNodeGone(node),
+    onTimeout: _onNodeGone,
+  );
+
+  omnyhub.OmnyHub? _server;
 
   /// Creates a Hub from [config].
   OmnyServerHub(this.config);
 
+  /// The live node registry.
+  omnyhub.NodeRegistry get registry => _gateway.registry;
+
   /// The port the Hub is listening on (valid after [start]).
-  int get port => _endpoint?.port ?? config.port;
+  int get port => _server?.port ?? config.port;
 
   /// The event stream (lifecycle + operational events).
   Stream<OmnyEvent> get events => config.eventBus.events;
 
   void _log(String message) => config.logger?.call(message);
 
+  /// Registers an extra [service] (e.g. the REST API) on the Hub's listener, so
+  /// it shares the node channel's port and TLS. Must be called before [start].
+  void registerService(
+    omnyhub.Service service, {
+    omnyhub.Authenticator? authenticator,
+  }) {
+    if (_server != null) {
+      throw StateError('cannot add services to a running Hub');
+    }
+    _extraServices.add((service, authenticator));
+  }
+
+  /// Installs extra [middleware] on the Hub's listener. Must be called before
+  /// [start].
+  void use(omnyhub.Middleware middleware) {
+    if (_server != null) {
+      throw StateError('cannot add middleware to a running Hub');
+    }
+    _extraMiddleware.add(middleware);
+  }
+
+  final List<(omnyhub.Service, omnyhub.Authenticator?)> _extraServices = [];
+  final List<omnyhub.Middleware> _extraMiddleware = [];
+
   /// Binds the WSS endpoint and begins accepting connections.
   Future<void> start() async {
-    _endpoint = await WsServerEndpoint.bind(
-      host: config.host,
-      port: config.port,
-      securityContext: config.securityContext,
-      onConnection: _handleConnection,
+    final server = omnyhub.OmnyHub(
+      transports: [
+        omnyhub.HttpTransport.https(
+          address: config.host,
+          port: config.port,
+          tls: omnyhub.StaticTls.context(config.securityContext),
+        ),
+      ],
+      middleware: _extraMiddleware,
+      // The node channel authenticates in-band, on the open socket, because the
+      // Ed25519 exchange needs a round trip the HTTP upgrade cannot carry.
+      connectionAuthenticator: NodeConnectionAuthenticator(
+        authenticator: config.authenticator,
+        onRejected: (principal, reason) => audit.record(
+          principal: principal,
+          action: 'auth',
+          outcome: AuditOutcome.failure,
+          detail: reason,
+        ),
+      ),
     );
-    _watchdog = Timer.periodic(
-      config.heartbeatTimeout,
-      (_) => _sweepStaleNodes(),
-    );
+    await server.registerService(_gateway);
+    for (final (service, authenticator) in _extraServices) {
+      await server.registerService(service, authenticator: authenticator);
+    }
+    await server.start();
+    _server = server;
     _log('Hub listening on ${config.host}:$port');
   }
 
   /// Stops the Hub and releases resources.
   Future<void> close() async {
-    _watchdog?.cancel();
-    await _endpoint?.close(force: true);
+    await _server?.stop();
+    _server = null;
     await config.eventBus.close();
   }
 
-  // -------------------------------------------------------------------------
+  // ---------------------------------------------------------------------------
   // Public orchestration API (used by the CLI and HTTP API).
-  // -------------------------------------------------------------------------
+  // ---------------------------------------------------------------------------
 
   /// All known node descriptors.
-  List<NodeDescriptor> listNodes() => registry.descriptors();
+  List<NodeDescriptor> listNodes() =>
+      registry.all.map((n) => nodeDescriptorFrom(n.descriptor)).toList();
 
   /// The descriptor for [id], or `null`.
-  NodeDescriptor? getNode(NodeId id) => registry.byId(id)?.descriptor;
+  NodeDescriptor? getNode(NodeId id) {
+    final node = registry.byId(toHubId(id));
+    return node == null ? null : nodeDescriptorFrom(node.descriptor);
+  }
 
   /// The latest live status for [id], or `null`.
-  NodeStatus? getStatus(NodeId id) => registry.byId(id)?.lastStatus;
+  NodeStatus? getStatus(NodeId id) =>
+      registry.byId(toHubId(id))?.state[_statusState] as NodeStatus?;
 
   /// Restarts the node [id] (sends a node-control request and awaits the ack).
   Future<void> restartNode(NodeId id, {String principal = 'system'}) =>
@@ -119,7 +186,7 @@ class OmnyServerHub {
   }
 
   /// Runs a formula [action] on node [id], returning the structured result.
-  Future<ControlMessage> runFormula(
+  Future<FormulaRunResult> runFormula(
     NodeId id,
     String formula,
     FormulaAction action, {
@@ -127,23 +194,23 @@ class OmnyServerHub {
     Map<String, String> parameters = const {},
     String principal = 'system',
   }) async {
-    final node = _requireOnline(id);
     final requestId = config.idGenerator.next();
     config.eventBus.publish(
       FormulaStarted(id, formula, action.name, config.clock.now()),
     );
-    final reply = await _request(
-      node.connection!,
-      requestId,
+    final reply = await _call(
+      id,
+      Operations.formula,
       FormulaRun(
         requestId: requestId,
         formula: formula,
         action: action,
         version: version,
         parameters: parameters,
-      ),
+      ).toJson(),
     );
-    final ok = reply is FormulaRunResult ? reply.result.success : false;
+    final result = FormulaRunResult.fromJson(reply);
+    final ok = result.result.success;
     config.eventBus.publish(
       FormulaFinished(id, formula, action.name, ok, config.clock.now()),
     );
@@ -154,34 +221,33 @@ class OmnyServerHub {
       target: id.value,
       detail: '$formula:${action.name}',
     );
-    return reply;
+    return result;
   }
 
-  /// Applies [preset] to node [id], returning the result message.
-  Future<ControlMessage> applyPreset(
+  /// Applies [preset] to node [id], returning the result.
+  Future<PresetApplyResult> applyPreset(
     NodeId id,
     Preset preset, {
     String principal = 'system',
   }) async {
-    final node = _requireOnline(id);
     final requestId = config.idGenerator.next();
-    final reply = await _request(
-      node.connection!,
-      requestId,
-      PresetApply(requestId: requestId, preset: preset),
+    final reply = await _call(
+      id,
+      Operations.preset,
+      PresetApply(requestId: requestId, preset: preset).toJson(),
     );
-    final ok = reply is PresetApplyResult ? reply.success : false;
+    final result = PresetApplyResult.fromJson(reply);
     config.eventBus.publish(
-      PresetApplied(id, preset.id.value, ok, config.clock.now()),
+      PresetApplied(id, preset.id.value, result.success, config.clock.now()),
     );
     await audit.record(
       principal: principal,
       action: 'preset.apply',
-      outcome: ok ? AuditOutcome.success : AuditOutcome.failure,
+      outcome: result.success ? AuditOutcome.success : AuditOutcome.failure,
       target: id.value,
       detail: preset.id.value,
     );
-    return reply;
+    return result;
   }
 
   /// Runs a shell [command] on node [id], returning the [CommandResult].
@@ -190,228 +256,50 @@ class OmnyServerHub {
     String command, {
     List<String> args = const [],
   }) async {
-    final node = _requireOnline(id);
     final requestId = config.idGenerator.next();
-    final reply = await _request(
-      node.connection!,
-      requestId,
-      CommandRequest(requestId: requestId, command: command, args: args),
+    final reply = await _call(
+      id,
+      Operations.command,
+      CommandRequest(
+        requestId: requestId,
+        command: command,
+        args: args,
+      ).toJson(),
     );
-    if (reply is CommandResult) return reply;
-    throw const OperationException('Unexpected reply to command request');
+    return CommandResult.fromJson(reply);
   }
 
-  // -------------------------------------------------------------------------
-  // Connection handling.
-  // -------------------------------------------------------------------------
+  // ---------------------------------------------------------------------------
+  // Node RPC.
+  // ---------------------------------------------------------------------------
 
-  Future<void> _handleConnection(OmnyConnection connection) async {
+  /// Invokes [action] on node [id] and returns its response payload.
+  ///
+  /// Translates omnyhub's failures into OmnyServer's, so callers (and the HTTP
+  /// API's error mapper) keep seeing one exception hierarchy.
+  Future<Map<String, dynamic>> _call(
+    NodeId id,
+    String action,
+    Map<String, dynamic> payload,
+  ) async {
+    _requireOnline(id);
+    final omnyhub.NodeResponse reply;
     try {
-      final challenge = _newChallenge();
-      final principal = await _authenticate(connection, challenge);
-      // Decide role by waiting for the first post-auth message: a node sends
-      // NodeRegister; a client issues requests.
-      final first = await _nextMessage(connection);
-      if (first is NodeRegister) {
-        await _serveNode(connection, principal, first);
-      } else {
-        await _serveClient(connection, principal, first);
-      }
-    } on _HandshakeError catch (e) {
-      _log('handshake rejected: ${e.message}');
-      await connection.close();
-    } on Object catch (e) {
-      _log('connection error: $e');
-      await connection.close();
-    }
-  }
-
-  Uint8List _newChallenge() {
-    final bytes = Uint8List(32);
-    for (var i = 0; i < bytes.length; i++) {
-      bytes[i] = _random.nextInt(256);
-    }
-    return bytes;
-  }
-
-  Future<Principal> _authenticate(
-    OmnyConnection connection,
-    Uint8List challenge,
-  ) async {
-    final hello = await _nextMessage(connection);
-    if (hello is! Hello) {
-      throw const _HandshakeError('expected hello');
-    }
-    if (!ProtocolVersion.current.isCompatibleWith(
-      ProtocolVersion.parse(hello.protocolVersion),
-    )) {
-      connection.sendMessage(
-        const ProtocolErrorMessage(
-          code: 'version_mismatch',
-          message: 'incompatible protocol version',
-        ),
+      reply = await _gateway.request(
+        toHubId(id),
+        action,
+        payload: payload,
+        timeout: config.requestTimeout,
       );
-      throw const _HandshakeError('version mismatch');
+    } on omnyhub.HubTimeoutException {
+      throw const OmnyServerTimeoutException('node did not reply in time');
+    } on omnyhub.NodeUnavailableException catch (e) {
+      throw NodeUnavailableException(ErrorCodes.nodeOffline, e.message);
     }
-    connection.sendMessage(AuthChallenge(base64.encode(challenge)));
-
-    final submit = await _nextMessage(connection);
-    if (submit is! AuthSubmit) {
-      throw const _HandshakeError('expected auth submit');
+    if (!reply.ok) {
+      throw OperationException(reply.error ?? '$action failed on node $id');
     }
-    try {
-      final principal = await config.authenticator.authenticate(
-        submit.credential,
-        challenge: challenge,
-      );
-      connection.sendMessage(
-        AuthOk(
-          principalId: principal.id.value,
-          roles: principal.roles.toList(),
-        ),
-      );
-      return principal;
-    } on AuthException catch (e) {
-      connection.sendMessage(AuthFail(e.message));
-      await audit.record(
-        principal: submit.credential.principal,
-        action: 'auth',
-        outcome: AuditOutcome.failure,
-        detail: e.message,
-      );
-      throw _HandshakeError(e.message);
-    }
-  }
-
-  Future<void> _serveNode(
-    OmnyConnection connection,
-    Principal principal,
-    NodeRegister register,
-  ) async {
-    final descriptor = register.descriptor.copyWith(
-      online: true,
-      registeredAt: config.clock.now(),
-    );
-    final node = RegisteredNode(
-      descriptor: descriptor,
-      principal: principal,
-      connection: connection,
-      lastHeartbeatAt: config.clock.now(),
-    );
-    registry.upsert(node);
-    await config.nodeRepository.save(descriptor);
-    connection.sendMessage(NodeRegistered(descriptor.id.value));
-    config.eventBus.publish(NodeConnected(descriptor.id, config.clock.now()));
-    await audit.record(
-      principal: principal.id.value,
-      action: 'node.register',
-      outcome: AuditOutcome.success,
-      target: descriptor.id.value,
-    );
-    _log('node ${descriptor.id} registered');
-
-    connection.incoming.listen(
-      (frame) {
-        if (frame is ControlFrame) _onNodeMessage(node, frame.message);
-      },
-      onDone: () => _onNodeGone(node),
-      onError: (Object _) => _onNodeGone(node),
-      cancelOnError: false,
-    );
-  }
-
-  void _onNodeMessage(RegisteredNode node, ControlMessage message) {
-    switch (message) {
-      case NodeHeartbeat(:final heartbeat):
-        node.lastHeartbeatAt = config.clock.now();
-        node.lastSequence = heartbeat.sequence;
-        if (heartbeat.status != null) {
-          node.lastStatus = heartbeat.status;
-          unawaited(_recordMetric(node.descriptor.id, heartbeat.status!));
-        }
-        node.connection?.sendMessage(NodeHeartbeatAck(heartbeat.sequence));
-        config.eventBus.publish(
-          HeartbeatReceived(
-            node.descriptor.id,
-            heartbeat.sequence,
-            config.clock.now(),
-          ),
-        );
-      case StatusReport(:final status):
-        node.lastStatus = status;
-        unawaited(_recordMetric(node.descriptor.id, status));
-      case CommandResult(:final requestId) ||
-          FormulaRunResult(:final requestId) ||
-          PresetApplyResult(:final requestId) ||
-          ServiceControlResult(:final requestId) ||
-          OperationAck(:final requestId):
-        _complete(requestId, message);
-      default:
-        break;
-    }
-  }
-
-  Future<void> _recordMetric(NodeId id, NodeStatus status) => config
-      .metricRepository
-      .record(MetricSample(nodeId: id, at: status.capturedAt, status: status));
-
-  void _onNodeGone(RegisteredNode node) {
-    final id = node.descriptor.id;
-    registry.markOffline(id);
-    config.eventBus.publish(NodeDisconnected(id, config.clock.now()));
-    unawaited(config.nodeRepository.save(node.descriptor));
-    _log('node $id disconnected');
-  }
-
-  Future<void> _serveClient(
-    OmnyConnection connection,
-    Principal principal,
-    ControlMessage first,
-  ) async {
-    void handle(ControlMessage message) {
-      if (message is NodeListRequest) {
-        connection.sendMessage(
-          NodeListResponse(
-            requestId: message.requestId,
-            nodes: registry.descriptors(),
-          ),
-        );
-      }
-    }
-
-    handle(first);
-    connection.incoming.listen((frame) {
-      if (frame is ControlFrame) handle(frame.message);
-    }, cancelOnError: false);
-  }
-
-  // -------------------------------------------------------------------------
-  // Request/response correlation.
-  // -------------------------------------------------------------------------
-
-  Future<ControlMessage> _request(
-    OmnyConnection connection,
-    String requestId,
-    ControlMessage message, {
-    Duration timeout = const Duration(seconds: 30),
-  }) {
-    final completer = Completer<ControlMessage>();
-    _pending[requestId] = completer;
-    connection.sendMessage(message);
-    return completer.future.timeout(
-      timeout,
-      onTimeout: () {
-        _pending.remove(requestId);
-        throw const OmnyServerTimeoutException('node did not reply in time');
-      },
-    );
-  }
-
-  void _complete(String requestId, ControlMessage message) {
-    final completer = _pending.remove(requestId);
-    if (completer != null && !completer.isCompleted) {
-      completer.complete(message);
-    }
+    return reply.payload;
   }
 
   Future<void> _nodeControl(
@@ -420,37 +308,49 @@ class OmnyServerHub {
     required String principal,
     Map<String, String> parameters = const {},
   }) async {
-    final node = _requireOnline(id);
     final requestId = config.idGenerator.next();
-    final reply = await _request(
-      node.connection!,
-      requestId,
-      NodeControl(requestId: requestId, action: action, parameters: parameters),
-    );
-    final ok = reply is OperationAck ? reply.success : false;
+    Map<String, dynamic> reply;
+    try {
+      reply = await _call(
+        id,
+        Operations.control,
+        NodeControl(
+          requestId: requestId,
+          action: action,
+          parameters: parameters,
+        ).toJson(),
+      );
+    } on OperationException {
+      await audit.record(
+        principal: principal,
+        action: 'node.$action',
+        outcome: AuditOutcome.failure,
+        target: id.value,
+      );
+      rethrow;
+    }
+
+    final ack = OperationAck.fromJson(reply);
     await audit.record(
       principal: principal,
       action: 'node.$action',
-      outcome: ok ? AuditOutcome.success : AuditOutcome.failure,
+      outcome: ack.success ? AuditOutcome.success : AuditOutcome.failure,
       target: id.value,
     );
-    if (!ok) {
-      final message = reply is OperationAck
-          ? reply.message
-          : 'node rejected $action';
-      throw OperationException('node.$action failed: $message');
+    if (!ack.success) {
+      throw OperationException('node.$action failed: ${ack.message}');
     }
   }
 
-  RegisteredNode _requireOnline(NodeId id) {
-    final node = registry.byId(id);
+  omnyhub.RegisteredNode _requireOnline(NodeId id) {
+    final node = registry.byId(toHubId(id));
     if (node == null) {
       throw NodeUnavailableException(
         ErrorCodes.unknownNode,
         'unknown node $id',
       );
     }
-    if (node.connection == null || !node.descriptor.online) {
+    if (node.descriptor.status != omnyhub.NodeStatus.online) {
       throw NodeUnavailableException(
         ErrorCodes.nodeOffline,
         'node $id offline',
@@ -459,26 +359,153 @@ class OmnyServerHub {
     return node;
   }
 
-  void _sweepStaleNodes() {
-    final now = config.clock.now();
-    for (final node in registry.nodes.toList()) {
-      if (!node.descriptor.online) continue;
-      if (now.difference(node.lastHeartbeatAt) > config.heartbeatTimeout) {
-        _onNodeGone(node);
-      }
+  // ---------------------------------------------------------------------------
+  // Gateway hooks.
+  // ---------------------------------------------------------------------------
+
+  /// Vets a node's registration, then persists and announces it.
+  ///
+  /// Registration is now *authorized*, not merely authenticated: the [Authorizer]
+  /// is consulted with the claimed node id as the target, so a credential that
+  /// can open a connection cannot necessarily enrol a node. Previously any
+  /// authenticated principal could claim — and so hijack — any node id, because
+  /// the configured authorizer was never called.
+  ///
+  /// The default [RoleBasedAuthorizer] policy grants `node.register` to the
+  /// `node` role. Restricting *which* ids a given principal may claim is a policy
+  /// decision: the target is passed, so an authorizer can enforce it.
+  Future<Map<String, dynamic>> _onRegister(
+    omnyhub.NodeDescriptor hubDescriptor,
+    Map<String, dynamic> payload,
+    omnyhub.Principal? principal,
+  ) async {
+    if (principal == null) {
+      throw const omnyhub.UnauthorizedException('node is not authenticated');
+    }
+
+    final NodeDescriptor descriptor;
+    try {
+      descriptor = nodeDescriptorFrom(hubDescriptor);
+    } on ProtocolException catch (e) {
+      throw omnyhub.ValidationException(e.message);
+    }
+
+    if (!config.authorizer.authorize(
+      _principalOf(principal),
+      'node.register',
+      target: descriptor.id.value,
+    )) {
+      await audit.record(
+        principal: principal.id,
+        action: 'node.register',
+        outcome: AuditOutcome.failure,
+        target: descriptor.id.value,
+        detail: 'not permitted to register this node',
+      );
+      throw omnyhub.ForbiddenException(
+        'principal ${principal.id} may not register node ${descriptor.id}',
+      );
+    }
+
+    final registered = descriptor.copyWith(
+      online: true,
+      registeredAt: config.clock.now(),
+    );
+    await config.nodeRepository.save(registered);
+    config.eventBus.publish(NodeConnected(registered.id, config.clock.now()));
+    await audit.record(
+      principal: principal.id,
+      action: 'node.register',
+      outcome: AuditOutcome.success,
+      target: registered.id.value,
+    );
+    _log('node ${registered.id} registered');
+    return const {};
+  }
+
+  /// Records the status snapshot a node piggy-backs on each heartbeat.
+  void _onHeartbeat(omnyhub.RegisteredNode node, omnyhub.Heartbeat beat) {
+    final id = NodeId(node.id.value);
+    config.eventBus.publish(
+      HeartbeatReceived(id, beat.seq, config.clock.now()),
+    );
+
+    final raw = beat.payload['status'];
+    if (raw is! Map) return;
+    final status = NodeStatus.fromJson(raw.cast<String, dynamic>());
+    node.state[_statusState] = status;
+    unawaited(_recordMetric(id, status));
+  }
+
+  /// Handles the one-way pushes a node makes: status reports and log batches.
+  void _onNotify(
+    String action,
+    Map<String, dynamic> payload,
+    omnyhub.RegisteredNode from,
+  ) {
+    switch (action) {
+      case Operations.status:
+        final report = StatusReport.fromJson(payload);
+        from.state[_statusState] = report.status;
+        unawaited(_recordMetric(NodeId(from.id.value), report.status));
+      case Operations.logs:
+        // Accepted and dropped: OmnyServer has no log sink yet. Decoding it here
+        // still validates the frame, so a malformed batch is caught at the edge.
+        LogBatch.fromJson(payload);
+      default:
+        _log('node ${from.id} sent an unknown notify: $action');
     }
   }
 
-  /// Reads the next single control message from [connection], failing on close.
-  Future<ControlMessage> _nextMessage(OmnyConnection connection) async {
-    await for (final frame in connection.incoming) {
-      if (frame is ControlFrame) return frame.message;
+  Future<void> _recordMetric(NodeId id, NodeStatus status) => config
+      .metricRepository
+      .record(MetricSample(nodeId: id, at: status.capturedAt, status: status));
+
+  /// A node's connection is gone (dropped or timed out). The registry keeps the
+  /// record, marked offline; we persist that and announce it.
+  void _onNodeGone(omnyhub.RegisteredNode? node) {
+    if (node == null) return;
+    final id = NodeId(node.id.value);
+    config.eventBus.publish(NodeDisconnected(id, config.clock.now()));
+    try {
+      final descriptor = nodeDescriptorFrom(node.descriptor);
+      unawaited(config.nodeRepository.save(descriptor.copyWith(online: false)));
+    } on ProtocolException {
+      // Not an OmnyServer node; nothing to persist.
     }
-    throw const _HandshakeError('connection closed during handshake');
+    _log('node $id disconnected');
+  }
+
+  Principal _principalOf(omnyhub.Principal principal) =>
+      Principal(id: PrincipalId(principal.id), roles: principal.roles);
+}
+
+/// Bridges OmnyServer's [IdGenerator] to omnyhub's, so ids the gateway mints
+/// (connection ids, RPC correlation ids) come from the Hub's injected generator
+/// and stay deterministic under a seeded one in tests.
+///
+/// The two ports are the same shape but distinct types — OmnyServer's predate
+/// the omnyhub dependency and are part of its public API — so they are adapted
+/// rather than replaced.
+class _HubIds implements omnyhub.IdGenerator {
+  final IdGenerator _ids;
+
+  const _HubIds(this._ids);
+
+  @override
+  String next([String prefix = '']) {
+    final id = _ids.next();
+    return prefix.isEmpty ? id : '$prefix-$id';
   }
 }
 
-class _HandshakeError implements Exception {
-  final String message;
-  const _HandshakeError(this.message);
+/// Bridges OmnyServer's [Clock] to omnyhub's, so the gateway's liveness timing
+/// and the Hub's events read the same (injectable) clock.
+class _HubClock implements omnyhub.Clock {
+  final Clock _clock;
+
+  const _HubClock(this._clock);
+
+  @override
+  DateTime now() => _clock.now();
 }

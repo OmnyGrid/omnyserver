@@ -6,16 +6,33 @@ import 'dart:io';
 /// commands so the CLI exercises exactly the same public API surface as any
 /// other client.
 class HubApiClient {
-  /// The API base URL (e.g. `http://127.0.0.1:8080`).
+  /// The API base URL (e.g. `https://hub.example.com:8443`).
+  ///
+  /// The API shares the Hub's TLS listener, so this is normally `https://` on
+  /// the same port nodes connect to.
   final Uri baseUrl;
 
   /// Optional bearer token.
   final String? token;
 
-  final HttpClient _client = HttpClient();
+  final HttpClient _client;
 
   /// Creates a client for [baseUrl].
-  HubApiClient(this.baseUrl, {this.token});
+  ///
+  /// [securityContext] supplies the trust roots — pass one trusting the Hub's CA
+  /// when it serves a private or self-signed certificate.
+  /// [allowBadCertificate] skips verification entirely; it is for a dev Hub
+  /// only, and never for one reachable off the host.
+  HubApiClient(
+    this.baseUrl, {
+    this.token,
+    SecurityContext? securityContext,
+    bool allowBadCertificate = false,
+  }) : _client = HttpClient(context: securityContext) {
+    if (allowBadCertificate) {
+      _client.badCertificateCallback = (_, _, _) => true;
+    }
+  }
 
   /// GET `/api/v1[path]`, decoding the JSON body.
   Future<dynamic> get(String path) => _send('GET', path);

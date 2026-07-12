@@ -1,9 +1,10 @@
 import 'dart:async';
 
+import 'package:omnyhub/omnyhub.dart' show NodeRegistry;
+
 import '../../domain/events/event_bus.dart';
 import '../../domain/events/omny_event.dart';
 import '../../infrastructure/metrics/metrics_registry.dart';
-import 'node_registry.dart';
 
 /// Wires Hub lifecycle/operational events and live registry state into a
 /// [MetricsRegistry], producing Prometheus-ready metrics:
@@ -34,7 +35,7 @@ class HubMetrics {
       ..describe('omnyserver_api_requests_total', 'HTTP API requests')
       ..registerGauge(
         'omnyserver_nodes_connected',
-        () => _nodes.onlineCount.toDouble(),
+        () => _nodes.discover().length.toDouble(),
       );
   }
 

@@ -1,57 +1,36 @@
+import 'dart:convert';
+
+import 'package:omnyhub/omnyhub.dart' show Message, TextMessage;
+
 import '../shared/errors/omnyserver_exception.dart';
 import '../shared/json/json_codec_helpers.dart';
 import 'control_message.dart';
 
-/// Decodes a JSON object (`{type, channel?, ...}`) into the matching
-/// [ControlMessage] subtype, and encodes a message back to a JSON object.
+/// Encodes handshake [ControlMessage]s to and from the JSON envelope
+/// `{"type": <type>, ...fields}`, carried as WebSocket text frames.
 ///
-/// Centralizes the `type` → `fromJson` dispatch so adding a message means
-/// registering it in one place.
+/// Centralizes the `type` → `fromJson` dispatch so adding a handshake message
+/// means registering it in one place. Only the handshake rides this codec —
+/// everything after it is omnyhub's node protocol on its own codec.
 class ControlMessageCodec {
   const ControlMessageCodec._();
 
   /// The shared codec instance.
   static const ControlMessageCodec instance = ControlMessageCodec._();
 
-  static final Map<
-    String,
-    ControlMessage Function(int? channel, Map<String, dynamic>)
-  >
+  static final Map<String, ControlMessage Function(Map<String, dynamic>)>
   _decoders = {
     Hello.typeName: Hello.fromJson,
     AuthChallenge.typeName: AuthChallenge.fromJson,
     AuthSubmit.typeName: AuthSubmit.fromJson,
     AuthOk.typeName: AuthOk.fromJson,
     AuthFail.typeName: AuthFail.fromJson,
-    NodeRegister.typeName: NodeRegister.fromJson,
-    NodeRegistered.typeName: NodeRegistered.fromJson,
-    NodeHeartbeat.typeName: NodeHeartbeat.fromJson,
-    NodeHeartbeatAck.typeName: NodeHeartbeatAck.fromJson,
-    StatusReport.typeName: StatusReport.fromJson,
-    LogBatch.typeName: LogBatch.fromJson,
-    Ping.typeName: Ping.fromJson,
-    Pong.typeName: Pong.fromJson,
-    NodeListRequest.typeName: NodeListRequest.fromJson,
-    NodeListResponse.typeName: NodeListResponse.fromJson,
-    CommandRequest.typeName: CommandRequest.fromJson,
-    CommandResult.typeName: CommandResult.fromJson,
-    FormulaRun.typeName: FormulaRun.fromJson,
-    FormulaProgress.typeName: FormulaProgress.fromJson,
-    FormulaRunResult.typeName: FormulaRunResult.fromJson,
-    PresetApply.typeName: PresetApply.fromJson,
-    PresetApplyResult.typeName: PresetApplyResult.fromJson,
-    ServiceControl.typeName: ServiceControl.fromJson,
-    ServiceControlResult.typeName: ServiceControlResult.fromJson,
-    NodeControl.typeName: NodeControl.fromJson,
-    OperationAck.typeName: OperationAck.fromJson,
     ProtocolErrorMessage.typeName: ProtocolErrorMessage.fromJson,
   };
 
-  /// Encodes [message] to a JSON object, injecting `type` and optional
-  /// `channel`.
+  /// Encodes [message] to a JSON object, injecting `type`.
   Map<String, dynamic> encode(ControlMessage message) => {
     'type': message.type,
-    if (message.channelId != null) 'channel': message.channelId,
     ...message.toJson(),
   };
 
@@ -64,7 +43,31 @@ class ControlMessageCodec {
     if (decoder == null) {
       throw ProtocolException('Unknown control message type: "$type"');
     }
-    final channel = Json.optInt(json, 'channel');
-    return decoder(channel, json);
+    return decoder(json);
+  }
+
+  /// Encodes [message] as an omnyhub text [Message] for the wire.
+  Message toWire(ControlMessage message) =>
+      TextMessage(jsonEncode(encode(message)));
+
+  /// Decodes an omnyhub [Message] from the wire.
+  ///
+  /// Throws [ProtocolException] on a binary frame, malformed JSON or an unknown
+  /// type: the handshake is strictly text JSON, and a peer that does not speak
+  /// it must be rejected rather than tolerated.
+  ControlMessage fromWire(Message message) {
+    if (message is! TextMessage) {
+      throw const ProtocolException('Handshake expects a text frame');
+    }
+    final Object? decoded;
+    try {
+      decoded = jsonDecode(message.data);
+    } on FormatException catch (e) {
+      throw ProtocolException('Invalid control JSON: ${e.message}');
+    }
+    if (decoded is! Map) {
+      throw const ProtocolException('Control frame must be a JSON object');
+    }
+    return decode(decoded.cast<String, dynamic>());
   }
 }

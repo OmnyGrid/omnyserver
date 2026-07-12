@@ -31,8 +31,20 @@ class HubConfig {
   /// Decides whether a principal may perform an action.
   final Authorizer authorizer;
 
+  /// The path the node control channel is mounted at.
+  ///
+  /// Nodes connect to `wss://<host>:<port><nodeMount>`. The REST API, when
+  /// hosted on the same listener, lives under `/api/v1` alongside it.
+  final String nodeMount;
+
+  /// How often nodes should heartbeat. Advertised to each node at registration.
+  final Duration heartbeatInterval;
+
   /// How long without a heartbeat before a node is considered stale/offline.
   final Duration heartbeatTimeout;
+
+  /// How long to wait for a node to answer a dispatched operation.
+  final Duration requestTimeout;
 
   /// Time source.
   final Clock clock;
@@ -62,7 +74,10 @@ class HubConfig {
     this.host = '0.0.0.0',
     this.port = 8443,
     Authorizer? authorizer,
+    this.nodeMount = '/node',
+    this.heartbeatInterval = const Duration(seconds: 15),
     this.heartbeatTimeout = const Duration(seconds: 45),
+    this.requestTimeout = const Duration(seconds: 30),
     this.clock = const SystemClock(),
     this.idGenerator = const UuidGenerator(),
     EventBus? eventBus,

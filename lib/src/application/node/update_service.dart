@@ -1,7 +1,7 @@
 import 'dart:io';
 
 import '../../infrastructure/formulas/command_executor.dart';
-import '../../protocol/control_message.dart';
+import '../../protocol/operations.dart';
 
 /// Handles node update requests dispatched by the Hub (`NodeControl` with
 /// action `update`). Supports three update targets:

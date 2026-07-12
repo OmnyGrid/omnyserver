@@ -26,8 +26,8 @@ future additions (Kubernetes, AI scheduling, a Web UI) slot in without rework.
 |-------|----------------|----------|
 | `domain` | Pure model and contracts (no IO) | value objects, entities, `Formula`, `Authenticator`, repository interfaces, `OmnyEvent` |
 | `application` | Use-case coordination | `OmnyServerHub`, `NodeAgent`, `NodeFormulaService`, `EventAggregator` |
-| `infrastructure` | Technology adapters | WSS transport, authenticators, monitors, capability detectors, persistence (memory/JSON/SQLite), HTTP API, metrics |
-| `protocol` | Wire contract | `ControlMessage` + codec, `OmnyConnection` port |
+| `infrastructure` | Technology adapters | authenticators, monitors, capability detectors, persistence (memory/JSON/SQLite), HTTP API, metrics |
+| `protocol` | Wire contract | handshake `ControlMessage` + codec, operation payloads |
 | `shared` | Cross-cutting utilities | errors, JSON helpers, `Clock`, id generator |
 
 ## Public libraries (`lib`)
@@ -41,8 +41,12 @@ future additions (Kubernetes, AI scheduling, a Web UI) slot in without rework.
 
 - **Everything in the CLI is an API.** CLI commands call the same public
   runtimes / HTTP API any other client would.
-- **Ports & adapters.** `OmnyConnection` is the transport port; WSS is the only
-  adapter today, but gRPC/QUIC/a message bus can implement the same contract.
+- **Built on omnyhub.** The transport, node registry, heartbeat watchdog, RPC
+  correlation and HTTP routing are [omnyhub](https://pub.dev/packages/omnyhub)'s.
+  Its `Connection` and `Transport` are the ports; WSS is the only adapter today,
+  but gRPC/QUIC/a message bus can implement the same contract. OmnyServer owns
+  what is actually its own: identity, capabilities, formulas, presets,
+  reconciliation, auditing and persistence.
 - **Pluggable persistence.** `NodeRepository` and friends have in-memory,
   JSON-directory and SQLite implementations behind one interface.
 - **Idempotent convergence.** Formulas report `changed`, presets compose them,

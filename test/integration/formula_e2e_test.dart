@@ -38,7 +38,7 @@ void main() {
       principal: 'alice',
     );
     expect(reply, isA<FormulaRunResult>());
-    expect((reply as FormulaRunResult).result.success, isTrue);
+    expect(reply.result.success, isTrue);
 
     final audit = await cluster.hub.audit.recent();
     expect(audit.any((e) => e.action == 'formula.run'), isTrue);
@@ -68,7 +68,7 @@ void main() {
       principal: 'alice',
     );
     expect(reply, isA<PresetApplyResult>());
-    expect((reply as PresetApplyResult).success, isTrue);
+    expect(reply.success, isTrue);
     expect(reply.results, hasLength(2));
   });
 }

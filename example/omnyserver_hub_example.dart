@@ -1,5 +1,6 @@
-// Starts a standalone Hub plus its REST HTTP API, then leaves them running.
-// Point a Node agent at the printed WSS URL and query the API.
+// Starts a standalone Hub — the node control channel and the REST API on one
+// TLS port — then leaves it running. Point a Node agent at the printed WSS URL
+// and query the API.
 //
 // Run with: dart run example/omnyserver_hub_example.dart
 import 'dart:io';
@@ -30,8 +31,9 @@ Future<void> main() async {
       logger: print,
     ),
   );
-  await hub.start();
 
+  // Mount the REST API on the Hub's own listener, so nodes and operators share
+  // one TLS port: nodes upgrade to a WebSocket on /node, operators call /api/v1.
   final events = EventAggregator()..attach(hub.config.eventBus);
   final metrics = HubMetrics(hub.registry)..attach(hub.config.eventBus);
   final api = HttpApiServer(
@@ -39,14 +41,24 @@ Future<void> main() async {
     apiToken: 'api-secret',
     events: events,
     metrics: metrics,
-    host: '127.0.0.1',
-    port: 8080,
   );
-  await api.start();
+  for (final middleware in api.buildMiddleware()) {
+    hub.use(middleware);
+  }
+  for (final service in api.buildServices()) {
+    hub.registerService(
+      service,
+      authenticator: service.name == HttpApiServer.apiServiceName
+          ? api.tokenAuthenticator()
+          : null,
+    );
+  }
 
-  print('Hub WSS:  wss://127.0.0.1:${hub.port}');
-  print('Hub API:  http://127.0.0.1:${api.boundPort}/api/v1/nodes');
-  print('Metrics:  http://127.0.0.1:${api.boundPort}/metrics');
-  print('CA cert:  ${certs.caCert}');
+  await hub.start();
+
+  print('Hub nodes: wss://127.0.0.1:${hub.port}/node');
+  print('Hub API:   https://127.0.0.1:${hub.port}/api/v1/nodes');
+  print('Metrics:   https://127.0.0.1:${hub.port}/metrics');
+  print('CA cert:   ${certs.caCert}');
   print('Ctrl-C to stop.');
 }
