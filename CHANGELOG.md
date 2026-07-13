@@ -1,3 +1,12 @@
+## 0.3.1
+
+Dependency maintenance — no API or behaviour changes.
+
+### Changed
+
+- Widened the dependency floors to the current releases: `omnyhub` 1.5.1,
+  `omnyshell` 1.56.1, `sqlite3` 2.9.4, `meta` 1.19.0 and `path` 1.9.1.
+
 ## 0.3.0
 
 One Hub, two kinds of node. An OmnyServer Hub can now also serve
