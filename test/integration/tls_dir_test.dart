@@ -30,7 +30,7 @@ void main() {
     if (tlsDir.existsSync()) tlsDir.deleteSync(recursive: true);
   });
 
-  test('a Hub configured with tlsDirectory serves nodes over wss', () async {
+  test('a Hub configured with tlsDirectory serves it, and nodes over wss', () async {
     final hub = OmnyServerHub(
       HubConfig(
         host: '127.0.0.1',
@@ -47,6 +47,22 @@ void main() {
     );
     await hub.start();
 
+    // The listener really presents the directory's certificate — not merely some
+    // certificate. Verification itself is the peer's business (and the dev CA's
+    // leaf is only trusted on some platforms), so the socket accepts the cert and
+    // then compares what was served against the leaf in fullchain.pem.
+    final socket = await SecureSocket.connect(
+      '127.0.0.1',
+      hub.port,
+      onBadCertificate: (_) => true,
+    );
+    final served = socket.peerCertificate!.pem.trim();
+    socket.destroy();
+    expect(
+      File('${tlsDir.path}/fullchain.pem').readAsStringSync(),
+      contains(served),
+    );
+
     final agent = NodeAgent(
       NodeAgentConfig(
         hubUri: Uri.parse('wss://127.0.0.1:${hub.port}'),
@@ -56,6 +72,7 @@ void main() {
           token: 'node-token',
         ),
         securityContext: await TestCerts.trustContext(),
+        onBadCertificate: (cert, host, port) => true,
       ),
     );
     await agent.start();
