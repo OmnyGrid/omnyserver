@@ -122,10 +122,15 @@ class OmnyServerHub {
         omnyhub.HttpTransport.https(
           address: config.host,
           port: config.port,
-          tls: omnyhub.StaticTls.context(config.securityContext),
+          tls: _tls(),
         ),
       ],
       middleware: _extraMiddleware,
+      // Drives the certificate re-check when the TLS material comes from a
+      // directory: on renewal omnyhub rebinds the listener gap-free, so
+      // established connections drain on the old certificate while new ones land
+      // on the fresh one. Inert for a static context (not hot-reloadable).
+      tlsRenewalInterval: config.tlsReloadInterval,
     );
 
     // The OmnyServer handshake belongs to the node channel *alone*, so it is
@@ -158,6 +163,16 @@ class OmnyServerHub {
     await server.start();
     _server = server;
     _log('Hub listening on ${config.host}:$port');
+  }
+
+  /// The TLS source for the listener: a static context, or a hot-reloading
+  /// `fullchain.pem`/`privkey.pem` directory that picks up renewals.
+  omnyhub.TlsProvider _tls() {
+    final dir = config.tlsDirectory;
+    if (dir != null && dir.isNotEmpty) {
+      return omnyhub.ReloadableFileTls.directory(dir);
+    }
+    return omnyhub.StaticTls.context(config.securityContext!);
   }
 
   /// Stops the Hub and releases resources.

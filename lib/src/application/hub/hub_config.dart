@@ -10,7 +10,7 @@ import '../../shared/utils/id_generator.dart';
 
 /// Configuration for an [OmnyServerHub].
 ///
-/// Critical dependencies ([securityContext], [authenticator]) are required;
+/// Critical dependencies (TLS material, [authenticator]) are required;
 /// everything else has a sensible default so a Hub can be embedded in a test or
 /// example with a couple of lines. Repositories, the event bus and the clock
 /// are injected for testability and pluggable persistence.
@@ -21,9 +21,23 @@ class HubConfig {
   /// The bind port (use 0 for an ephemeral port).
   final int port;
 
-  /// The TLS context (server certificate chain + private key). Mandatory:
-  /// the Hub only speaks `wss`.
-  final SecurityContext securityContext;
+  /// The TLS context (server certificate chain + private key). Exactly one of
+  /// [securityContext] or [tlsDirectory] must be set: the Hub only speaks
+  /// `wss`, so there is no insecure mode.
+  final SecurityContext? securityContext;
+
+  /// A directory holding `fullchain.pem` + `privkey.pem` (the LetsEncrypt
+  /// layout), as an alternative to a static [securityContext].
+  ///
+  /// The Hub loads the certificate at [OmnyServerHub.start] and re-checks the
+  /// files every [tlsReloadInterval]; when they change (a renewal) it rebinds
+  /// the listener with the fresh certificate, so a renewed certificate is served
+  /// without a restart.
+  final String? tlsDirectory;
+
+  /// How often the Hub re-checks [tlsDirectory] for a renewed certificate. Kept
+  /// below a day so a renewal is always picked up within 24h.
+  final Duration tlsReloadInterval;
 
   /// Verifies credentials and resolves principals.
   final Authenticator authenticator;
@@ -74,9 +88,14 @@ class HubConfig {
   final void Function(String message)? logger;
 
   /// Creates a Hub configuration.
+  ///
+  /// Provide exactly one TLS source: a static [securityContext], or a
+  /// [tlsDirectory] the Hub reloads on renewal.
   HubConfig({
-    required this.securityContext,
     required this.authenticator,
+    this.securityContext,
+    this.tlsDirectory,
+    this.tlsReloadInterval = const Duration(hours: 12),
     this.host = '0.0.0.0',
     this.port = 8443,
     Authorizer? authorizer,
@@ -92,7 +111,11 @@ class HubConfig {
     AuditRepository? auditRepository,
     MetricRepository? metricRepository,
     this.logger,
-  }) : authorizer = authorizer ?? const RoleBasedAuthorizer(),
+  }) : assert(
+         (securityContext == null) != (tlsDirectory == null),
+         'provide exactly one of securityContext or tlsDirectory',
+       ),
+       authorizer = authorizer ?? const RoleBasedAuthorizer(),
        eventBus = eventBus ?? BroadcastEventBus(),
        nodeRepository = nodeRepository ?? MemoryNodeRepository(),
        auditRepository = auditRepository ?? MemoryAuditRepository(),
