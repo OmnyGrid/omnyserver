@@ -16,6 +16,10 @@ import '../support/harness.dart';
 /// directory really drives the TLS listener (a node completes a `wss` handshake
 /// against it), and the CLI accepts exactly one TLS source — never both, never
 /// neither, since the Hub has no insecure mode.
+/// [pem] with CRLF line endings normalised to LF, so a PEM read from disk and
+/// one handed back by Dart's TLS stack compare equal on every platform.
+String _lf(String pem) => pem.replaceAll('\r\n', '\n').trim();
+
 void main() {
   late Directory tlsDir;
 
@@ -56,11 +60,13 @@ void main() {
       hub.port,
       onBadCertificate: (_) => true,
     );
-    final served = socket.peerCertificate!.pem.trim();
+    final served = socket.peerCertificate!.pem;
     socket.destroy();
+    // Compared with line endings normalised: openssl writes the PEM with CRLF on
+    // Windows, while Dart hands back the certificate with LF.
     expect(
-      File('${tlsDir.path}/fullchain.pem').readAsStringSync(),
-      contains(served),
+      _lf(File('${tlsDir.path}/fullchain.pem').readAsStringSync()),
+      contains(_lf(served)),
     );
 
     final agent = NodeAgent(
