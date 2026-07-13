@@ -1,3 +1,31 @@
+## 0.4.0
+
+Certificates that renew themselves. The Hub can now take its TLS material from a
+LetsEncrypt-style directory and reload it when it is renewed — matching
+`omnyshell hub start --tls-dir`.
+
+```sh
+omnyserver hub start --tls-dir /etc/letsencrypt/live/hub.example.com \
+                     --api-token api-secret --grant node-account:node-token:node
+```
+
+### Added
+
+- `hub start --tls-dir <dir>`: reads `fullchain.pem` + `privkey.pem` from the
+  directory instead of `--cert`/`--key`. The files are re-checked periodically
+  and, when a renewal changes them, the Hub rebinds its listener with the fresh
+  certificate — no restart, with established connections draining on the old
+  listener. Passing `--tls-dir` together with `--cert`/`--key` is an error, and
+  the Hub still refuses to start without one of the two (no insecure mode).
+- `HubConfig.tlsDirectory` and `HubConfig.tlsReloadInterval`, the embedded
+  equivalent. Exactly one of `securityContext` or `tlsDirectory` must be given.
+
+### Changed
+
+- `HubConfig.securityContext` is now nullable and no longer `required` (a
+  `tlsDirectory` may take its place). Existing code that passes a
+  `securityContext` is unaffected.
+
 ## 0.3.1
 
 Dependency maintenance — no API or behaviour changes.

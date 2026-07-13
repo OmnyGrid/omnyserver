@@ -124,8 +124,22 @@ class HubStartCommand extends Command<void> {
     argParser
       ..addOption('host', defaultsTo: '0.0.0.0', help: 'TLS bind host.')
       ..addOption('port', defaultsTo: '8443', help: 'TLS bind port.')
-      ..addOption('cert', help: 'TLS certificate chain (PEM).')
-      ..addOption('key', help: 'TLS private key (PEM).')
+      ..addOption(
+        'cert',
+        help: 'TLS certificate chain (PEM). Required unless --tls-dir is set.',
+      )
+      ..addOption(
+        'key',
+        help: 'TLS private key (PEM). Required unless --tls-dir is set.',
+      )
+      ..addOption(
+        'tls-dir',
+        help:
+            'Directory holding the listener certificate (fullchain.pem + '
+            'privkey.pem, LetsEncrypt layout), as an alternative to '
+            '--cert/--key. Re-checked periodically and reloaded automatically '
+            'when the files change (e.g. on renewal).',
+      )
       ..addOption(
         'node-path',
         defaultsTo: '/node',
@@ -159,16 +173,13 @@ class HubStartCommand extends Command<void> {
   @override
   Future<void> run() async {
     final args = argResults!;
-    final cert = args['cert'] as String?;
-    final key = args['key'] as String?;
-    if (cert == null || key == null) {
-      throw CliError(
-        '--cert and --key are required (try: omnyserver cert gen)',
-      );
-    }
-    final context = SecurityContext()
-      ..useCertificateChain(cert)
-      ..usePrivateKey(key);
+    // Either a directory the Hub reloads on renewal, or a static cert/key pair.
+    final tlsDir = _validateTls(args);
+    final context = tlsDir != null
+        ? null
+        : (SecurityContext()
+            ..useCertificateChain(args['cert'] as String)
+            ..usePrivateKey(args['key'] as String));
 
     final grants = _parseGrants(args['grant'] as List<String>);
     final nodePath = args['node-path'] as String;
@@ -181,6 +192,7 @@ class HubStartCommand extends Command<void> {
         nodeMount: nodePath,
         shellMount: shellPath,
         securityContext: context,
+        tlsDirectory: tlsDir,
         authenticator: TokenAuthenticator(grants),
         logger: stdout.writeln,
       ),
@@ -233,6 +245,38 @@ class HubStartCommand extends Command<void> {
     stdout.writeln('Press Ctrl-C to stop.');
     await _awaitSignal();
     await hub.close();
+  }
+
+  /// Validates the Hub's TLS source — exactly one of `--tls-dir` or
+  /// (`--cert` + `--key`), never neither (the Hub has no insecure mode).
+  /// Returns the trimmed `--tls-dir` in directory mode, otherwise `null`.
+  String? _validateTls(ArgResults args) {
+    final tlsDir = (args['tls-dir'] as String?)?.trim();
+    final cert = args['cert'] as String?;
+    final key = args['key'] as String?;
+    final hasCertOrKey =
+        (cert != null && cert.isNotEmpty) || (key != null && key.isNotEmpty);
+
+    if (tlsDir != null && tlsDir.isNotEmpty) {
+      if (hasCertOrKey) {
+        throw CliError('use either --tls-dir or --cert/--key, not both');
+      }
+      if (!File('$tlsDir/fullchain.pem').existsSync() ||
+          !File('$tlsDir/privkey.pem').existsSync()) {
+        throw CliError(
+          '--tls-dir "$tlsDir" must contain fullchain.pem and privkey.pem',
+        );
+      }
+      return tlsDir;
+    }
+
+    if (cert == null || cert.isEmpty || key == null || key.isEmpty) {
+      throw CliError(
+        '--cert and --key are required unless --tls-dir is set '
+        '(try: omnyserver cert gen)',
+      );
+    }
+    return null;
   }
 
   Map<String, TokenGrant> _parseGrants(List<String> raw) {

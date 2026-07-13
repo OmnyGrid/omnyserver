@@ -197,6 +197,19 @@ dart run bin/omnyserver.dart cert gen --out certs
 > stack rejects a bare self-signed leaf, so `cert gen` builds a CA → leaf chain;
 > nodes trust the CA with `--ca`.
 
+With a real certificate (LetsEncrypt, cert-manager, a mounted secret), point the
+Hub at the directory instead of the two files:
+
+```sh
+omnyserver hub start --tls-dir /etc/letsencrypt/live/hub.example.com \
+                     --api-token api-secret --grant node-account:node-token:node
+```
+
+`--tls-dir` reads `fullchain.pem` + `privkey.pem` and re-checks them
+periodically: when the certificate is renewed the Hub rebinds its listener with
+the fresh one — no restart, and established connections drain on the old
+listener. It replaces `--cert`/`--key`; passing both is an error.
+
 ### Run a Node
 
 ```sh
