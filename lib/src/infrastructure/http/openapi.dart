@@ -17,6 +17,13 @@ Map<String, dynamic> openApiDocument() => {
     {'url': '/api/v1'},
   ],
   'paths': {
+    '/whoami': {
+      'get': {
+        'summary':
+            'The identity and roles the Hub resolves your credentials to',
+        'responses': {'200': _ok('{principal, roles, authenticated}')},
+      },
+    },
     '/nodes': {
       'get': {
         'summary': 'List all registered nodes',
@@ -64,6 +71,23 @@ Map<String, dynamic> openApiDocument() => {
         'parameters': [_pathId],
         'requestBody': _jsonBody({'target': 'string'}),
         'responses': {'200': _ok('Accepted'), '404': _err, '502': _err},
+      },
+    },
+    '/nodes/{id}/formula': {
+      'post': {
+        'summary': 'Run a formula action on a node',
+        'parameters': [_pathId],
+        'requestBody': _jsonBody({
+          'formula': 'string',
+          'action': 'string',
+          'version': 'string',
+        }),
+        'responses': {
+          '200': _ok('Formula run result'),
+          '400': _err,
+          '404': _err,
+          '502': _err,
+        },
       },
     },
     '/presets/apply': {

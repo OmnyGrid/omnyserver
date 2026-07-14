@@ -58,6 +58,23 @@ dart run bin/omnyserver.dart formula run docker worker-01 --action verify --api 
 dart run bin/omnyserver.dart preset apply docker-host.json worker-01 --api https://hub:8443 --ca certs/ca.crt --token api-secret
 ```
 
+`--token api-secret` is the Hub's master API token: one secret shared by every
+operator, and the audit trail can only call it `api`. Give each operator a grant
+instead and let them present it with `--principal`:
+
+```sh
+# hub start … --grant alice:admin-token:admin
+dart run bin/omnyserver.dart node status worker-01 \
+  --api https://hub:8443 --ca certs/ca.crt \
+  --principal alice --token admin-token
+```
+
+The Hub verifies the pair against the same grant store the node channel uses, so
+the audit trail names `alice`, and her roles — not the token she holds — decide
+what she may do. Revoking one operator is then dropping one `--grant`, and a
+node's grant (`node-account`, role `node`) is refused by the API outright: the
+`Authorizer` is fail-closed and reserves it for `admin`.
+
 ## 5. Run Hub/agent as an OS service
 
 `ServiceController` wraps `dart_service_manager` to install OmnyServer under

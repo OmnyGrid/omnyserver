@@ -112,8 +112,25 @@ class OmnyServerHub {
     _extraMiddleware.add(middleware);
   }
 
+  /// Installs [middleware] *outside* the Hub's error mapping and authentication
+  /// — the outermost layer. Must be called before [start].
+  ///
+  /// This is where CORS goes. Ordinary middleware runs inside the error mapper,
+  /// so it never sees the `401` the authenticator throws or the `404` routing
+  /// throws — those become responses above it — and a browser would receive an
+  /// unreadable, opaque error instead of the real status. It also never sees a
+  /// preflight, which by specification carries no credentials and so is rejected
+  /// by the authenticator first.
+  void useOuter(omnyhub.Middleware middleware) {
+    if (_server != null) {
+      throw StateError('cannot add middleware to a running Hub');
+    }
+    _outerMiddleware.add(middleware);
+  }
+
   final List<_HostedService> _extraServices = [];
   final List<omnyhub.Middleware> _extraMiddleware = [];
+  final List<omnyhub.Middleware> _outerMiddleware = [];
 
   /// Binds the WSS endpoint and begins accepting connections.
   Future<void> start() async {
@@ -126,6 +143,7 @@ class OmnyServerHub {
         ),
       ],
       middleware: _extraMiddleware,
+      outerMiddleware: _outerMiddleware,
       // Drives the certificate re-check when the TLS material comes from a
       // directory: on renewal omnyhub rebinds the listener gap-free, so
       // established connections drain on the old certificate while new ones land

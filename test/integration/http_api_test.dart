@@ -38,12 +38,17 @@ void main() {
     await cluster.dispose();
   });
 
-  Future<(int, dynamic)> get(String path, {String? token}) async {
+  Future<(int, dynamic)> get(
+    String path, {
+    String? token,
+    String? principal,
+  }) async {
     final client = HttpClient();
     final req = await client.getUrl(
       Uri.parse('http://127.0.0.1:${api.boundPort}$path'),
     );
     if (token != null) req.headers.set('authorization', 'Bearer $token');
+    if (principal != null) req.headers.set('x-omny-principal', principal);
     final res = await req.close();
     final body = await res.transform(utf8.decoder).join();
     client.close();
@@ -106,6 +111,110 @@ void main() {
     expect(status, 200);
     expect((body as Map)['openapi'], startsWith('3.'));
     expect(body['paths'], contains('/nodes'));
+  });
+
+  group('GET /api/v1/whoami', () {
+    test('reports the identity and roles the Hub resolved', () async {
+      // The dashboard cannot answer either question for itself: it cannot tell a
+      // valid token from an invalid one until the first real call fails, and it
+      // cannot know which actions its roles permit.
+      final (status, body) = await get(
+        '/api/v1/whoami',
+        principal: 'alice',
+        token: 'admin-token',
+      );
+
+      expect(status, 200);
+      expect((body as Map)['principal'], 'alice');
+      expect(body['roles'], ['admin']);
+      expect(body['authenticated'], isTrue);
+    });
+
+    test('the master API token has no identity of its own', () async {
+      final (status, body) = await get('/api/v1/whoami', token: 'api-secret');
+
+      expect(status, 200);
+      expect((body as Map)['principal'], 'api');
+      expect(body['roles'], ['admin']);
+    });
+
+    test('a bad token is rejected here too', () async {
+      final (status, _) = await get('/api/v1/whoami', token: 'nope');
+      expect(status, 401);
+    });
+  });
+
+  // A grant is the credential a node already uses; these say what it means when
+  // an *operator* presents one to the HTTP API. The Hub resolves the principal
+  // from the grant rather than believing the header, so the identity in the
+  // audit trail is one it verified.
+  group('grant credentials', () {
+    test("an operator's grant authenticates without the API token", () async {
+      await cluster.startNode(id: 'worker-04');
+      final (status, body) = await get(
+        '/api/v1/nodes/worker-04',
+        principal: 'alice',
+        token: 'admin-token',
+      );
+      expect(status, 200);
+      expect((body as Map)['nodeId'], 'worker-04');
+    });
+
+    test("a node's grant authenticates but may not drive the API", () async {
+      // node-account holds `node`, and the authorizer's fail-closed default
+      // reserves the API for `admin` — so a leaked node token stays useless.
+      final (status, body) = await get(
+        '/api/v1/nodes',
+        principal: 'node-account',
+        token: 'node-token',
+      );
+      expect(status, 403);
+      expect((body as Map)['error']['code'], 'forbidden');
+    });
+
+    test('a token presented for the wrong principal is rejected', () async {
+      final (status, body) = await get(
+        '/api/v1/nodes',
+        principal: 'mallory',
+        token: 'admin-token',
+      );
+      expect(status, 401);
+      expect((body as Map)['error']['code'], 'unauthorized');
+    });
+
+    test('an unknown token is rejected even with a known principal', () async {
+      final (status, _) = await get(
+        '/api/v1/nodes',
+        principal: 'alice',
+        token: 'not-a-token',
+      );
+      expect(status, 401);
+    });
+
+    test('the audit trail records the principal the Hub verified', () async {
+      await cluster.startNode(id: 'worker-05');
+      final client = HttpClient();
+      final req = await client.postUrl(
+        Uri.parse(
+          'http://127.0.0.1:${api.boundPort}/api/v1/nodes/worker-05/restart',
+        ),
+      );
+      req.headers.set('authorization', 'Bearer admin-token');
+      req.headers.set('x-omny-principal', 'alice');
+      expect((await req.close()).statusCode, 200);
+      client.close();
+
+      final (status, body) = await get(
+        '/api/v1/audit',
+        principal: 'alice',
+        token: 'admin-token',
+      );
+      expect(status, 200);
+      final restart = (body as List).cast<Map>().firstWhere(
+        (e) => e['action'] == 'node.restart',
+      );
+      expect(restart['principal'], 'alice');
+    });
   });
 }
 

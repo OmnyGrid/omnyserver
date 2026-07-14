@@ -1,10 +1,17 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
+
+import 'api_transport.dart';
+// The VM sends with `HttpClient`, the browser with `fetch`. Selected at compile
+// time so this library — and everything that imports it — stays free of
+// `dart:io` in a web build, which dart2js requires absolutely: it emits *no
+// output at all* for an entrypoint that reaches an unsupported SDK library.
+import 'api_transport_io.dart'
+    if (dart.library.js_interop) 'api_transport_web.dart';
 
 /// A thin REST client for the Hub HTTP API, used by the CLI's operational
-/// commands so the CLI exercises exactly the same public API surface as any
-/// other client.
+/// commands — and by the web dashboard — so both exercise exactly the same
+/// public API surface as any other client.
 class HubApiClient {
   /// The API base URL (e.g. `https://hub.example.com:8443`).
   ///
@@ -15,24 +22,28 @@ class HubApiClient {
   /// Optional bearer token.
   final String? token;
 
-  final HttpClient _client;
+  /// Optional principal the [token] was granted to.
+  ///
+  /// Sent as `x-omny-principal`. With a Hub grant (`--grant alice:tok:admin`)
+  /// this is half the credential — the Hub verifies the pair and takes the
+  /// caller's roles from the grant. With the Hub's static API token it only
+  /// attributes the request in the audit trail.
+  final String? principal;
+
+  final ApiTransport _transport;
 
   /// Creates a client for [baseUrl].
   ///
-  /// [securityContext] supplies the trust roots — pass one trusting the Hub's CA
-  /// when it serves a private or self-signed certificate.
-  /// [allowBadCertificate] skips verification entirely; it is for a dev Hub
-  /// only, and never for one reachable off the host.
+  /// [transport] defaults to the platform's own: `HttpClient` on the VM, `fetch`
+  /// in a browser. Inject one to reach a Hub over TLS with a private CA
+  /// (`IoApiTransport(securityContext: …)`, VM only), or to drive the client
+  /// against a fake Hub in tests.
   HubApiClient(
     this.baseUrl, {
     this.token,
-    SecurityContext? securityContext,
-    bool allowBadCertificate = false,
-  }) : _client = HttpClient(context: securityContext) {
-    if (allowBadCertificate) {
-      _client.badCertificateCallback = (_, _, _) => true;
-    }
-  }
+    this.principal,
+    ApiTransport? transport,
+  }) : _transport = transport ?? defaultApiTransport();
 
   /// GET `/api/v1[path]`, decoding the JSON body.
   Future<dynamic> get(String path) => _send('GET', path);
@@ -43,33 +54,44 @@ class HubApiClient {
 
   /// GET a raw text endpoint (e.g. `/metrics`) outside the versioned API.
   Future<String> getText(String absolutePath) async {
-    final req = await _client.getUrl(baseUrl.replace(path: absolutePath));
-    final res = await req.close();
-    return res.transform(utf8.decoder).join();
+    final response = await _transport.send(
+      'GET',
+      baseUrl.replace(path: absolutePath),
+      headers: _headers(),
+    );
+    return response.body;
   }
 
   Future<dynamic> _send(String method, String path, [Object? body]) async {
     final uri = baseUrl.replace(path: '/api/v1$path');
-    final req = await _client.openUrl(method, uri);
-    if (token != null) req.headers.set('authorization', 'Bearer $token');
-    if (body != null) {
-      req.headers.contentType = ContentType.json;
-      req.write(jsonEncode(body));
-    }
-    final res = await req.close();
-    final text = await res.transform(utf8.decoder).join();
+    final response = await _transport.send(
+      method,
+      uri,
+      headers: {
+        ..._headers(),
+        if (body != null) 'content-type': 'application/json; charset=utf-8',
+      },
+      body: body == null ? null : jsonEncode(body),
+    );
+
+    final text = response.body;
     final decoded = text.isEmpty ? null : jsonDecode(text);
-    if (res.statusCode >= 400) {
+    if (response.statusCode >= 400) {
       final message = decoded is Map && decoded['error'] is Map
           ? decoded['error']['message']
-          : 'HTTP ${res.statusCode}';
-      throw HubApiException('$message', res.statusCode);
+          : 'HTTP ${response.statusCode}';
+      throw HubApiException('$message', response.statusCode);
     }
     return decoded;
   }
 
-  /// Releases the underlying client.
-  void close() => _client.close(force: true);
+  Map<String, String> _headers() => {
+    if (token != null) 'authorization': 'Bearer $token',
+    'x-omny-principal': ?principal,
+  };
+
+  /// Releases the underlying transport.
+  void close() => _transport.close();
 }
 
 /// Thrown when a Hub API request fails.

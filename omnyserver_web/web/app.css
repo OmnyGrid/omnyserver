@@ -1,0 +1,52 @@
+/* Dashboard-specific styling, layered over the shared `kit.css`.
+ *
+ * Everything generic — tokens, buttons, cards, modals, toasts, the terminal
+ * chrome — comes from omnyshell_web, so the two apps read as one product. Only
+ * what is peculiar to a fleet view lives here. */
+
+/* The fleet list: a node row is a click target, so make that legible. */
+.list-item {
+  cursor: pointer;
+  transition: border-color 120ms ease;
+}
+.list-item:hover {
+  border-color: var(--border-strong);
+}
+
+/* Fact rows (platform, memory, disks): a fixed label column so the values line
+   up into a scannable column instead of ragged text. */
+.stack > .row > .muted:first-child {
+  min-width: 120px;
+  flex: 0 0 auto;
+}
+
+/* Long values (a UID, a kernel string) truncate rather than widening the card. */
+.ellipsis {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The process table is dense, numeric, and read by eye — monospace keeps the
+   columns aligned without a real <table>. */
+.mono {
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+}
+
+/* Login sits centred rather than top-aligned like the other screens. */
+.center-host {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 70vh;
+  padding: 24px;
+}
+.center-host .card {
+  width: 100%;
+  max-width: 420px;
+}
+.pad-lg {
+  padding: 32px;
+}

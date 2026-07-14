@@ -9,6 +9,7 @@ import 'package:omnyshell/omnyshell_node.dart' as omnyshell;
 import '../../omnyserver_hub.dart';
 import '../../omnyserver_node.dart';
 import 'api_client.dart';
+import 'api_transport_io.dart';
 
 /// A user-facing CLI error (printed without a stack trace).
 class CliError implements Exception {
@@ -41,6 +42,7 @@ CommandRunner<void> buildRunner() {
         ..addCommand(NodesCommand())
         ..addCommand(PresetCommand())
         ..addCommand(FormulaCommand())
+        ..addCommand(WhoamiCommand())
         ..addCommand(CertCommand());
   return runner;
 }
@@ -78,7 +80,18 @@ void _addApiOptions(ArgParser parser) {
       help: 'Hub HTTP API base URL (shares the Hub port).',
       defaultsTo: 'https://127.0.0.1:8443',
     )
-    ..addOption('token', help: 'Bearer token for the Hub HTTP API.')
+    ..addOption(
+      'token',
+      help:
+          "Bearer token for the Hub HTTP API: the Hub's --api-token, or a "
+          'token granted to --principal.',
+    )
+    ..addOption(
+      'principal',
+      help:
+          'Principal the --token was granted to (--grant principal:token:roles). '
+          'The Hub verifies the pair and takes your roles from the grant.',
+    )
     ..addOption('ca', help: "CA certificate (PEM) trusting the Hub's cert.")
     ..addFlag(
       'insecure',
@@ -92,10 +105,16 @@ HubApiClient _apiClientFrom(ArgResults args) {
   return HubApiClient(
     Uri.parse(args['api'] as String),
     token: args['token'] as String?,
-    securityContext: ca == null
-        ? null
-        : (SecurityContext(withTrustedRoots: true)..setTrustedCertificates(ca)),
-    allowBadCertificate: args['insecure'] as bool,
+    principal: args['principal'] as String?,
+    // TLS is a property of the transport, not of the API: a browser cannot be
+    // handed a SecurityContext, so those knobs live on the VM transport.
+    transport: IoApiTransport(
+      securityContext: ca == null
+          ? null
+          : (SecurityContext(withTrustedRoots: true)
+              ..setTrustedCertificates(ca)),
+      allowBadCertificate: args['insecure'] as bool,
+    ),
   );
 }
 
@@ -159,6 +178,13 @@ class HubStartCommand extends Command<void> {
       ..addMultiOption(
         'grant',
         help: 'Token grant "principal:token:role1,role2" (repeatable).',
+      )
+      ..addMultiOption(
+        'cors-origin',
+        help:
+            'Browser origin allowed to call the HTTP API, e.g. '
+            'https://dashboard.example.com (repeatable). Required for a web '
+            'dashboard — a browser is always a different origin than the Hub.',
       );
   }
 
@@ -194,6 +220,7 @@ class HubStartCommand extends Command<void> {
         securityContext: context,
         tlsDirectory: tlsDir,
         authenticator: TokenAuthenticator(grants),
+        corsOrigins: args['cors-origin'] as List<String>,
         logger: stdout.writeln,
       ),
     );
@@ -222,6 +249,12 @@ class HubStartCommand extends Command<void> {
       events: events,
       metrics: metrics,
     );
+    // CORS goes on the *outermost* layer: a browser must be able to read a 401
+    // or a 404 (they are rendered above ordinary middleware, which would
+    // therefore never stamp them), and a preflight arrives with no credentials
+    // and must be answered before the authenticator rejects it.
+    final corsMiddleware = api.corsMiddleware();
+    if (corsMiddleware != null) hub.useOuter(corsMiddleware);
     for (final middleware in api.buildMiddleware()) {
       hub.use(middleware);
     }
@@ -697,6 +730,43 @@ class FormulaRunCommand extends Command<void> {
           'version': argResults!['formula-version'],
       });
       stdout.writeln(const JsonEncoder.withIndent('  ').convert(result));
+    } finally {
+      client.close();
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// whoami
+// ---------------------------------------------------------------------------
+
+/// `omnyserver whoami`
+class WhoamiCommand extends Command<void> {
+  /// Creates the whoami command.
+  WhoamiCommand() {
+    _addApiOptions(argParser);
+  }
+
+  @override
+  String get name => 'whoami';
+
+  @override
+  String get description =>
+      'Show the identity and roles the Hub resolves your credentials to.';
+
+  @override
+  Future<void> run() async {
+    final client = _apiClientFrom(argResults!);
+    try {
+      final me = await client.get('/whoami') as Map;
+      final roles = (me['roles'] as List).cast<String>();
+      stdout.writeln('principal: ${me['principal']}');
+      stdout.writeln(
+        'roles:     ${roles.isEmpty ? '(none)' : roles.join(', ')}',
+      );
+      if (me['authenticated'] != true) {
+        stdout.writeln('note:      the API is not gated (no --api-token).');
+      }
     } finally {
       client.close();
     }

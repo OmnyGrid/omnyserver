@@ -57,6 +57,17 @@ class HubConfig {
   /// same port and certificate as everything else. See `ShellHub`.
   final String shellMount;
 
+  /// Browser origins allowed to call the HTTP API (e.g.
+  /// `https://dashboard.example.com`), or empty for none.
+  ///
+  /// A browser refuses to hand a page the response to a cross-origin request
+  /// unless the server says that origin may have it — and a web dashboard is
+  /// *always* a different origin from the Hub, even in development (`webdev` on
+  /// `:8080`, Hub on `:8443`). So without this, the dashboard sees only network
+  /// errors. Empty by default: a Hub with no browser client stays exactly as it
+  /// was, and no origin is trusted by accident.
+  final List<String> corsOrigins;
+
   /// How often nodes should heartbeat. Advertised to each node at registration.
   final Duration heartbeatInterval;
 
@@ -101,6 +112,7 @@ class HubConfig {
     Authorizer? authorizer,
     this.nodeMount = '/node',
     this.shellMount = '/shell',
+    this.corsOrigins = const [],
     this.heartbeatInterval = const Duration(seconds: 15),
     this.heartbeatTimeout = const Duration(seconds: 45),
     this.requestTimeout = const Duration(seconds: 30),

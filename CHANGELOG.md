@@ -1,3 +1,101 @@
+## 0.6.0
+
+The Hub becomes callable from a browser. This is the foundation for the
+OmnyServer Web dashboard: the same `HubApiClient` the CLI drives the Hub with now
+compiles to JavaScript and runs on a page.
+
+```sh
+omnyserver hub start --cert certs/server.crt --key certs/server.key \
+                     --api-token api-secret --grant alice:admin-token:admin \
+                     --cors-origin https://dashboard.example.com
+omnyserver whoami --api https://hub:8443 --principal alice --token admin-token
+```
+
+### Added
+
+- **`lib/omnyserver_client_web.dart`** — a browser-safe barrel: the REST client
+  plus the entities it decodes (`NodeDescriptor`, `NodeStatus`, `OmnyEvent`,
+  `AuditEntry`, …). A web app imports this and gets the *same* `fromJson` the Hub
+  encodes with, so there is no second, drifting copy of the wire format.
+
+  `test/unit/web_barrel_dart_io_free_test.dart` walks the barrel's import graph
+  and fails if `dart:io` reappears anywhere in it. That is not fussiness:
+  `dart2js` emits **no output at all** for an entrypoint that reaches an
+  unsupported SDK library, so the build appears to succeed and the page is simply
+  blank.
+
+- **An HTTP transport seam.** `HubApiClient` now takes an `ApiTransport`:
+  `IoApiTransport` (`dart:io`'s `HttpClient`) on the VM, `FetchApiTransport`
+  (`fetch`) in a browser, or a fake in a test. TLS options moved onto the VM
+  transport, where they belong — a browser owns its own TLS stack and cannot be
+  handed a `SecurityContext` or told to accept a bad certificate.
+
+- **`hub start --cors-origin <origin>`** (repeatable) and `HubConfig.corsOrigins`.
+  A web dashboard is *always* a different origin from the Hub — in production and
+  in development alike (`webdev` on `:8080`, Hub on `:8443`) — so without this the
+  browser blocks every response and the app sees only network errors. Empty by
+  default: a Hub with no browser client is unchanged, and no origin is trusted by
+  accident.
+
+  It is installed with `OmnyServerHub.useOuter` (new), *outside* the error mapper
+  and authentication. Both matter. A `401`, `404` or `500` is rendered above
+  ordinary middleware, so CORS mounted there could never stamp one — and a
+  response a browser is not allowed to read arrives as an opaque network error,
+  not as "your token is wrong". And a preflight carries no credentials by
+  specification, so an authenticator that saw it first would reject it and no call
+  would ever succeed.
+
+- **`GET /api/v1/whoami`** and **`omnyserver whoami`** → `{principal, roles,
+  authenticated}`. A client cannot answer either question for itself: it cannot
+  tell a valid token from an invalid one until the first real call fails, long
+  after the login form is gone, and it cannot know which roles it holds, so it
+  would have to offer every action and let the Hub refuse half of them.
+
+### Fixed
+
+- `POST /nodes/{id}/formula` was missing from the OpenAPI document, so a client
+  generated from it would silently lack the ability to run formulas.
+
+---
+
+## 0.5.0
+
+Operators get an identity. The CLI's API commands now take `--principal`
+alongside `--token`, presenting a Hub **grant** — the credential nodes already
+use — instead of the Hub-wide master API token.
+
+```sh
+# hub start … --grant alice:admin-token:admin
+omnyserver node status worker-01 --api https://hub:8443 \
+                                 --principal alice --token admin-token
+```
+
+### Added
+
+- `--principal` on every CLI command that calls the Hub API (`node status`,
+  `node restart`, `nodes list`, `formula run`, `preset apply`). Paired with
+  `--token`, it is verified against the same grant store the node control channel
+  authenticates against: the principal and its roles come from the grant, not
+  from the caller. `HubApiClient` sends the pair as `x-omny-principal` plus the
+  bearer token.
+- `api.access`, the action a grant must be authorized for to use the HTTP API.
+  `RoleBasedAuthorizer` leaves it unmapped and so fail-closed on `admin`, which
+  is what stops a node's own grant (role `node`) from operating the fleet through
+  the API it can authenticate to — it gets a `403`.
+
+### Changed
+
+- The API's audit trail records the principal the Hub **verified** rather than
+  the one the caller asserted in `x-omny-principal`. With the master API token
+  the header still stands in as attribution (that token is already `admin`, so
+  there is nothing to escalate); with a grant it is ignored in favour of the
+  authenticated identity.
+- The master API token is compared in constant time, as grant tokens already
+  were.
+
+Existing setups are unaffected: `--token api-secret` alone behaves exactly as
+before, and an API with no `--api-token` stays open.
+
 ## 0.4.0
 
 Certificates that renew themselves. The Hub can now take its TLS material from a

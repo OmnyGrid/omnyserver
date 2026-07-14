@@ -5,6 +5,45 @@ import 'package:omnyserver/omnyserver_hub.dart';
 import 'package:test/test.dart';
 
 void main() {
+  group('OmnyEvent JSON', () {
+    final at = DateTime.utc(2026, 7, 13, 12, 30);
+
+    // The Hub encodes these on /events; a client — the dashboard, or anything
+    // reading the stream — has to be able to decode them back.
+    test('every event type survives a round trip', () {
+      final events = <OmnyEvent>[
+        NodeConnected(NodeId('worker-01'), at),
+        NodeDisconnected(NodeId('worker-01'), at, reason: 'socket closed'),
+        HeartbeatReceived(NodeId('worker-01'), 7, at),
+        FormulaStarted(NodeId('worker-01'), 'docker', 'install', at),
+        FormulaFinished(NodeId('worker-01'), 'docker', 'install', true, at),
+        PresetApplied(NodeId('worker-01'), 'docker-host', false, at),
+        NodeUpdated(NodeId('worker-01'), 'agent', at),
+      ];
+
+      for (final event in events) {
+        final decoded = OmnyEvent.fromJson(event.toJson());
+        expect(decoded.runtimeType, event.runtimeType);
+        expect(decoded.type, event.type);
+        expect(decoded.at, event.at);
+        expect(decoded.toJson(), event.toJson());
+      }
+    });
+
+    test('an unknown type is rejected, not silently dropped', () {
+      // A client that quietly ignores what it does not understand is how a fleet
+      // view goes stale after the Hub learns a new event.
+      expect(
+        () => OmnyEvent.fromJson({
+          'type': 'node.teleported',
+          'at': at.toIso8601String(),
+          'nodeId': 'worker-01',
+        }),
+        throwsA(isA<ProtocolException>()),
+      );
+    });
+  });
+
   group('EventAggregator', () {
     test('records recent events and per-type counts', () async {
       final bus = BroadcastEventBus();

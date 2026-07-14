@@ -73,6 +73,7 @@ class TestCluster {
     NodeRepository? nodeRepository,
     AuditRepository? auditRepository,
     MetricRepository? metricRepository,
+    List<String> corsOrigins = const [],
   }) async {
     final grants =
         tokens ??
@@ -92,6 +93,7 @@ class TestCluster {
         port: 0,
         securityContext: await TestCerts.serverContext(),
         authenticator: TokenAuthenticator(grants),
+        corsOrigins: corsOrigins,
         heartbeatInterval: heartbeatInterval,
         heartbeatTimeout: heartbeatTimeout,
         clock: clock ?? const SystemClock(),

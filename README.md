@@ -231,6 +231,65 @@ omnyserver preset apply docker-host.json worker-01 --api https://hub:8443 --ca c
 The CLI's operational commands call the Hub's HTTP API — exactly the surface any
 other client uses.
 
+Every one of them takes either credential the Hub knows:
+
+```sh
+# The Hub's master API token — one shared secret, audited as "api".
+omnyserver node status worker-01 --api https://hub:8443 --token api-secret
+
+# Your own grant (--grant alice:admin-token:admin) — an identity the Hub
+# verifies, so the audit trail names you and your roles decide what you may do.
+omnyserver node status worker-01 --api https://hub:8443 \
+                                 --principal alice --token admin-token
+```
+
+A grant's roles are checked against the Hub's `Authorizer` before it may touch
+the API at all, and the fail-closed default reserves it for `admin` — so
+`node-account`'s token connects nodes and nothing more, even if it leaks.
+
+`omnyserver whoami` answers what the Hub makes of your credentials:
+
+```sh
+omnyserver whoami --api https://hub:8443 --principal alice --token admin-token
+# principal: alice
+# roles:     admin
+```
+
+### From a browser
+
+The Hub's API is callable from a web app — that is what `omnyserver_web`, the
+dashboard, is built on. Two things are needed, and both are needed:
+
+```sh
+omnyserver hub start --cert certs/server.crt --key certs/server.key \
+                     --api-token api-secret --grant alice:admin-token:admin \
+                     --cors-origin https://dashboard.example.com
+```
+
+- **`--cors-origin`** — a browser will not hand a page a cross-origin response
+  unless the server says that origin may have it, and a dashboard is *always* a
+  different origin than the Hub (in development too: `webdev` on `:8080`, Hub on
+  `:8443`). Without it the app sees network errors and nothing else.
+- **A publicly-trusted certificate**, or one trusted at the OS/browser level. The
+  browser owns the TLS stack; there is no in-page `--insecure` to offer, and a
+  self-signed Hub simply will not load.
+
+Client code imports the browser-safe barrel, and drives the very same
+`HubApiClient` the CLI does:
+
+```dart
+import 'package:omnyserver/omnyserver_client_web.dart';
+
+final client = HubApiClient(
+  Uri.parse('https://hub.example.com:8443'),
+  principal: 'alice',
+  token: 'admin-token',
+);
+final nodes = (await client.get('/nodes') as List)
+    .map((n) => NodeDescriptor.fromJson((n as Map).cast()))
+    .toList();
+```
+
 ### HTTP API
 
 Served over HTTPS on the Hub's own port, alongside the node control channel —

@@ -19,6 +19,24 @@ challenge nonce and resolve a `Principal`:
   A single-use nonce makes a captured signature non-replayable.
 - **CompositeAuthenticator** — tries several authenticators in order.
 
+### The HTTP API
+
+`--api-token` gates `/api/v1` (without it the API is open, so it is for a
+loopback-only Hub). Two credentials are accepted on it:
+
+- **The API token** — a Hub-wide master key with no identity of its own. It
+  always grants `admin`; the optional `x-omny-principal` header only names the
+  caller in the audit trail, which costs nothing, as holding the master key
+  already implies full access.
+- **A grant** — `x-omny-principal: alice` plus the token from
+  `--grant alice:admin-token:admin`, verified by the *same* `TokenAuthenticator`
+  the node channel uses. Principal and roles come from the grant, never from the
+  caller, so the identity in the audit trail is one the Hub established. The CLI
+  sends this pair as `--principal` / `--token`.
+
+Prefer grants: they are per-operator (revoking one is dropping one `--grant`),
+they carry roles, and they cannot be forged by a caller who merely knows a name.
+
 ## Authorization
 
 `RoleBasedAuthorizer` decides whether a `Principal` may perform an action
@@ -26,6 +44,12 @@ challenge nonce and resolve a `Principal`:
 `admin` role is allowed everything; otherwise an action must be explicitly
 mapped to a role. This is the designed seam for future RBAC / multi-tenant
 rules.
+
+Reaching the HTTP API with a grant is itself an authorized action, `api.access`.
+Unmapped by default, it therefore requires `admin` — which is what keeps a node's
+credential (`node-account`, holding only `node`) from operating the fleet through
+the API it authenticates to. A deployment that wants a read-only operator role
+maps `api.access` to it.
 
 ## Identity
 

@@ -1,5 +1,7 @@
 import 'package:meta/meta.dart';
 
+import '../../shared/errors/omnyserver_exception.dart';
+import '../../shared/json/json_codec_helpers.dart';
 import '../value_objects/node_id.dart';
 
 /// Base type for every event emitted on the Hub's [EventBus].
@@ -23,6 +25,61 @@ sealed class OmnyEvent {
     'at': at.toUtc().toIso8601String(),
     ...payload(),
   };
+
+  /// Decodes the JSON form produced by [toJson].
+  ///
+  /// The counterpart the Hub's `/events` endpoint needs on the other side: it
+  /// encodes these, so a client — the web dashboard, or anything reading the
+  /// stream — must be able to decode them back into the sealed hierarchy rather
+  /// than picking at raw maps.
+  ///
+  /// An unrecognised `type` throws rather than being dropped: a client silently
+  /// ignoring events it does not understand is how a fleet view quietly goes
+  /// stale after the Hub learns a new one.
+  factory OmnyEvent.fromJson(Map<String, dynamic> json) {
+    final type = Json.requireString(json, 'type');
+    final at = Json.requireTimestamp(json, 'at');
+    NodeId node() => NodeId(Json.requireString(json, 'nodeId'));
+
+    return switch (type) {
+      'node.connected' => NodeConnected(node(), at),
+      'node.disconnected' => NodeDisconnected(
+        node(),
+        at,
+        reason: Json.optString(json, 'reason'),
+      ),
+      'heartbeat.received' => HeartbeatReceived(
+        node(),
+        Json.requireInt(json, 'sequence'),
+        at,
+      ),
+      'formula.started' => FormulaStarted(
+        node(),
+        Json.requireString(json, 'formula'),
+        Json.requireString(json, 'action'),
+        at,
+      ),
+      'formula.finished' => FormulaFinished(
+        node(),
+        Json.requireString(json, 'formula'),
+        Json.requireString(json, 'action'),
+        Json.optBool(json, 'success'),
+        at,
+      ),
+      'preset.applied' => PresetApplied(
+        node(),
+        Json.requireString(json, 'preset'),
+        Json.optBool(json, 'success'),
+        at,
+      ),
+      'node.updated' => NodeUpdated(
+        node(),
+        Json.requireString(json, 'target'),
+        at,
+      ),
+      _ => throw ProtocolException('unknown event type "$type"'),
+    };
+  }
 
   /// Event-specific payload fields.
   @protected
