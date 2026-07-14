@@ -77,9 +77,54 @@ node's grant (`node-account`, role `node`) is refused by the API outright: the
 
 ## 5. Run Hub/agent as an OS service
 
-`ServiceController` wraps `dart_service_manager` to install OmnyServer under
-systemd / launchd / Windows Service Manager (install, start, stop, restart,
-uninstall, auto-start).
+Install the Hub or an agent as a native service — systemd on Linux, launchd on
+macOS, the Task Scheduler on Windows — so it starts at boot and is restarted if
+it dies. `service install` takes the same flags as `hub start` / `node start` and
+bakes this executable plus those flags into the service definition; there is no
+separate daemon and no config file.
+
+```sh
+sudo omnyserver service install hub --system \
+  --tls-dir /etc/letsencrypt/live/hub.example.com \
+  --api-token "$API_TOKEN" \
+  --grant node-account:node-token:node \
+  --cors-origin https://dashboard.example.com
+
+omnyserver service status hub          # running
+omnyserver service info   hub          # the parameters, and the command the OS runs
+```
+
+The full set: `install`, `reinstall`, `reconfigure`, `uninstall`, `start`,
+`stop`, `restart`, `status`, `info`. Two matter after day one:
+
+- `service reconfigure hub --cors-origin …` re-applies changed flags to the
+  installed service, preserving its running state.
+- `service reinstall hub` refreshes the executable while keeping the config it
+  was installed with — how a fleet picks up a new release.
+
+`--dry-run` prints the generated unit/plist without touching the system.
+
+**Scope.** The default is a user service (no elevation). `--system` installs
+machine-wide and needs root (Linux/macOS) or Administrator (Windows); `install`
+warns if you ask for one and are not the other. A Linux *user* service runs under
+`systemctl --user`, which stops at logout unless lingering is enabled — `install`
+tries to enable it and prints `sudo loginctl enable-linger <user>` if it cannot.
+
+**Data.** `--data-dir` names one root holding everything: credentials and
+identity at the top, the Hub's fleet data (nodes, audit, metrics, desired state,
+issued grants) under `hub/`. It defaults to `/var/lib/omnyserver` under
+`--system` and `~/.omnyserver` otherwise. A service persists by default; pass
+`--ephemeral` for a Hub that keeps nothing.
+
+**Secrets.** Flags become part of the service definition, so `--token`,
+`--api-token` and `--grant` end up in a file readable by the installing user.
+Restrict it, or keep secrets out of the unit — on Linux, `dart_service_manager`
+supports systemd's `EnvironmentFile=`.
+
+> Not to be confused with **remote service control** (`ServiceControl`,
+> `NodeServiceHandler`): that is the Hub telling a node to manage some service
+> *on that machine* — fleet management. This section is about OmnyServer
+> supervising itself.
 
 ## Persistence
 
