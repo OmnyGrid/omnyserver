@@ -6,10 +6,27 @@ import 'dart:io';
 
 import 'package:omnyserver/omnyserver_hub.dart';
 import 'package:omnyserver/omnyserver_node.dart'
-    show FormulaRegistry, NodeFormulaService;
+    show CommandExecutor, ExecResult, FormulaRegistry, NodeFormulaService;
 import 'package:test/test.dart';
 
 import '../support/harness.dart';
+
+/// An executor for which every probe succeeds — the tool is already there.
+///
+/// The preset under test installs Docker. Run against the real
+/// [ProcessCommandExecutor] that is not a figure of speech: the node shells out
+/// to `brew install --cask docker` on macOS, or pipes `get.docker.com` into `sh`
+/// on Linux, on whatever machine happens to be running the suite. It passed on
+/// CI's Linux image only because Docker is preinstalled there, and timed out on
+/// macOS, where it is not.
+class _InstalledExecutor implements CommandExecutor {
+  @override
+  Future<ExecResult> run(
+    String executable,
+    List<String> args, {
+    Map<String, String>? environment,
+  }) async => const ExecResult(exitCode: 0, stdout: 'version 1.2.3');
+}
 
 /// The catalogue: what a node can be asked to do, and what has been saved to ask.
 ///
@@ -125,8 +142,12 @@ void main() {
 
     test('a saved preset is applied by id — no file to ship around', () async {
       // A real preset handler, so the steps actually run: a node without one
-      // accepts the preset and quietly does nothing.
-      final service = NodeFormulaService(registry: FormulaRegistry.standard());
+      // accepts the preset and quietly does nothing. The *executor* is faked,
+      // though — the preset installs Docker, and a registry built on the real
+      // one would run that install on whatever machine the suite is on.
+      final service = NodeFormulaService(
+        registry: FormulaRegistry.standard(executor: _InstalledExecutor()),
+      );
       await cluster.startNode(
         id: 'worker-01',
         presetHandler: service.applyPreset,
