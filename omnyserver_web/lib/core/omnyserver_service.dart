@@ -221,6 +221,34 @@ class OmnyServerService {
     );
   });
 
+  /// The formulas a node can run — what the UI offers instead of a text box.
+  Future<List<FormulaSpec>> formulas() => _guard(
+    () async => ((await client.get('/formulas')) as List)
+        .map((f) => FormulaSpec.fromJson((f as Map).cast<String, dynamic>()))
+        .toList(),
+  );
+
+  /// The presets saved on the Hub.
+  Future<List<Preset>> presets() => _guard(
+    () async => ((await client.get('/presets')) as List)
+        .map((p) => Preset.fromJson((p as Map).cast<String, dynamic>()))
+        .toList(),
+  );
+
+  /// Applies a saved preset, by id, to a node.
+  Future<List<FormulaResult>> applySavedPreset(String id, String presetId) =>
+      _guard(() async {
+        final reply = await client.post('/presets/apply', {
+          'nodeId': id,
+          'presetId': presetId,
+        });
+        return ((reply as Map)['results'] as List)
+            .map(
+              (r) => FormulaResult.fromJson((r as Map).cast<String, dynamic>()),
+            )
+            .toList();
+      });
+
   /// Applies a preset (decoded JSON) to a node.
   Future<List<FormulaResult>> applyPreset(
     String id,
@@ -234,6 +262,88 @@ class OmnyServerService {
         .map((r) => FormulaResult.fromJson((r as Map).cast<String, dynamic>()))
         .toList();
   });
+
+  // --- Desired state -------------------------------------------------------
+
+  /// What a node is declared to be, or `null` if nothing was ever declared.
+  Future<DesiredState?> desiredState(String id) => _guard(() async {
+    try {
+      return DesiredState.fromJson(
+        ((await client.get('/nodes/$id/desired-state')) as Map)
+            .cast<String, dynamic>(),
+      );
+    } on HubApiException catch (e) {
+      // Nothing declared is not an error; it is the normal state of a node
+      // nobody has made a claim about.
+      if (e.statusCode == 404) return null;
+      rethrow;
+    }
+  });
+
+  /// Declares that [id] should be what the saved preset [presetId] describes.
+  ///
+  /// Runs nothing — see [reconcile].
+  Future<void> declare(String id, Map<String, dynamic> preset) =>
+      _guard(() => client.put('/nodes/$id/desired-state', {'preset': preset}));
+
+  /// Stops expecting anything of a node.
+  Future<void> undeclare(String id) =>
+      _guard(() => client.delete('/nodes/$id/desired-state'));
+
+  /// How far a node has drifted, or `null` if nothing was declared for it.
+  Future<Drift?> drift(String id) => _guard(() async {
+    try {
+      final body = (await client.get('/nodes/$id/drift')) as Map;
+      return Drift.fromJson(body.cast<String, dynamic>());
+    } on HubApiException catch (e) {
+      if (e.statusCode == 404) return null;
+      rethrow;
+    }
+  });
+
+  /// Runs whatever the drift plan says is outstanding. Idempotent.
+  Future<List<FormulaResult>> reconcile(String id) => _guard(() async {
+    final reply = (await client.post('/nodes/$id/reconcile')) as Map;
+    return (reply['results'] as List)
+        .map((r) => FormulaResult.fromJson((r as Map).cast<String, dynamic>()))
+        .toList();
+  });
+
+  // --- Credentials ---------------------------------------------------------
+
+  /// Every credential the Hub has issued. Hashes, never tokens.
+  Future<List<Grant>> grants() => _guard(
+    () async => ((await client.get('/grants')) as List)
+        .map((g) => Grant.fromJson((g as Map).cast<String, dynamic>()))
+        .toList(),
+  );
+
+  /// Issues a credential, returning the grant **and its token**.
+  ///
+  /// The token is readable exactly once, here. The Hub keeps a hash and cannot
+  /// show it again — so the UI has to put it in front of the operator now, and
+  /// say so.
+  Future<({Grant grant, String token})> issueGrant({
+    required String principal,
+    required Set<String> roles,
+    String note = '',
+  }) => _guard(() async {
+    final reply =
+        (await client.post('/grants', {
+              'principal': principal,
+              'roles': roles.toList(),
+              'note': note,
+            }))
+            as Map;
+    return (
+      grant: Grant.fromJson(reply.cast<String, dynamic>()),
+      token: reply['token'] as String,
+    );
+  });
+
+  /// Revokes a credential. The next request with its token fails.
+  Future<void> revokeGrant(String id) =>
+      _guard(() => client.delete('/grants/$id'));
 
   /// Runs [action], translating any failure into an [AppError].
   Future<T> _guard<T>(Future<T> Function() action) async {

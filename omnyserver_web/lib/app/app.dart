@@ -6,6 +6,7 @@ import 'package:web/web.dart' as web;
 
 import '../state/auth_controller.dart';
 import '../ui/screens/activity_screen.dart';
+import '../ui/screens/grants_screen.dart';
 import '../ui/screens/login_screen.dart';
 import '../ui/screens/node_detail_screen.dart';
 import '../ui/screens/nodes_screen.dart';
@@ -92,6 +93,18 @@ class App {
         ),
       );
 
+    // Issuing and revoking credentials is admin-only at the Hub, so offering it
+    // to anyone else would be an invitation to a 403.
+    if (snapshot.identity?.roles.contains('admin') ?? false) {
+      _nav.appendChild(
+        button(
+          'Credentials',
+          className: 'btn-sm',
+          onClick: () => ctx.router.go(Routes.grants),
+        ),
+      );
+    }
+
     final identity = snapshot.identity;
     _identity.appendChild(
       textNode(
@@ -138,6 +151,7 @@ class App {
       Routes.node => NodeDetailScreen(ctx, route.params['id']!),
       Routes.shell => ShellScreen(ctx, route.params['id']!),
       Routes.activity => ActivityScreen(ctx),
+      Routes.grants => GrantsScreen(ctx),
       _ => null,
     };
   }

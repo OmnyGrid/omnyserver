@@ -31,6 +31,7 @@ import '../../domain/entities/preset.dart';
 import '../../domain/events/omny_event.dart';
 import '../../domain/formula/formula_action.dart';
 import '../../domain/state/desired_state.dart';
+import '../../domain/state/drift.dart';
 import '../../domain/value_objects/node_id.dart';
 import '../../domain/value_objects/preset_id.dart';
 import '../../domain/value_objects/principal_id.dart';
@@ -603,12 +604,16 @@ class HttpApiServer {
   Future<HubResponse> _getDrift(Map<String, String> params) async {
     final id = _nodeId(params);
     final plan = await hub.drift(id);
-    return jsonOk({
-      'nodeId': id.value,
-      'converged': plan.converged,
-      'actions': [for (final step in plan.actions) step.toJson()],
-      'notes': plan.notes,
-    });
+    // The typed wire form, so a client decodes the same shape the Hub encodes
+    // rather than picking at raw JSON.
+    return jsonOk(
+      Drift(
+        nodeId: id.value,
+        converged: plan.converged,
+        actions: plan.actions,
+        notes: plan.notes,
+      ).toJson(),
+    );
   }
 
   /// Runs whatever the drift plan says is outstanding.

@@ -3,7 +3,7 @@ description: >-
   Browser dashboard for an OmnyServer Hub — see the fleet, watch live node
   status, run formulas and presets, and open a shell on any node. Installable
   PWA, no custom backend.
-version: 0.1.0
+version: 0.2.0
 repository: https://github.com/OmnyGrid/omnyserver
 publish_to: none
 

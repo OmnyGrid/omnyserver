@@ -27,6 +27,15 @@ the two apps read as one product and the hard parts are solved once.
   and hidden entirely if your roles do not permit it.
 - **Activity.** The event feed, and the audit trail showing the principal the Hub
   *verified* rather than one a caller claimed.
+- **Declared state and drift.** What a node is *supposed* to be, whether it still
+  is, and a one-click reconcile. Declaring runs nothing, and the UI says so —
+  confusing "declared" with "applied" is the easiest mistake here.
+- **Run.** Formulas and their actions come from the Hub's catalogue, so the UI
+  offers what a node can actually do instead of a text box to get wrong; presets
+  are applied from the Hub's library by id.
+- **Credentials** (admin only). Issue and revoke tokens without restarting the
+  Hub. A newly issued token is shown in a modal that has to be dismissed, because
+  it is readable exactly once — the Hub keeps a hash and cannot show it again.
 - **Shell.** A real terminal on any node — see below.
 - **Theme and PWA.** Light/dark/system with no flash, installable to a home
   screen.

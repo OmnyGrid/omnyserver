@@ -9,6 +9,7 @@ import '../../app/app_context.dart';
 import '../../state/nodes_controller.dart';
 import '../format.dart';
 import '../sparkline.dart';
+import 'node_operations.dart';
 
 /// One node: what it is, what it is doing, and what you can do to it.
 ///
@@ -83,6 +84,9 @@ class NodeDetailScreen implements Screen {
             _actionsBody,
           ],
         ),
+        // Declared state, drift, and what can be run here — everything the CLI
+        // grew that the dashboard could not reach.
+        NodeOperations(ctx, nodeId).element,
       ],
     );
 

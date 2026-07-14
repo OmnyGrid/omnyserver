@@ -63,6 +63,9 @@ abstract final class Routes {
   /// Events and the audit trail.
   static const String activity = '/activity';
 
+  /// Issued credentials (admin only).
+  static const String grants = '/credentials';
+
   /// Every pattern, most specific first.
-  static const List<String> all = [shell, node, nodes, activity, login];
+  static const List<String> all = [shell, node, nodes, activity, grants, login];
 }

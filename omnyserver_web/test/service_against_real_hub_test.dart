@@ -193,6 +193,77 @@ void main() {
     );
   });
 
+  group('what the dashboard could not reach until now', () {
+    Future<void> signIn() => service
+        .connect(hubUri: baseUrl(), principal: 'alice', token: 'admin-token')
+        .then((_) {});
+
+    test('the formula catalogue decodes, with its actions', () async {
+      await signIn();
+      final formulas = await service.formulas();
+
+      expect([for (final f in formulas) f.id.value], containsAll(['docker']));
+      final docker = formulas.firstWhere((f) => f.id.value == 'docker');
+      // What the UI offers instead of a free-text box.
+      expect(docker.actions, contains(FormulaAction.verify));
+    });
+
+    test('a preset saved on the Hub comes back', () async {
+      await signIn();
+      expect(await service.presets(), isEmpty);
+
+      await hub.savePreset(
+        Preset(
+          id: PresetId('docker-host'),
+          name: 'Docker host',
+          steps: [
+            PresetStep(
+              formula: FormulaId('docker'),
+              action: FormulaAction.install,
+            ),
+          ],
+        ),
+      );
+
+      final presets = await service.presets();
+      expect(presets.single.id.value, 'docker-host');
+      expect(presets.single.steps, hasLength(1));
+    });
+
+    test('a node nobody declared anything about has no drift', () async {
+      await signIn();
+      // Null, not "converged": there is nothing it could have drifted from, and
+      // reporting a clean bill of health would be a lie.
+      expect(await service.drift('worker-01'), isNull);
+      expect(await service.desiredState('worker-01'), isNull);
+    });
+
+    test(
+      'issued credentials round-trip, and the list carries no token',
+      () async {
+        await signIn();
+
+        final issued = await service.issueGrant(
+          principal: 'bob',
+          roles: const {'viewer'},
+          note: 'dashboard',
+        );
+        expect(issued.token, isNotEmpty);
+        expect(issued.grant.principal.value, 'bob');
+
+        final grants = await service.grants();
+        final bob = grants.firstWhere((g) => g.principal.value == 'bob');
+        expect(bob.roles, {'viewer'});
+        expect(bob.note, 'dashboard');
+        // The Hub keeps a hash. There is nothing in the list to steal.
+        expect(bob.tokenHash, isNot(contains(issued.token)));
+
+        await service.revokeGrant(issued.grant.id);
+        expect(await service.grants(), isEmpty);
+      },
+    );
+  });
+
   group('normalizeHubUri', () {
     test('a bare host becomes https on the Hub port', () {
       expect(
