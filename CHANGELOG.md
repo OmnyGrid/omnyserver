@@ -1,3 +1,50 @@
+## 0.8.0
+
+A fleet you can address, and a credential that can only watch it.
+
+```sh
+omnyserver node start --id web-01 --label env=prod --label role=web
+omnyserver nodes list --label env=prod
+omnyserver formula run docker --label env=prod --action verify   # every prod node
+```
+
+### Added
+
+- **Labels, end to end.** `NodeDescriptor` has carried a `labels` map since the
+  beginning and nothing could ever *set* one — `node start` had no flag — so
+  nothing could select on one either. Now `node start --label env=prod`
+  advertises them at registration, and `GET /nodes?label=env=prod&online=true`
+  filters on them server-side. Filtering at the Hub rather than in the client is
+  the difference between asking which machines are the production ones and
+  downloading the whole fleet to find out.
+
+- **Fleet selectors.** `formula run` and `preset apply` took exactly one node.
+  They now take `--label env=prod`, repeated `--node`, or `--all`, and report a
+  result per node with a tally. The fan-out is sequential on purpose: these are
+  fleet-changing operations, and a failure halfway through a hundred machines is
+  far easier to reason about when the ones before it are known to have finished.
+
+  A selector that matches nothing is an **error**, not a silent success —
+  "applied to 0 nodes" reads like it worked, and is exactly how a typo in a label
+  goes unnoticed until somebody wonders why production never changed.
+
+- **A `viewer` role.** `api.access` was fail-closed on `admin`, so every
+  dashboard user was a full operator and there was no way to hand somebody a link
+  that could not also shut a machine down. `viewer` can reach the API and read
+  everything — fleet, live status, history, events, audit — and change nothing;
+  `operator` can also act.
+
+  That required separating two questions the API had been conflating.
+  Authenticating (`api.access`) is not the same as being *allowed to act*, so the
+  mutating routes now consult the Hub's `Authorizer` per action
+  (`node.restart`, `formula.run`, …). Without that second check the role would
+  have been decoration: a viewer could still have restarted a machine.
+
+  Existing deployments are unaffected — `admin` remains the wildcard, the master
+  API token still acts, and a `node` credential still cannot reach the API at all.
+
+---
+
 ## 0.7.0
 
 History, a live stream, and the CLI commands the API always had but the CLI

@@ -15,8 +15,30 @@ class RoleBasedAuthorizer implements Authorizer {
   /// fail-closed default would deny every registration. Granting exactly
   /// `node.register` keeps a node credential useless for anything an operator
   /// does — it can enrol a node and nothing more.
+  /// The default policy.
+  ///
+  /// Three roles, and the difference between them is the point:
+  ///
+  /// * **`node`** may enrol a node and nothing else. A node agent authenticates
+  ///   as an ordinary principal, so without `node.register` the fail-closed
+  ///   default would deny every registration — and granting *only* that keeps a
+  ///   leaked node credential useless for anything an operator does. It cannot
+  ///   even read the API.
+  /// * **`viewer`** may reach the HTTP API (`api.access`) and therefore read it:
+  ///   the fleet, live status, history, events, the audit trail. It can change
+  ///   nothing. This is the credential to hand out with a dashboard link.
+  /// * **`operator`** may also act: restart, shut down, update, run formulas,
+  ///   apply presets.
+  ///
+  /// `admin` remains the wildcard and is allowed everything.
   static const Map<String, Set<String>> defaultActionRoles = {
     'node.register': {'node'},
+    'api.access': {'viewer', 'operator'},
+    'node.restart': {'operator'},
+    'node.shutdown': {'operator'},
+    'node.update': {'operator'},
+    'formula.': {'operator'},
+    'preset.': {'operator'},
   };
 
   /// The role that is permitted to do everything.

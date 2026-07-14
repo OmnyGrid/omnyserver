@@ -31,6 +31,7 @@ import '../../domain/entities/preset.dart';
 import '../../domain/events/omny_event.dart';
 import '../../domain/formula/formula_action.dart';
 import '../../domain/value_objects/node_id.dart';
+import '../../domain/value_objects/principal_id.dart';
 import '../../shared/errors/omnyserver_exception.dart';
 import 'api_errors.dart';
 import 'openapi.dart';
@@ -199,7 +200,7 @@ class HttpApiServer {
   RouterService _apiService() =>
       RouterService(name: apiServiceName, mount: '/api/v1')
         ..get('/api/v1/whoami', (r, p) async => _whoami(r))
-        ..get('/api/v1/nodes', (r, p) async => _listNodes())
+        ..get('/api/v1/nodes', (r, p) async => _listNodes(r))
         ..get('/api/v1/nodes/<id>', (r, p) async => _getNode(p))
         ..get('/api/v1/nodes/<id>/status', (r, p) async => _getStatus(p))
         ..get(
@@ -263,8 +264,41 @@ class HttpApiServer {
     });
   }
 
-  HubResponse _listNodes() =>
-      jsonOk(hub.listNodes().map((n) => n.toJson()).toList());
+  /// The fleet, optionally narrowed.
+  ///
+  /// `?label=env=prod` (repeatable, and every one must match) and `?online=true`.
+  /// Filtering here rather than in the client is the difference between asking
+  /// "which of my machines are the production ones" and downloading the whole
+  /// fleet to find out — and it is what makes a label selector mean the same
+  /// thing to the CLI, the dashboard and a script.
+  HubResponse _listNodes(HubRequest request) {
+    final query = request.uri.queryParametersAll;
+
+    final selectors = <String, String>{};
+    for (final raw in query['label'] ?? const <String>[]) {
+      final i = raw.indexOf('=');
+      if (i <= 0) {
+        return ApiErrors.badRequest('invalid label "$raw" (want key=value)');
+      }
+      selectors[raw.substring(0, i)] = raw.substring(i + 1);
+    }
+
+    final onlineRaw = request.uri.queryParameters['online'];
+    if (onlineRaw != null && onlineRaw != 'true' && onlineRaw != 'false') {
+      return ApiErrors.badRequest('online must be true or false');
+    }
+    final bool? online = onlineRaw == null ? null : onlineRaw == 'true';
+
+    final nodes = hub.listNodes().where((node) {
+      if (online != null && node.online != online) return false;
+      for (final selector in selectors.entries) {
+        if (node.labels[selector.key] != selector.value) return false;
+      }
+      return true;
+    });
+
+    return jsonOk([for (final n in nodes) n.toJson()]);
+  }
 
   HubResponse _getNode(Map<String, String> params) {
     final id = _nodeId(params);
@@ -292,6 +326,7 @@ class HttpApiServer {
     Map<String, String> params,
   ) async {
     final id = _nodeId(params);
+    _authorize(request, 'node.restart', target: id.value);
     await hub.restartNode(id, principal: _principal(request));
     return jsonOk({'status': 'restarting', 'nodeId': id.value});
   }
@@ -301,6 +336,7 @@ class HttpApiServer {
     Map<String, String> params,
   ) async {
     final id = _nodeId(params);
+    _authorize(request, 'node.shutdown', target: id.value);
     await hub.shutdownNode(id, principal: _principal(request));
     return jsonOk({'status': 'shutting_down', 'nodeId': id.value});
   }
@@ -310,6 +346,7 @@ class HttpApiServer {
     Map<String, String> params,
   ) async {
     final id = _nodeId(params);
+    _authorize(request, 'node.update', target: id.value);
     final body = await _readJson(request);
     final target = (body['target'] as String?) ?? 'agent';
     await hub.updateNode(id, target, principal: _principal(request));
@@ -321,6 +358,7 @@ class HttpApiServer {
     Map<String, String> params,
   ) async {
     final id = _nodeId(params);
+    _authorize(request, 'formula.run', target: id.value);
     final body = await _readJson(request);
     final formula = body['formula'];
     if (formula is! String) {
@@ -338,6 +376,7 @@ class HttpApiServer {
   }
 
   Future<HubResponse> _applyPreset(HubRequest request) async {
+    _authorize(request, 'preset.apply');
     final body = await _readJson(request);
     final nodeId = body['nodeId'];
     final presetJson = body['preset'];
@@ -447,6 +486,31 @@ class HttpApiServer {
   Future<HubResponse> _audit() async {
     final recent = await hub.audit.recent();
     return jsonOk(recent.map((e) => e.toJson()).toList());
+  }
+
+  /// Refuses the request unless the caller's roles permit [action].
+  ///
+  /// Authenticating is not the same as being allowed to act. Reaching the API at
+  /// all is `api.access`, which a `viewer` holds — so without a second check here
+  /// a read-only credential could still restart a machine, and the role would be
+  /// decoration. The Hub's own [Authorizer] decides, so a deployment that
+  /// redefines the policy redefines it once.
+  void _authorize(HubRequest request, String action, {String? target}) {
+    final principal = request.principal;
+    // No principal means the API is ungated (no `--api-token`), which is an
+    // explicit choice to trust every caller. Nothing to check.
+    if (principal == null) return;
+
+    final resolved = domain.Principal(
+      id: PrincipalId(principal.id),
+      roles: principal.roles.toSet(),
+    );
+    if (!hub.config.authorizer.authorize(resolved, action, target: target)) {
+      throw ForbiddenException(
+        '${principal.id} may not $action — this credential can read the fleet, '
+        'not change it',
+      );
+    }
   }
 
   /// Who to attribute an operation to in the audit trail.

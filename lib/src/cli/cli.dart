@@ -121,6 +121,90 @@ HubApiClient _apiClientFrom(ArgResults args) {
 }
 
 // ---------------------------------------------------------------------------
+// Fleet selectors: how a command says which nodes it means.
+// ---------------------------------------------------------------------------
+
+/// Adds `--label`, `--node` and `--all` to a command that operates on nodes.
+void _addSelectorOptions(ArgParser parser) {
+  parser
+    ..addMultiOption(
+      'label',
+      help: 'Select nodes by label "key=value" (repeatable; all must match).',
+    )
+    ..addMultiOption('node', help: 'Select a node by id (repeatable).')
+    ..addFlag('all', negatable: false, help: 'Select every registered node.');
+}
+
+/// Resolves the selector into the node ids to act on.
+///
+/// One positional id, `--node`, `--label` or `--all`. A selector that matches
+/// nothing is an error rather than a silent success: "applied to 0 nodes" reads
+/// like it worked, and is how a typo in a label goes unnoticed until someone
+/// wonders why production never changed.
+Future<List<String>> _selectNodes(
+  HubApiClient client,
+  ArgResults args, {
+  List<String> positional = const [],
+}) async {
+  final ids = <String>{...positional, ...args['node'] as List<String>};
+  final labels = args['label'] as List<String>;
+  final all = args['all'] as bool;
+
+  if (ids.isEmpty && labels.isEmpty && !all) {
+    throw CliError(
+      'name a node, or select some: --node <id>, --label key=value, --all',
+    );
+  }
+  // Explicit ids are taken at face value; the Hub will say if one is unknown.
+  if (ids.isNotEmpty && labels.isEmpty && !all) return ids.toList()..sort();
+
+  final query = [
+    for (final label in labels) 'label=${Uri.encodeQueryComponent(label)}',
+  ].join('&');
+  final nodes =
+      (await client.get('/nodes${query.isEmpty ? '' : '?$query'}')) as List;
+  final matched = [
+    for (final n in nodes.cast<Map>()) n['nodeId'] as String,
+    ...ids,
+  ];
+
+  if (matched.isEmpty) {
+    throw CliError(
+      labels.isEmpty
+          ? 'no nodes are registered'
+          : 'no node matches ${labels.join(' ')}',
+    );
+  }
+  return matched.toSet().toList()..sort();
+}
+
+/// Runs [action] against every selected node, printing a result per node.
+///
+/// Sequential on purpose: these are fleet-changing operations, and a failure
+/// halfway through a hundred nodes is far easier to reason about when the ones
+/// before it are known to have finished. Each line is printed as it lands, so a
+/// long run is not a silent wait.
+Future<void> _fanOut(
+  List<String> nodes,
+  Future<String> Function(String nodeId) action,
+) async {
+  var failed = 0;
+  for (final node in nodes) {
+    try {
+      final outcome = await action(node);
+      stdout.writeln('${node.padRight(20)} $outcome');
+    } on HubApiException catch (e) {
+      failed++;
+      stderr.writeln('${node.padRight(20)} failed: ${e.message}');
+    }
+  }
+  if (nodes.length > 1) {
+    stdout.writeln('\n${nodes.length - failed}/${nodes.length} succeeded');
+  }
+  if (failed > 0) exitCode = 1;
+}
+
+// ---------------------------------------------------------------------------
 // hub
 // ---------------------------------------------------------------------------
 
@@ -411,6 +495,13 @@ class NodeStartCommand extends Command<void> {
         help: "Path of the Hub's OmnyShell broker (with --with-shell).",
       )
       ..addMultiOption(
+        'label',
+        help:
+            'Node label "key=value" (repeatable), e.g. env=prod. Labels are how '
+            'a fleet is addressed: they filter `nodes list` and select the '
+            'targets of `formula run` and `preset apply`.',
+      )
+      ..addMultiOption(
         'shell-label',
         help:
             'OmnyShell node label "key=value" (repeatable), e.g. '
@@ -457,6 +548,7 @@ class NodeStartCommand extends Command<void> {
         onBadCertificate: (args['insecure'] as bool)
             ? (cert, host, port) => true
             : null,
+        labels: _parseLabels(args['label'] as List<String>),
         statusProvider: monitor.snapshot,
         capabilityProvider: scanner.scan,
         formulaHandler: formulaService.runFormula,
@@ -828,29 +920,62 @@ class NodesListCommand extends Command<void> {
   /// Creates the nodes-list command.
   NodesListCommand() {
     _addApiOptions(argParser);
+    argParser
+      ..addMultiOption(
+        'label',
+        help: 'Only nodes with this label "key=value" (repeatable).',
+      )
+      ..addFlag(
+        'online',
+        help: 'Only online (or, negated, only offline) nodes.',
+      )
+      ..addFlag(
+        'offline',
+        negatable: false,
+        help: 'Only offline nodes — the ones that want attention.',
+      );
   }
 
   @override
   String get name => 'list';
 
   @override
-  String get description => 'List all registered nodes (via the Hub API).';
+  String get description => 'List registered nodes (via the Hub API).';
 
   @override
   Future<void> run() async {
-    final client = _apiClientFrom(argResults!);
+    final args = argResults!;
+    final query = <String>[
+      for (final label in args['label'] as List<String>)
+        'label=${Uri.encodeQueryComponent(label)}',
+      if (args['offline'] as bool)
+        'online=false'
+      else if (args.wasParsed('online'))
+        'online=${args['online']}',
+    ].join('&');
+
+    final client = _apiClientFrom(args);
     try {
-      final nodes = (await client.get('/nodes') as List).cast<Map>();
+      final nodes =
+          (await client.get('/nodes${query.isEmpty ? '' : '?$query'}') as List)
+              .cast<Map>();
       if (nodes.isEmpty) {
-        stdout.writeln('no nodes registered');
+        stdout.writeln(
+          query.isEmpty ? 'no nodes registered' : 'no node matches',
+        );
         return;
       }
-      stdout.writeln('NODE                 ONLINE  PLATFORM');
+      stdout.writeln('NODE                 ONLINE  PLATFORM   LABELS');
       for (final n in nodes) {
         final id = (n['nodeId'] as String).padRight(20);
         final online = (n['online'] as bool? ?? false) ? 'yes   ' : 'no    ';
-        final platform = (n['platform'] as Map?)?['osName'] ?? '?';
-        stdout.writeln('$id $online  $platform');
+        final platform = '${(n['platform'] as Map?)?['osName'] ?? '?'}'
+            .padRight(10);
+        final labels = (n['labels'] as Map?) ?? const {};
+        final rendered = labels.entries
+            .map((l) => '${l.key}=${l.value}')
+            .join(' ');
+        stdout.writeln('$id $online  $platform $rendered');
       }
     } finally {
       client.close();
@@ -881,30 +1006,52 @@ class PresetApplyCommand extends Command<void> {
   /// Creates the preset-apply command.
   PresetApplyCommand() {
     _addApiOptions(argParser);
+    _addSelectorOptions(argParser);
   }
 
   @override
   String get name => 'apply';
 
   @override
-  String get description => 'Apply a preset (JSON file) to a node.';
+  String get description =>
+      'Apply a preset (JSON file) to one node, or across a selected fleet.';
 
   @override
   Future<void> run() async {
-    final rest = argResults!.rest;
-    if (rest.length < 2) {
-      throw CliError('usage: preset apply <preset.json> <node>');
+    final args = argResults!;
+    final rest = args.rest;
+    if (rest.isEmpty) {
+      throw CliError(
+        'usage: preset apply <preset.json> [<node>] [--label env=prod | --all]',
+      );
     }
-    final file = File(rest[0]);
-    if (!file.existsSync()) throw CliError('preset file not found: ${rest[0]}');
+    final file = File(rest.first);
+    if (!file.existsSync()) {
+      throw CliError('preset file not found: ${rest.first}');
+    }
     final preset = jsonDecode(file.readAsStringSync());
-    final client = _apiClientFrom(argResults!);
+
+    final client = _apiClientFrom(args);
     try {
-      final result = await client.post('/presets/apply', {
-        'nodeId': rest[1],
-        'preset': preset,
+      final nodes = await _selectNodes(
+        client,
+        args,
+        positional: rest.skip(1).toList(),
+      );
+      await _fanOut(nodes, (node) async {
+        final reply =
+            await client.post('/presets/apply', {
+                  'nodeId': node,
+                  'preset': preset,
+                })
+                as Map;
+        final results = (reply['results'] as List).cast<Map>();
+        final failed = results.where((r) => r['success'] != true).length;
+        final changed = results.where((r) => r['changed'] == true).length;
+        return failed == 0
+            ? 'applied ${results.length} steps ($changed changed)'
+            : 'FAILED $failed/${results.length} steps';
       });
-      stdout.writeln(const JsonEncoder.withIndent('  ').convert(result));
     } finally {
       client.close();
     }
@@ -934,6 +1081,7 @@ class FormulaRunCommand extends Command<void> {
   /// Creates the formula-run command.
   FormulaRunCommand() {
     _addApiOptions(argParser);
+    _addSelectorOptions(argParser);
     argParser
       ..addOption('action', defaultsTo: 'verify', help: 'Formula action.')
       ..addOption('formula-version', help: 'Target version.');
@@ -943,23 +1091,46 @@ class FormulaRunCommand extends Command<void> {
   String get name => 'run';
 
   @override
-  String get description => 'Run a formula action on a node (via the Hub API).';
+  String get description =>
+      'Run a formula action on one node, or across a selected fleet.';
 
   @override
   Future<void> run() async {
-    final rest = argResults!.rest;
-    if (rest.length < 2) {
-      throw CliError('usage: formula run <formula> <node> [--action verify]');
+    final args = argResults!;
+    final rest = args.rest;
+    if (rest.isEmpty) {
+      throw CliError(
+        'usage: formula run <formula> [<node>] [--label env=prod | --all] '
+        '[--action verify]',
+      );
     }
-    final client = _apiClientFrom(argResults!);
+    final formula = rest.first;
+    final version = args['formula-version'] as String?;
+    final action = args['action'] as String;
+
+    final client = _apiClientFrom(args);
     try {
-      final result = await client.post('/nodes/${rest[1]}/formula', {
-        'formula': rest[0],
-        'action': argResults!['action'],
-        if (argResults!['formula-version'] != null)
-          'version': argResults!['formula-version'],
+      final nodes = await _selectNodes(
+        client,
+        args,
+        positional: rest.skip(1).toList(),
+      );
+      await _fanOut(nodes, (node) async {
+        final reply = await client.post('/nodes/$node/formula', {
+          'formula': formula,
+          'action': action,
+          'version': ?version,
+        });
+        final result = (reply as Map)['result'] as Map;
+        final ok = result['success'] == true;
+        final changed = result['changed'] == true;
+        final message = '${result['message'] ?? ''}';
+        // The formula's own message is worth showing when it says something the
+        // verdict does not — a failure's reason, or a version. "ok  ok" is not.
+        final detail = (message.isEmpty || message == 'ok') ? '' : '  $message';
+        return '$formula $action: ${ok ? 'ok' : 'FAILED'}'
+            '${changed ? ' (changed)' : ''}$detail';
       });
-      stdout.writeln(const JsonEncoder.withIndent('  ').convert(result));
     } finally {
       client.close();
     }

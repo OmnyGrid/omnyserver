@@ -45,11 +45,25 @@ they carry roles, and they cannot be forged by a caller who merely knows a name.
 mapped to a role. This is the designed seam for future RBAC / multi-tenant
 rules.
 
-Reaching the HTTP API with a grant is itself an authorized action, `api.access`.
-Unmapped by default, it therefore requires `admin` — which is what keeps a node's
-credential (`node-account`, holding only `node`) from operating the fleet through
-the API it authenticates to. A deployment that wants a read-only operator role
-maps `api.access` to it.
+Reaching the HTTP API with a grant is itself an authorized action, `api.access` —
+which is what keeps a node's credential (holding only `node`) from operating the
+fleet through the API it authenticates to. It is refused at the door.
+
+The default policy defines three operator roles, and the distinction between the
+first two is the point:
+
+| Role | `api.access` | Mutations (`node.restart`, `formula.run`, …) |
+|---|---|---|
+| `viewer` | yes | no |
+| `operator` | yes | yes |
+| `admin` | yes (wildcard) | yes (wildcard) |
+| `node` | **no** | no — only `node.register` |
+
+**Authenticating is not the same as being allowed to act.** A `viewer` holds
+`api.access`, so the API cannot treat "you got in" as "you may do this": every
+mutating route consults the `Authorizer` for its own action. Without that second
+check the role would be decoration, and a read-only credential could still shut a
+machine down.
 
 ## Identity
 

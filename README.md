@@ -247,6 +247,35 @@ A grant's roles are checked against the Hub's `Authorizer` before it may touch
 the API at all, and the fail-closed default reserves it for `admin` — so
 `node-account`'s token connects nodes and nothing more, even if it leaks.
 
+### Addressing the fleet
+
+Label a node when it starts, then select on the label:
+
+```sh
+omnyserver node start --id web-01 --label env=prod --label role=web
+omnyserver nodes list  --label env=prod
+omnyserver nodes list  --offline                      # the ones wanting attention
+
+omnyserver formula run docker --label env=prod --action verify   # every prod node
+omnyserver preset apply docker-host.json --all
+```
+
+`formula run` and `preset apply` take one node, `--node` (repeatable), `--label`,
+or `--all`, and report a result per node. A selector matching nothing is an
+error, not a quiet success — "applied to 0 nodes" reads like it worked.
+
+### Roles
+
+| Role | May |
+|---|---|
+| `viewer` | read the API: fleet, live status, history, events, audit |
+| `operator` | also act: restart, shut down, update, formulas, presets |
+| `admin` | everything |
+| `node` | enrol a node — and nothing else; it cannot reach the API at all |
+
+So a read-only dashboard link is a `--grant bob:view-token:viewer`, and a leaked
+node credential still cannot operate the fleet.
+
 Watch the fleet, and read a node's history:
 
 ```sh
