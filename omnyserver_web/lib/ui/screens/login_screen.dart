@@ -115,7 +115,7 @@ class LoginScreen implements Screen {
   /// the login screen, where "not the Hub you connect to" is worth saying.
   web.HTMLElement _versions() => el(
     'div',
-    classes: 'muted',
+    classes: 'muted version-footer',
     attrs: {
       'title':
           'This dashboard build, and the OmnyServer version it was built '
