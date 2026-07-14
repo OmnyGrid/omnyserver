@@ -1,3 +1,41 @@
+## 0.14.0
+
+Work that takes longer than a caller should be made to wait.
+
+```sh
+omnyserver formula run docker w1 --action install --async   # returns at once
+omnyserver ops list
+omnyserver ops show <id> --wait
+```
+
+### Added
+
+- **`async: true` on `/nodes/{id}/formula`, `/presets/apply` and
+  `/nodes/{id}/reconcile`; `GET /operations`, `GET /operations/{id}`;
+  `--async` on the three CLI commands; `omnyserver ops list | show [--wait]`.**
+
+  These calls answer synchronously: the caller waits, and the Hub gives up after
+  `requestTimeout`. That is right for a `verify` — and wrong for an `install`,
+  which can take minutes. The caller gets a timeout, **the node carries on
+  working**, and the operator is told a failure that did not happen.
+
+  `async` hands back a handle instead of an answer (`202`), and the work is *the
+  same work* — `runFormula`, `applyPreset`, `reconcile`, dispatched rather than
+  awaited. Only who waits for it changes, which is exactly why **the synchronous
+  contract is untouched**: it is still the right answer for the calls it was right
+  for, and a `verify` should just answer.
+
+  A failure lands **on the operation**, because an error thrown into a caller who
+  left has nowhere to go. `OperationStarted` / `OperationFinished` ride the event
+  bus, so a client learns on the stream it is already watching rather than polling
+  for an answer it will either ask for too often or find out about too late.
+
+- The dashboard dispatches formula runs and preset applies asynchronously, and
+  grows an operations tray that updates from the event stream. A browser tab is
+  the worst possible place to wait on an install.
+
+---
+
 ## 0.13.0
 
 Alerts — and the distinction the whole thing rests on: **a condition is not an

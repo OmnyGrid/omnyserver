@@ -342,6 +342,22 @@ non-zero when anything has drifted, so it works as a check in a pipeline.
 So a read-only dashboard link is a `--grant bob:view-token:viewer`, and a leaked
 node credential still cannot operate the fleet.
 
+### Long-running work
+
+```sh
+omnyserver formula run docker worker-01 --action install --async
+# worker-01   dispatched — ops show 2f6eadcd-…
+
+omnyserver ops list
+omnyserver ops show 2f6eadcd-… --wait
+```
+
+`formula run`, `preset apply` and `state reconcile` answer synchronously, which is
+right for a `verify` and wrong for an `install`: the Hub gives up after its request
+timeout, the node carries on working, and you are told a failure that did not
+happen. `--async` hands back an id instead. The work is the same — only who waits
+for it changes.
+
 ### Alerts
 
 ```sh

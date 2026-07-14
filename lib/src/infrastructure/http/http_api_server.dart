@@ -242,6 +242,8 @@ class HttpApiServer {
         ..get('/api/v1/events/stream', (r, p) async => _eventStream())
         ..get('/api/v1/events', (r, p) async => _events())
         ..get('/api/v1/alerts', (r, p) async => _alerts())
+        ..get('/api/v1/operations', (r, p) async => _listOperations(r))
+        ..get('/api/v1/operations/<id>', (r, p) async => _getOperation(p))
         ..get('/api/v1/audit', (r, p) => _audit())
         // Last, so it only sees paths no route above matched. It answers every
         // method, which keeps a wrong method on a known path a 404 rather than
@@ -390,12 +392,36 @@ class HttpApiServer {
       return ApiErrors.badRequest('formula is required');
     }
     final action = FormulaAction.parse((body['action'] as String?) ?? 'verify');
+    final version = body['version'] as String?;
+    final principal = _principal(request);
+
+    // `async: true` hands back a handle instead of an answer. The work is the
+    // same; only who waits for it changes. A `verify` should just answer; an
+    // `install` can outlive the Hub's request timeout, and a caller that waits
+    // for it is told a failure that did not happen.
+    if (body['async'] == true) {
+      final operation = hub.dispatch(
+        kind: 'formula',
+        nodeId: id,
+        summary: '$formula ${action.name}',
+        principal: principal,
+        work: () async => (await hub.runFormula(
+          id,
+          formula,
+          action,
+          version: version,
+          principal: principal,
+        )).toJson(),
+      );
+      return jsonOk(operation.toJson(), status: 202);
+    }
+
     final reply = await hub.runFormula(
       id,
       formula,
       action,
-      version: body['version'] as String?,
-      principal: _principal(request),
+      version: version,
+      principal: principal,
     );
     return jsonOk(reply.toJson());
   }
@@ -426,11 +452,22 @@ class HttpApiServer {
       );
     }
 
-    final result = await hub.applyPreset(
-      _parseNodeId(nodeId),
-      preset,
-      principal: _principal(request),
-    );
+    final id = _parseNodeId(nodeId);
+    final principal = _principal(request);
+
+    if (body['async'] == true) {
+      final operation = hub.dispatch(
+        kind: 'preset',
+        nodeId: id,
+        summary: preset.id.value,
+        principal: principal,
+        work: () async =>
+            (await hub.applyPreset(id, preset, principal: principal)).toJson(),
+      );
+      return jsonOk(operation.toJson(), status: 202);
+    }
+
+    final result = await hub.applyPreset(id, preset, principal: principal);
     return jsonOk(result.toJson());
   }
 
@@ -630,7 +667,22 @@ class HttpApiServer {
   ) async {
     final id = _nodeId(params);
     _authorize(request, 'state.reconcile', target: id.value);
-    final result = await hub.reconcile(id, principal: _principal(request));
+    final principal = _principal(request);
+
+    final body = await _readJson(request);
+    if (body['async'] == true) {
+      final operation = hub.dispatch(
+        kind: 'reconcile',
+        nodeId: id,
+        summary: 'converge to the declared state',
+        principal: principal,
+        work: () async =>
+            (await hub.reconcile(id, principal: principal)).toJson(),
+      );
+      return jsonOk(operation.toJson(), status: 202);
+    }
+
+    final result = await hub.reconcile(id, principal: principal);
     return jsonOk(result.toJson());
   }
 
@@ -757,6 +809,26 @@ class HttpApiServer {
       // client that vanished, a failed write being the only way we find out.
       keepAlive: eventKeepAlive,
     );
+  }
+
+  /// Operations in flight, and the last few that finished.
+  ///
+  /// `?node=` narrows to one machine; `?running=true` to what is still working —
+  /// which is the question a running-operations tray is asking.
+  HubResponse _listOperations(HubRequest request) {
+    final query = request.uri.queryParameters;
+    final operations = hub.operations.all(
+      nodeId: query['node'],
+      runningOnly: query['running'] == 'true',
+    );
+    return jsonOk([for (final o in operations) o.toJson()]);
+  }
+
+  HubResponse _getOperation(Map<String, String> params) {
+    final id = params['id']!;
+    final operation = hub.operations.find(id);
+    if (operation == null) throw NotFoundException('unknown operation $id');
+    return jsonOk(operation.toJson());
   }
 
   /// What is wrong right now.

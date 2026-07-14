@@ -66,6 +66,7 @@ export 'src/domain/entities/node_capabilities.dart';
 export 'src/domain/entities/node_descriptor.dart';
 export 'src/domain/entities/node_status.dart';
 export 'src/domain/entities/platform_info.dart';
+export 'src/domain/entities/operation.dart';
 export 'src/domain/entities/preset.dart';
 export 'src/domain/state/desired_state.dart';
 export 'src/domain/state/drift.dart';

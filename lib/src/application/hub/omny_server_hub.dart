@@ -6,6 +6,7 @@ import '../../domain/auth/principal.dart';
 import '../../domain/entities/alert.dart';
 import '../../domain/entities/audit_entry.dart';
 import '../../domain/entities/metric_point.dart';
+import '../../domain/entities/operation.dart';
 import '../../domain/entities/node_descriptor.dart';
 import '../../infrastructure/auth/grant_authenticator.dart';
 import '../../domain/entities/grant.dart';
@@ -31,6 +32,7 @@ import '../../shared/utils/clock.dart';
 import '../../shared/utils/id_generator.dart';
 import 'alert_monitor.dart';
 import 'audit_log.dart';
+import 'operation_store.dart';
 import 'log_buffer.dart';
 import 'hub_config.dart';
 
@@ -615,6 +617,104 @@ class OmnyServerHub {
 
   /// Deletes a saved preset.
   Future<bool> deletePreset(PresetId id) => config.presetRepository.delete(id);
+
+  // ---------------------------------------------------------------------------
+  // Operations: work that takes longer than a caller should be made to wait.
+  // ---------------------------------------------------------------------------
+
+  /// The operations in flight, and the last few that finished.
+  late final OperationStore operations = OperationStore();
+
+  /// Dispatches [work] and returns at once with a handle on it.
+  ///
+  /// The work is *the same work* the synchronous call does — `runFormula`,
+  /// `applyPreset`, `reconcile`. Only who waits for it changes. A `docker verify`
+  /// answers in a second and should just answer; a `docker install` can take
+  /// minutes, and a caller that waits gets the Hub's `requestTimeout` instead of
+  /// an answer — while the node carries on working. The operator is then told a
+  /// failure that did not happen.
+  ///
+  /// Completion is announced on the event bus, so a client learns on the stream
+  /// it is already watching rather than polling for an answer it will either ask
+  /// for too often or find out about too late.
+  Operation dispatch({
+    required String kind,
+    required NodeId nodeId,
+    required String summary,
+    required String principal,
+    required Future<Map<String, dynamic>> Function() work,
+  }) {
+    final operation = Operation(
+      id: config.idGenerator.next(),
+      kind: kind,
+      nodeId: nodeId.value,
+      principal: principal,
+      status: OperationStatus.running,
+      summary: summary,
+      startedAt: config.clock.now().toUtc(),
+    );
+    operations.put(operation);
+    config.eventBus.publish(
+      OperationStarted(
+        nodeId,
+        operation.id,
+        kind,
+        summary,
+        config.clock.now().toUtc(),
+      ),
+    );
+
+    unawaited(
+      work()
+          .then(
+            (result) => _finishOperation(
+              operation,
+              status: OperationStatus.succeeded,
+              result: result,
+            ),
+          )
+          .catchError((Object error) {
+            // A failure here has nowhere to be thrown *to* — the caller left
+            // long ago. It belongs on the operation, which is the thing they
+            // will come back and read.
+            _finishOperation(
+              operation,
+              status: OperationStatus.failed,
+              error: error is OmnyServerException
+                  ? error.message
+                  : error.toString(),
+            );
+          }),
+    );
+
+    return operation;
+  }
+
+  void _finishOperation(
+    Operation operation, {
+    required OperationStatus status,
+    Map<String, dynamic>? result,
+    String? error,
+  }) {
+    final now = config.clock.now().toUtc();
+    operations.put(
+      operation.completed(
+        status: status,
+        at: now,
+        result: result,
+        error: error,
+      ),
+    );
+    config.eventBus.publish(
+      OperationFinished(
+        NodeId(operation.nodeId),
+        operation.id,
+        operation.kind,
+        status == OperationStatus.succeeded,
+        now,
+      ),
+    );
+  }
 
   // ---------------------------------------------------------------------------
   // Grants: credentials the Hub hands out, and takes back.

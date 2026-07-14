@@ -159,6 +159,46 @@ class OmnyServerService {
             .toList(),
   );
 
+  /// Operations in flight, and the last few that finished.
+  Future<List<Operation>> operations({String? nodeId, bool running = false}) =>
+      _guard(() async {
+        final query = [
+          if (nodeId != null) 'node=$nodeId',
+          if (running) 'running=true',
+        ].join('&');
+        return ((await client.get(
+                  '/operations${query.isEmpty ? '' : '?$query'}',
+                ))
+                as List)
+            .map((o) => Operation.fromJson((o as Map).cast<String, dynamic>()))
+            .toList();
+      });
+
+  /// Runs a formula **without waiting** — for work that can outlive a request.
+  Future<Operation> runFormulaAsync(
+    String id, {
+    required String formula,
+    required FormulaAction action,
+  }) => _guard(() async {
+    final reply = await client.post('/nodes/$id/formula', {
+      'formula': formula,
+      'action': action.name,
+      'async': true,
+    });
+    return Operation.fromJson((reply as Map).cast<String, dynamic>());
+  });
+
+  /// Applies a saved preset **without waiting**.
+  Future<Operation> applySavedPresetAsync(String id, String presetId) =>
+      _guard(() async {
+        final reply = await client.post('/presets/apply', {
+          'nodeId': id,
+          'presetId': presetId,
+          'async': true,
+        });
+        return Operation.fromJson((reply as Map).cast<String, dynamic>());
+      });
+
   /// What is wrong right now.
   Future<List<Alert>> alerts() => _guard(
     () async => ((await client.get('/alerts')) as List)

@@ -77,6 +77,20 @@ sealed class OmnyEvent {
         Json.requireString(json, 'target'),
         at,
       ),
+      'operation.started' => OperationStarted(
+        node(),
+        Json.requireString(json, 'operationId'),
+        Json.requireString(json, 'kind'),
+        Json.requireString(json, 'summary'),
+        at,
+      ),
+      'operation.finished' => OperationFinished(
+        node(),
+        Json.requireString(json, 'operationId'),
+        Json.requireString(json, 'kind'),
+        Json.optBool(json, 'success'),
+        at,
+      ),
       'alert.raised' => AlertRaised(
         node(),
         Json.requireString(json, 'rule'),
@@ -308,4 +322,78 @@ final class AlertResolved extends OmnyEvent {
 
   @override
   Map<String, dynamic> payload() => {'nodeId': nodeId.value, 'rule': rule};
+}
+
+/// A long-running operation was dispatched to a node.
+final class OperationStarted extends OmnyEvent {
+  /// The target node.
+  final NodeId nodeId;
+
+  /// The operation's id — what a client asks about later.
+  final String operationId;
+
+  /// What is being done (`formula`, `preset`, `reconcile`).
+  final String kind;
+
+  /// A short description of what was asked.
+  final String summary;
+
+  /// Creates the event.
+  const OperationStarted(
+    this.nodeId,
+    this.operationId,
+    this.kind,
+    this.summary,
+    DateTime at,
+  ) : super(at);
+
+  @override
+  String get type => 'operation.started';
+
+  @override
+  Map<String, dynamic> payload() => {
+    'nodeId': nodeId.value,
+    'operationId': operationId,
+    'kind': kind,
+    'summary': summary,
+  };
+}
+
+/// A long-running operation finished.
+///
+/// This is what makes an asynchronous operation *usable*: a client that had to
+/// poll for the answer would either poll too often or find out too late. It
+/// learns on the stream it is already watching.
+final class OperationFinished extends OmnyEvent {
+  /// The target node.
+  final NodeId nodeId;
+
+  /// The operation's id.
+  final String operationId;
+
+  /// What was done.
+  final String kind;
+
+  /// Whether it did what was asked.
+  final bool success;
+
+  /// Creates the event.
+  const OperationFinished(
+    this.nodeId,
+    this.operationId,
+    this.kind,
+    this.success,
+    DateTime at,
+  ) : super(at);
+
+  @override
+  String get type => 'operation.finished';
+
+  @override
+  Map<String, dynamic> payload() => {
+    'nodeId': nodeId.value,
+    'operationId': operationId,
+    'kind': kind,
+    'success': success,
+  };
 }

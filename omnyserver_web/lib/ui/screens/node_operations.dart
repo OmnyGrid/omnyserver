@@ -25,6 +25,9 @@ class NodeOperations {
 
   final web.HTMLElement _driftBody = div();
   final web.HTMLElement _runBody = div();
+  final web.HTMLElement _opsBody = div();
+  StreamSubscription<OmnyEvent>? _events;
+  bool _disposed = false;
 
   List<FormulaSpec> _formulas = const [];
   List<Preset> _presets = const [];
@@ -51,10 +54,95 @@ class NodeOperations {
             _runBody,
           ],
         ),
+      )
+      ..appendChild(
+        el(
+          'div',
+          classes: 'card stack',
+          children: [
+            el('h3', text: 'Operations'),
+            _opsBody,
+          ],
+        ),
       );
 
     unawaited(_loadDrift());
     unawaited(_loadCatalog());
+    unawaited(_loadOperations());
+    _watchOperations();
+  }
+
+  /// Re-reads the tray when an operation on *this* node starts or finishes.
+  ///
+  /// On the event stream, not a poll: an operation announces itself, so a client
+  /// that polled would either ask too often or find out too late.
+  void _watchOperations() {
+    _events = ctx.service.eventStream().listen((event) {
+      // The pattern binds `node`, not `nodeId`: destructuring into a name that
+      // shadows the field would compare the event to itself, and every operation
+      // on the fleet would look like one of ours.
+      final mine = switch (event) {
+        OperationStarted(nodeId: final node) => node.value == nodeId,
+        OperationFinished(nodeId: final node) => node.value == nodeId,
+        _ => false,
+      };
+      if (mine) unawaited(_loadOperations());
+    }, onError: (Object _) {});
+  }
+
+  /// What is running on this node, and how the last few went.
+  Future<void> _loadOperations() async {
+    try {
+      final operations = await ctx.service.operations(nodeId: nodeId);
+      if (_disposed) return;
+      clearChildren(_opsBody);
+
+      if (operations.isEmpty) {
+        _opsBody.appendChild(
+          emptyState('Nothing has been dispatched to this node.'),
+        );
+        return;
+      }
+
+      final now = DateTime.now();
+      for (final op in operations.take(10)) {
+        _opsBody.appendChild(
+          el(
+            'div',
+            classes: 'row',
+            children: [
+              el(
+                'span',
+                classes: switch (op.status) {
+                  OperationStatus.running => 'badge',
+                  OperationStatus.succeeded => 'badge online',
+                  OperationStatus.failed => 'badge offline',
+                },
+                text: op.status.name,
+              ),
+              el('div', classes: 'grow', text: '${op.kind} ${op.summary}'),
+              el(
+                'div',
+                classes: 'muted mono',
+                text: '${op.duration(now).inSeconds}s',
+              ),
+            ],
+          ),
+        );
+        if (op.error != null) {
+          _opsBody.appendChild(el('div', classes: 'hint', text: op.error!));
+        }
+      }
+    } on AppError {
+      // The controls above still work; a failed tray read should not take them
+      // down with it.
+    }
+  }
+
+  /// Releases the event subscription.
+  void dispose() {
+    _disposed = true;
+    unawaited(_events?.cancel());
   }
 
   // --- Declared state and drift ---------------------------------------------
@@ -302,19 +390,21 @@ class NodeOperations {
     }
   }
 
+  /// Dispatched, not awaited.
+  ///
+  /// A browser tab is the worst possible place to wait on an `install`: the
+  /// request times out, the node carries on working, and the operator is shown a
+  /// failure that did not happen. The operations tray below is where the answer
+  /// arrives.
   Future<void> _runFormula(String formula, FormulaAction action) async {
     try {
-      final result = await ctx.service.runFormula(
+      await ctx.service.runFormulaAsync(
         nodeId,
         formula: formula,
         action: action,
       );
-      final verdict = result.success ? 'ok' : 'failed';
-      ctx.toasts.show(
-        '$formula ${action.name}: $verdict'
-        '${result.changed ? ' (changed)' : ''}'
-        '${result.message.isEmpty ? '' : ' — ${result.message}'}',
-      );
+      ctx.toasts.show('$formula ${action.name} dispatched.');
+      await _loadOperations();
     } on AppError catch (e) {
       ctx.toasts.error(e.message);
     }
@@ -322,13 +412,9 @@ class NodeOperations {
 
   Future<void> _applyPreset(String presetId) async {
     try {
-      final results = await ctx.service.applySavedPreset(nodeId, presetId);
-      final failed = results.where((r) => !r.success).length;
-      if (failed == 0) {
-        ctx.toasts.success('Applied ${results.length} step(s).');
-      } else {
-        ctx.toasts.error('$failed of ${results.length} step(s) failed.');
-      }
+      await ctx.service.applySavedPresetAsync(nodeId, presetId);
+      ctx.toasts.show('Applying $presetId…');
+      await _loadOperations();
     } on AppError catch (e) {
       ctx.toasts.error(e.message);
     }

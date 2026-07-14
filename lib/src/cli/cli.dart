@@ -45,6 +45,7 @@ CommandRunner<void> buildRunner() {
         ..addCommand(StateCommand())
         ..addCommand(GrantCommand())
         ..addCommand(EventsCommand())
+        ..addCommand(OpsCommand())
         ..addCommand(AlertsCommand())
         ..addCommand(AuditCommand())
         ..addCommand(WhoamiCommand())
@@ -1197,6 +1198,11 @@ class PresetApplyCommand extends Command<void> {
   PresetApplyCommand() {
     _addApiOptions(argParser);
     _addSelectorOptions(argParser);
+    argParser.addFlag(
+      'async',
+      negatable: false,
+      help: 'Do not wait. Prints an operation id to ask about later.',
+    );
   }
 
   @override
@@ -1237,10 +1243,16 @@ class PresetApplyCommand extends Command<void> {
         args,
         positional: rest.skip(1).toList(),
       );
+      final async = args['async'] as bool;
       await _fanOut(nodes, (node) async {
         final reply =
-            await client.post('/presets/apply', {'nodeId': node, ...body})
+            await client.post('/presets/apply', {
+                  'nodeId': node,
+                  ...body,
+                  if (async) 'async': true,
+                })
                 as Map;
+        if (async) return 'dispatched — ops show ${reply['id']}';
         final results = (reply['results'] as List).cast<Map>();
         final failed = results.where((r) => r['success'] != true).length;
         final changed = results.where((r) => r['changed'] == true).length;
@@ -1429,7 +1441,14 @@ class FormulaRunCommand extends Command<void> {
     _addSelectorOptions(argParser);
     argParser
       ..addOption('action', defaultsTo: 'verify', help: 'Formula action.')
-      ..addOption('formula-version', help: 'Target version.');
+      ..addOption('formula-version', help: 'Target version.')
+      ..addFlag(
+        'async',
+        negatable: false,
+        help:
+            'Do not wait. Prints an operation id to ask about later — for work '
+            'that outlives the Hub\'s request timeout, like an install.',
+      );
   }
 
   @override
@@ -1460,12 +1479,18 @@ class FormulaRunCommand extends Command<void> {
         args,
         positional: rest.skip(1).toList(),
       );
+      final async = args['async'] as bool;
       await _fanOut(nodes, (node) async {
         final reply = await client.post('/nodes/$node/formula', {
           'formula': formula,
           'action': action,
           'version': ?version,
+          if (async) 'async': true,
         });
+        if (async) {
+          final op = reply as Map;
+          return 'dispatched — ops show ${op['id']}';
+        }
         final result = (reply as Map)['result'] as Map;
         final ok = result['success'] == true;
         final changed = result['changed'] == true;
@@ -1780,6 +1805,11 @@ class StateReconcileCommand extends Command<void> {
   StateReconcileCommand() {
     _addApiOptions(argParser);
     _addSelectorOptions(argParser);
+    argParser.addFlag(
+      'async',
+      negatable: false,
+      help: 'Do not wait. Prints an operation id to ask about later.',
+    );
   }
 
   @override
@@ -1796,8 +1826,14 @@ class StateReconcileCommand extends Command<void> {
     final client = _apiClientFrom(args);
     try {
       final nodes = await _selectNodes(client, args, positional: args.rest);
+      final async = args['async'] as bool;
       await _fanOut(nodes, (node) async {
-        final reply = await client.post('/nodes/$node/reconcile') as Map;
+        final reply =
+            await client.post('/nodes/$node/reconcile', {
+                  if (async) 'async': true,
+                })
+                as Map;
+        if (async) return 'dispatched — ops show ${reply['id']}';
         final results = (reply['results'] as List).cast<Map>();
         if (results.isEmpty) return 'already converged — nothing to do';
         final failed = results.where((r) => r['success'] != true).length;
@@ -1897,6 +1933,120 @@ class EventsCommand extends Command<void> {
       ..remove('type');
     final fields = rest.entries.map((e) => '${e.key}=${e.value}').join(' ');
     return '$at  $type${fields.isEmpty ? '' : '  $fields'}';
+  }
+}
+
+/// `omnyserver ops …`
+class OpsCommand extends Command<void> {
+  /// Creates the ops command group.
+  OpsCommand() {
+    addSubcommand(OpsListCommand());
+    addSubcommand(OpsShowCommand());
+  }
+
+  @override
+  String get name => 'ops';
+
+  @override
+  String get description =>
+      'Work dispatched with --async: what is running, and how it went.';
+}
+
+/// `omnyserver ops list`
+class OpsListCommand extends Command<void> {
+  /// Creates the ops-list command.
+  OpsListCommand() {
+    _addApiOptions(argParser);
+    argParser
+      ..addOption('node', help: 'Only operations on this node.')
+      ..addFlag(
+        'running',
+        negatable: false,
+        help: 'Only what is still working.',
+      );
+  }
+
+  @override
+  String get name => 'list';
+
+  @override
+  String get description => 'List operations, newest first.';
+
+  @override
+  Future<void> run() async {
+    final args = argResults!;
+    final query = [
+      if (args['node'] != null)
+        'node=${Uri.encodeQueryComponent(args['node'] as String)}',
+      if (args['running'] as bool) 'running=true',
+    ].join('&');
+
+    final client = _apiClientFrom(args);
+    try {
+      final ops =
+          (await client.get('/operations${query.isEmpty ? '' : '?$query'}')
+                  as List)
+              .cast<Map>();
+      if (ops.isEmpty) {
+        stdout.writeln('no operations');
+        return;
+      }
+      stdout.writeln(
+        'ID                                    NODE        STATUS     WHAT',
+      );
+      for (final op in ops) {
+        final id = '${op['id']}'.padRight(37);
+        final node = '${op['nodeId']}'.padRight(11);
+        final status = '${op['status']}'.padRight(10);
+        stdout.writeln('$id $node $status ${op['kind']} ${op['summary']}');
+      }
+    } finally {
+      client.close();
+    }
+  }
+}
+
+/// `omnyserver ops show <id>`
+class OpsShowCommand extends Command<void> {
+  /// Creates the ops-show command.
+  OpsShowCommand() {
+    _addApiOptions(argParser);
+    argParser.addFlag(
+      'wait',
+      negatable: false,
+      help: 'Block until it finishes.',
+    );
+  }
+
+  @override
+  String get name => 'show';
+
+  @override
+  String get description => 'Show an operation, and what it produced.';
+
+  @override
+  Future<void> run() async {
+    final args = argResults!;
+    final rest = args.rest;
+    if (rest.isEmpty) throw CliError('usage: ops show <id> [--wait]');
+
+    final client = _apiClientFrom(args);
+    try {
+      var op = await client.get('/operations/${rest.first}') as Map;
+
+      // Polling, deliberately, and only when asked: an operation announces itself
+      // finished on the event stream, so a *watcher* has no need to poll — but a
+      // script that wants to block on one line does.
+      while ((args['wait'] as bool) && op['status'] == 'running') {
+        await Future<void>.delayed(const Duration(seconds: 1));
+        op = await client.get('/operations/${rest.first}') as Map;
+      }
+
+      stdout.writeln(const JsonEncoder.withIndent('  ').convert(op));
+      if (op['status'] == 'failed') exitCode = 1;
+    } finally {
+      client.close();
+    }
   }
 }
 

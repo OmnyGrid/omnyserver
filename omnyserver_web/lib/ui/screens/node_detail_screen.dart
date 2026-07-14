@@ -39,6 +39,9 @@ class NodeDetailScreen implements Screen {
   /// The node's live log tail.
   late final NodeLogs _logs = NodeLogs(ctx, nodeId);
 
+  /// Declared state, what can be run, and what is running.
+  late final NodeOperations _operations = NodeOperations(ctx, nodeId);
+
   /// Builds the screen.
   NodeDetailScreen(this.ctx, this.nodeId) {
     _status = NodeStatusController(ctx.service, nodeId);
@@ -90,7 +93,7 @@ class NodeDetailScreen implements Screen {
         ),
         // Declared state, drift, and what can be run here — everything the CLI
         // grew that the dashboard could not reach.
-        NodeOperations(ctx, nodeId).element,
+        _operations.element,
         _logs.element,
       ],
     );
@@ -399,7 +402,10 @@ class NodeDetailScreen implements Screen {
   @override
   void dispose() {
     _disposed = true;
+    // Both hold live SSE subscriptions; leaving them open would leak one per
+    // visit to a node.
     _logs.dispose();
+    _operations.dispose();
     _historyTimer?.cancel();
     _status.dispose();
     unawaited(_sub?.cancel());

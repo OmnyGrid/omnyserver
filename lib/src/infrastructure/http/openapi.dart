@@ -268,6 +268,31 @@ Map<String, dynamic> openApiDocument() => {
         'responses': {'200': _ok('A Server-Sent Events stream')},
       },
     },
+    '/operations': {
+      'get': {
+        'summary': 'Operations in flight, and the last few that finished',
+        'parameters': [
+          {
+            'name': 'node',
+            'in': 'query',
+            'schema': {'type': 'string'},
+          },
+          {
+            'name': 'running',
+            'in': 'query',
+            'schema': {'type': 'boolean'},
+          },
+        ],
+        'responses': {'200': _ok('Array of operations')},
+      },
+    },
+    '/operations/{id}': {
+      'get': {
+        'summary': 'An operation, and what it produced',
+        'parameters': [_pathId],
+        'responses': {'200': _ok('Operation'), '404': _err},
+      },
+    },
     '/alerts': {
       'get': {
         'summary':
