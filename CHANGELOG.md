@@ -1,3 +1,53 @@
+## 0.16.0
+
+The Hub is controlled with an API token or a grant. It now actually checks.
+
+```sh
+omnyserver hub start --cert … --key … --grant alice:s3cr3t:admin
+curl https://hub:8443/api/v1/nodes                    # 401, as it always should have been
+```
+
+### Fixed
+
+- **The HTTP API was unauthenticated when no `--api-token` was set.**
+  `HttpApiServer.tokenAuthenticator()` returned `null` in that case, and a
+  service registered with a null authenticator is not authenticated at all — so
+  a Hub started with grants but no API token served the whole API to anyone who
+  could reach the port: list the fleet, read the audit log, run formulas on
+  every node, issue credentials.
+
+  `--grant` looked like it secured the API and did not. Grants are only ever
+  consulted from *inside* the authenticator that was not there, which is why
+  `whoami` answered `{"principal":"anonymous","authenticated":false}` even when
+  handed a valid grant token.
+
+  A Hub is controlled with the `--api-token` or with a grant's
+  `(principal, token)` pair, and with nothing else. It now enforces that
+  whether or not an API token is configured. A Hub with neither authenticates
+  **nobody** rather than everybody, and says so at startup. `/healthz` and
+  `/metrics` stay open on purpose — a load balancer and a Prometheus scraper
+  carry no bearer token, and locking them would make the Hub look dead to the
+  things that check whether it is.
+
+  Anyone relying on the old behaviour was relying on an open API. Pass
+  `--api-token`, or authenticate with a grant (`--token` + `--principal`).
+
+### Added
+
+- **`--cors-origin '*'`** — allow any origin. It used to be accepted and then
+  silently match nothing, since it was compared as a literal origin string:
+  a flag that looked configured and did nothing, which is the same failure the
+  last release set out to remove.
+
+  A wildcard is a real widening — any page may call the API — but not an open
+  door: the Hub sends no `allow-credentials`, so a browser attaches nothing
+  ambient and a caller still needs a token it was given. The Hub says so at
+  startup, because that is not a thing to discover by reading the flags months
+  later. It cannot be mixed with a named allow-list: asking for both is asking
+  for everything.
+
+---
+
 ## 0.15.0
 
 A Hub you have to babysit is not a Hub you can run.

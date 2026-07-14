@@ -172,4 +172,88 @@ void main() {
     expect(status, 200);
     expect(headers.containsKey('access-control-allow-origin'), isFalse);
   });
+
+  // `--cors-origin '*'` means "any origin". It is a real widening — any page may
+  // call the API — but not an open door: the Hub sets no `allow-credentials`, so
+  // the browser attaches nothing ambient and a caller still needs a token it was
+  // given. The literal `*` must reach the wire, or the flag would be one of
+  // those settings that looks configured and does nothing.
+  group('the wildcard origin', () {
+    test('grants any origin, emitting a literal *', () async {
+      await startApi(origins: const ['*']);
+
+      final (status, headers) = await send(
+        'GET',
+        '/api/v1/nodes',
+        headers: {
+          'origin': 'https://anything.example.org',
+          'authorization': 'Bearer api-secret',
+        },
+      );
+
+      expect(status, 200);
+      expect(headers['access-control-allow-origin'], '*');
+    });
+
+    test('answers a preflight from any origin', () async {
+      await startApi(origins: const ['*']);
+
+      final (status, headers) = await send(
+        'OPTIONS',
+        '/api/v1/nodes',
+        headers: {
+          'origin': 'https://anything.example.org',
+          'access-control-request-method': 'GET',
+          'access-control-request-headers': 'authorization',
+        },
+      );
+
+      expect(status, 204);
+      expect(headers['access-control-allow-origin'], '*');
+      expect(
+        headers['access-control-allow-headers'],
+        contains('authorization'),
+      );
+    });
+
+    // A wildcard is not a bypass: it opens who may *ask*, not who may *in*.
+    test('still requires a token', () async {
+      await startApi(origins: const ['*']);
+
+      final (status, headers) = await send(
+        'GET',
+        '/api/v1/nodes',
+        headers: {'origin': 'https://anything.example.org'},
+      );
+
+      expect(status, 401);
+      // ...and the 401 is readable, which is the whole point of useOuter.
+      expect(headers['access-control-allow-origin'], '*');
+    });
+
+    // `cors()` only emits a literal `*` when no specific origin is named, so a
+    // wildcard cannot be mixed into an allow-list. Asking for both is asking for
+    // everything — anything else would silently downgrade one of the two.
+    test('is dominant over a named origin', () async {
+      await startApi(origins: const [_dashboard, '*']);
+
+      final (status, headers) = await send(
+        'GET',
+        '/api/v1/nodes',
+        headers: {
+          'origin': 'https://anything.example.org',
+          'authorization': 'Bearer api-secret',
+        },
+      );
+
+      expect(status, 200);
+      expect(headers['access-control-allow-origin'], '*');
+    });
+
+    test('survives the whitespace an env-var passthrough leaves behind', () {
+      expect(HttpApiServer.isAnyOrigin('*'), isTrue);
+      expect(HttpApiServer.isAnyOrigin(' * '), isTrue);
+      expect(HttpApiServer.isAnyOrigin(_dashboard), isFalse);
+    });
+  });
 }

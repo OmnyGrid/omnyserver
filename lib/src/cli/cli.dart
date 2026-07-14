@@ -431,11 +431,27 @@ class HubStartCommand extends Command<void> {
     // Installing no CORS at all is the correct behaviour for a Hub with no
     // browser client, and indistinguishable — from the browser's side — from a
     // Hub that rejected the origin. Say which it is, or the next person debugs
-    // it from a browser console.
-    if ((args['cors-origin'] as List<String>).isEmpty) {
+    // it from a browser console. A wildcard says so too: it is a widening, and
+    // one nobody should discover by reading the flags months later.
+    final corsOrigins = args['cors-origin'] as List<String>;
+    if (corsOrigins.isEmpty) {
       stdout.writeln(
         'Hub CORS:  no origins configured — a browser dashboard will be '
         'blocked (pass --cors-origin).',
+      );
+    } else if (corsOrigins.any(HttpApiServer.isAnyOrigin)) {
+      stdout.writeln(
+        'Hub CORS:  any origin allowed (*) — any page may call this API. It '
+        'still needs a token; the browser supplies none of its own.',
+      );
+    }
+    // The API is controlled with the --api-token or a --grant pair, and nothing
+    // else. With neither, every request is refused — which is the safe failure,
+    // but a silent one: the Hub would look healthy and answer nobody.
+    if (args['api-token'] == null && grants.isEmpty) {
+      stdout.writeln(
+        'Hub AUTH:  no --api-token and no --grant — the HTTP API can '
+        'authenticate nobody. Every call will be a 401.',
       );
     }
     stdout.writeln('Press Ctrl-C to stop.');
