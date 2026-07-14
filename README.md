@@ -342,6 +342,22 @@ non-zero when anything has drifted, so it works as a check in a pipeline.
 So a read-only dashboard link is a `--grant bob:view-token:viewer`, and a leaked
 node credential still cannot operate the fleet.
 
+### Alerts
+
+```sh
+omnyserver hub start … --alert 'disk>90' --alert 'cpu>95 for 5m' \
+                       --alert 'offline for 2m'
+omnyserver alerts    # what is wrong right now; non-zero while anything is
+```
+
+Judged on the heartbeats the Hub already receives. `for 5m` is what separates an
+alert from a twitch: a node at 95% CPU for one heartbeat is a build running, and
+one at 95% for five minutes is a problem. An alert is announced once and resolved
+when it clears.
+
+There are no default rules — a tool that invents its own thresholds is a tool that
+pages you at 3am about a disk it decided was too full.
+
 Read a node's log without logging into it:
 
 ```sh

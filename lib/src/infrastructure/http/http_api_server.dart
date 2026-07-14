@@ -241,6 +241,7 @@ class HttpApiServer {
         // specific path has to be offered first.
         ..get('/api/v1/events/stream', (r, p) async => _eventStream())
         ..get('/api/v1/events', (r, p) async => _events())
+        ..get('/api/v1/alerts', (r, p) async => _alerts())
         ..get('/api/v1/audit', (r, p) => _audit())
         // Last, so it only sees paths no route above matched. It answers every
         // method, which keeps a wrong method on a known path a 404 rather than
@@ -757,6 +758,14 @@ class HttpApiServer {
       keepAlive: eventKeepAlive,
     );
   }
+
+  /// What is wrong right now.
+  ///
+  /// Only what is *currently* breached: an alert list is a to-do list, and one
+  /// that also holds everything that has ever been wrong is one nobody reads.
+  /// The history is on the event stream (`alert.raised` / `alert.resolved`).
+  HubResponse _alerts() =>
+      jsonOk([for (final alert in hub.alerts.active) alert.toJson()]);
 
   Future<HubResponse> _audit() async {
     final recent = await hub.audit.recent();

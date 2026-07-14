@@ -45,6 +45,7 @@ CommandRunner<void> buildRunner() {
         ..addCommand(StateCommand())
         ..addCommand(GrantCommand())
         ..addCommand(EventsCommand())
+        ..addCommand(AlertsCommand())
         ..addCommand(AuditCommand())
         ..addCommand(WhoamiCommand())
         ..addCommand(CertCommand());
@@ -346,6 +347,13 @@ class HubStartCommand extends Command<void> {
         'grant',
         help: 'Token grant "principal:token:role1,role2" (repeatable).',
       )
+      ..addMultiOption(
+        'alert',
+        help:
+            'A condition worth being told about (repeatable): "disk>90", '
+            '"cpu>95 for 5m", "offline for 2m". None by default — a tool that '
+            'invents its own thresholds is a tool that pages you at 3am.',
+      )
       ..addOption(
         'data-dir',
         help:
@@ -421,6 +429,9 @@ class HubStartCommand extends Command<void> {
             ? JsonDesiredStateRepository(dataDir)
             : null,
         corsOrigins: args['cors-origin'] as List<String>,
+        alertRules: [
+          for (final raw in args['alert'] as List<String>) AlertRule.parse(raw),
+        ],
         logger: stdout.writeln,
       ),
     );
@@ -1886,6 +1897,49 @@ class EventsCommand extends Command<void> {
       ..remove('type');
     final fields = rest.entries.map((e) => '${e.key}=${e.value}').join(' ');
     return '$at  $type${fields.isEmpty ? '' : '  $fields'}';
+  }
+}
+
+/// `omnyserver alerts`
+class AlertsCommand extends Command<void> {
+  /// Creates the alerts command.
+  AlertsCommand() {
+    _addApiOptions(argParser);
+  }
+
+  @override
+  String get name => 'alerts';
+
+  @override
+  String get description => 'Show what is wrong right now.';
+
+  @override
+  Future<void> run() async {
+    final client = _apiClientFrom(argResults!);
+    try {
+      final alerts = (await client.get('/alerts') as List).cast<Map>();
+      if (alerts.isEmpty) {
+        stdout.writeln('nothing is alerting');
+        return;
+      }
+      final now = DateTime.now();
+      for (final alert in alerts) {
+        final since = DateTime.parse(alert['since'] as String).toLocal();
+        final held = now.difference(since);
+        stdout.writeln('${alert['message']}  (for ${_humanize(held)})');
+      }
+      // Non-zero while anything is alerting, so this works as a health check in a
+      // pipeline or a supervision script.
+      exitCode = 1;
+    } finally {
+      client.close();
+    }
+  }
+
+  static String _humanize(Duration d) {
+    if (d.inHours > 0) return '${d.inHours}h';
+    if (d.inMinutes > 0) return '${d.inMinutes}m';
+    return '${d.inSeconds}s';
   }
 }
 

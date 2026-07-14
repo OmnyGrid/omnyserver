@@ -268,6 +268,14 @@ Map<String, dynamic> openApiDocument() => {
         'responses': {'200': _ok('A Server-Sent Events stream')},
       },
     },
+    '/alerts': {
+      'get': {
+        'summary':
+            'What is wrong right now (only what is currently breached; the '
+            'history is on the event stream)',
+        'responses': {'200': _ok('Array of active alerts')},
+      },
+    },
     '/audit': {
       'get': {
         'summary': 'Recent audit entries',

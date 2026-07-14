@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:omnyhub/omnyhub.dart' as omnyhub;
 
 import '../../domain/auth/principal.dart';
+import '../../domain/entities/alert.dart';
 import '../../domain/entities/audit_entry.dart';
 import '../../domain/entities/metric_point.dart';
 import '../../domain/entities/node_descriptor.dart';
@@ -28,6 +29,7 @@ import '../../shared/errors/error_codes.dart';
 import '../../shared/errors/omnyserver_exception.dart';
 import '../../shared/utils/clock.dart';
 import '../../shared/utils/id_generator.dart';
+import 'alert_monitor.dart';
 import 'audit_log.dart';
 import 'log_buffer.dart';
 import 'hub_config.dart';
@@ -59,6 +61,13 @@ class OmnyServerHub {
     capacityPerNode: config.logCapacityPerNode,
   );
 
+  /// Watches the fleet against the Hub's alert rules.
+  late final AlertMonitor alerts = AlertMonitor(
+    rules: config.alertRules,
+    eventBus: config.eventBus,
+    clock: config.clock,
+  );
+
   /// The audit log.
   late final AuditLog audit = AuditLog(
     config.auditRepository,
@@ -84,6 +93,7 @@ class OmnyServerHub {
   );
 
   omnyhub.OmnyHub? _server;
+  Timer? _alertTicker;
 
   /// Creates a Hub from [config].
   OmnyServerHub(this.config);
@@ -198,6 +208,14 @@ class OmnyServerHub {
     }
     await server.start();
     _server = server;
+
+    // Nothing else would ever notice that a node has now been gone *long enough*:
+    // an absence produces no events to react to, so the offline rules need a
+    // clock of their own.
+    if (config.alertRules.any((r) => r.metric == AlertMetric.offline)) {
+      _alertTicker = Timer.periodic(config.alertInterval, (_) => alerts.tick());
+    }
+
     _log('Hub listening on ${config.host}:$port');
   }
 
@@ -213,6 +231,8 @@ class OmnyServerHub {
 
   /// Stops the Hub and releases resources.
   Future<void> close() async {
+    _alertTicker?.cancel();
+    _alertTicker = null;
     await logs.close();
     await _server?.stop();
     _server = null;
@@ -488,6 +508,9 @@ class OmnyServerHub {
     );
     await config.nodeRepository.save(registered);
     config.eventBus.publish(NodeConnected(registered.id, config.clock.now()));
+    // Back from the dead: whatever it was alerting about is over — including its
+    // thresholds, which cannot be judged on a node that reports nothing.
+    alerts.onConnected(registered.id.value);
     await audit.record(
       principal: principal.id,
       action: 'node.register',
@@ -543,9 +566,14 @@ class OmnyServerHub {
     }
   }
 
-  Future<void> _recordMetric(NodeId id, NodeStatus status) => config
-      .metricRepository
-      .record(MetricSample(nodeId: id, at: status.capturedAt, status: status));
+  Future<void> _recordMetric(NodeId id, NodeStatus status) {
+    // Judged on the reading the Hub already has, so alerting costs nothing extra
+    // and can never be staler than the fleet view itself.
+    alerts.onStatus(id.value, MetricPoint.fromStatus(status));
+    return config.metricRepository.record(
+      MetricSample(nodeId: id, at: status.capturedAt, status: status),
+    );
+  }
 
   // ---------------------------------------------------------------------------
   // The catalogue: what can be asked of a node, and what has been saved to ask.
@@ -755,6 +783,7 @@ class OmnyServerHub {
     if (node == null) return;
     final id = NodeId(node.id.value);
     config.eventBus.publish(NodeDisconnected(id, config.clock.now()));
+    alerts.onDisconnected(id.value);
     try {
       final descriptor = nodeDescriptorFrom(node.descriptor);
       unawaited(config.nodeRepository.save(descriptor.copyWith(online: false)));

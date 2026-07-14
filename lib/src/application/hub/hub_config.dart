@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import '../../domain/auth/authenticator.dart';
+import '../../domain/entities/alert.dart';
 import '../../domain/events/event_bus.dart';
 import '../../domain/repository/repositories.dart';
 import '../../domain/state/state_reconciler.dart';
@@ -127,6 +128,19 @@ class HubConfig {
   /// Plans how to move a node from what it is to what it should be.
   final StateReconciler reconciler;
 
+  /// The conditions worth being told about (`disk>90`, `cpu>95 for 5m`,
+  /// `offline for 2m`).
+  ///
+  /// Empty by default, and deliberately: a tool that invents its own thresholds
+  /// is a tool that pages you at 3am about a disk it decided was too full.
+  final List<AlertRule> alertRules;
+
+  /// How often pending `offline` alerts are re-checked.
+  ///
+  /// An absence produces no events, so nothing else would ever notice that a node
+  /// has now been gone long enough to be worth mentioning.
+  final Duration alertInterval;
+
   /// How many log lines the Hub retains per node.
   ///
   /// A tail for looking at a misbehaving node, not a log server: see `LogBuffer`
@@ -165,6 +179,8 @@ class HubConfig {
     GrantRepository? grantRepository,
     DesiredStateRepository? desiredStateRepository,
     StateReconciler? reconciler,
+    this.alertRules = const [],
+    this.alertInterval = const Duration(seconds: 15),
     this.logCapacityPerNode = 500,
     this.logger,
   }) : assert(

@@ -26,6 +26,7 @@ export 'src/domain/value_objects/principal_id.dart';
 
 // Entities.
 export 'src/domain/capabilities/capability.dart';
+export 'src/domain/entities/alert.dart';
 export 'src/domain/entities/audit_entry.dart';
 export 'src/domain/entities/formula_spec.dart';
 export 'src/domain/entities/grant.dart';

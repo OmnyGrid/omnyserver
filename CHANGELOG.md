@@ -1,3 +1,38 @@
+## 0.13.0
+
+Alerts — and the distinction the whole thing rests on: **a condition is not an
+alert**.
+
+```sh
+omnyserver hub start … --alert 'disk>90' --alert 'cpu>95 for 5m' --alert 'offline for 2m'
+omnyserver alerts     # what is wrong right now; exits non-zero if anything is
+```
+
+### Added
+
+- **`hub start --alert`, `GET /alerts`, `omnyserver alerts`, and an alerts panel
+  on the dashboard.** Rules are judged on the heartbeats the Hub already receives,
+  so alerting costs nothing extra and can never be staler than the fleet view.
+
+  A node at 95% CPU for one heartbeat is a build running; at 95% for five minutes
+  it is a problem. So a breach is *observed* immediately and *raised* only once it
+  has held for the rule's duration — and an alert is announced **once**, not on
+  every heartbeat, and **resolved** when it clears. Each of those is the
+  difference between alerting and noise, and an operator who has learned to ignore
+  alerts has no alerting at all.
+
+  There are **no default rules**. A tool that invents its own thresholds is a tool
+  that pages you at 3am about a disk it decided was too full.
+
+- `AlertRaised` and `AlertResolved` ride the existing event bus, so an alert
+  reaches the dashboard, `events --follow` and anything else watching by the paths
+  that already exist, rather than needing a delivery mechanism of its own.
+
+- `offline` rules get a ticker, because an absence produces no events: nothing
+  else would ever notice that a node has now been gone *long enough*.
+
+---
+
 ## 0.12.0
 
 A node's log, readable without logging into the node.

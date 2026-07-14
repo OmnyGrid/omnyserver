@@ -84,3 +84,12 @@
   white-space: pre-wrap;
   word-break: break-word;
 }
+
+/* Alerts sit above the fleet, and are the one thing on the page that should
+   catch the eye. */
+.alerts {
+  border-left: 3px solid var(--danger);
+}
+.alerts .row {
+  cursor: pointer;
+}

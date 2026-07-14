@@ -83,11 +83,13 @@ class NodeLogs {
   }
 
   void _listen() {
-    _stream = ctx.service.logStream(nodeId).listen(
-      _append,
-      onError: (Object _) => _setBadge('offline', online: false),
-      onDone: () => _setBadge('disconnected', online: false),
-    );
+    _stream = ctx.service
+        .logStream(nodeId)
+        .listen(
+          _append,
+          onError: (Object _) => _setBadge('offline', online: false),
+          onDone: () => _setBadge('disconnected', online: false),
+        );
     _setBadge('live', online: true);
   }
 

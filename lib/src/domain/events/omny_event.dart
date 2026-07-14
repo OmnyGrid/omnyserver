@@ -77,6 +77,17 @@ sealed class OmnyEvent {
         Json.requireString(json, 'target'),
         at,
       ),
+      'alert.raised' => AlertRaised(
+        node(),
+        Json.requireString(json, 'rule'),
+        Json.requireString(json, 'message'),
+        at,
+      ),
+      'alert.resolved' => AlertResolved(
+        node(),
+        Json.requireString(json, 'rule'),
+        at,
+      ),
       _ => throw ProtocolException('unknown event type "$type"'),
     };
   }
@@ -246,4 +257,55 @@ final class NodeUpdated extends OmnyEvent {
 
   @override
   Map<String, dynamic> payload() => {'nodeId': nodeId.value, 'target': target};
+}
+
+/// A rule became breached by a node.
+///
+/// Raised on the same bus as everything else, so an alert reaches a dashboard,
+/// `events --follow` and the audit trail by the paths that already exist —
+/// rather than needing a delivery mechanism of its own.
+final class AlertRaised extends OmnyEvent {
+  /// The breaching node.
+  final NodeId nodeId;
+
+  /// The rule that is breached (its id, e.g. `disk>90`).
+  final String rule;
+
+  /// A line an operator can read.
+  final String message;
+
+  /// Creates the event.
+  const AlertRaised(this.nodeId, this.rule, this.message, DateTime at)
+    : super(at);
+
+  @override
+  String get type => 'alert.raised';
+
+  @override
+  Map<String, dynamic> payload() => {
+    'nodeId': nodeId.value,
+    'rule': rule,
+    'message': message,
+  };
+}
+
+/// A rule stopped being breached.
+///
+/// The counterpart matters: an alert that fires and never clears teaches an
+/// operator to ignore alerts.
+final class AlertResolved extends OmnyEvent {
+  /// The node that recovered.
+  final NodeId nodeId;
+
+  /// The rule that is no longer breached.
+  final String rule;
+
+  /// Creates the event.
+  const AlertResolved(this.nodeId, this.rule, DateTime at) : super(at);
+
+  @override
+  String get type => 'alert.resolved';
+
+  @override
+  Map<String, dynamic> payload() => {'nodeId': nodeId.value, 'rule': rule};
 }

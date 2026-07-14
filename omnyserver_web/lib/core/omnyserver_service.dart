@@ -159,6 +159,13 @@ class OmnyServerService {
             .toList(),
   );
 
+  /// What is wrong right now.
+  Future<List<Alert>> alerts() => _guard(
+    () async => ((await client.get('/alerts')) as List)
+        .map((a) => Alert.fromJson((a as Map).cast<String, dynamic>()))
+        .toList(),
+  );
+
   /// Recent Hub events, newest first.
   Future<List<OmnyEvent>> events() => _guard(
     () async => ((await client.get('/events')) as List)
