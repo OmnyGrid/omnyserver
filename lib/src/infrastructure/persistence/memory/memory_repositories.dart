@@ -103,8 +103,15 @@ class MemoryMetricRepository implements MetricRepository {
   }
 
   @override
-  Future<List<MetricSample>> recentFor(NodeId nodeId, {int limit = 100}) async {
+  Future<List<MetricSample>> recentFor(
+    NodeId nodeId, {
+    int limit = 100,
+    DateTime? since,
+  }) async {
     final list = _samples[nodeId.value] ?? const [];
-    return list.reversed.take(limit).toList();
+    final window = since == null
+        ? list.reversed
+        : list.reversed.where((s) => !s.at.isBefore(since));
+    return window.take(limit).toList();
   }
 }

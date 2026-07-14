@@ -97,10 +97,43 @@ Map<String, dynamic> openApiDocument() => {
         'responses': {'200': _ok('Apply result'), '404': _err, '502': _err},
       },
     },
+    '/nodes/{id}/metrics': {
+      'get': {
+        'summary': "A node's resource history, for charting",
+        'parameters': [
+          _pathId,
+          {
+            'name': 'since',
+            'in': 'query',
+            'description':
+                'Window back from now (30s, 15m, 1h, 7d) or an '
+                'ISO-8601 instant',
+            'schema': {'type': 'string'},
+          },
+          {
+            'name': 'limit',
+            'in': 'query',
+            'description': 'Maximum samples (default 100)',
+            'schema': {'type': 'integer'},
+          },
+        ],
+        'responses': {
+          '200': _ok('Array of metric points, newest first'),
+          '400': _err,
+          '404': _err,
+        },
+      },
+    },
     '/events': {
       'get': {
         'summary': 'Recent Hub events',
         'responses': {'200': _ok('Array of events')},
+      },
+    },
+    '/events/stream': {
+      'get': {
+        'summary': 'Every event as it happens (text/event-stream)',
+        'responses': {'200': _ok('A Server-Sent Events stream')},
       },
     },
     '/audit': {

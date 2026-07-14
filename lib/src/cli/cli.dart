@@ -42,6 +42,8 @@ CommandRunner<void> buildRunner() {
         ..addCommand(NodesCommand())
         ..addCommand(PresetCommand())
         ..addCommand(FormulaCommand())
+        ..addCommand(EventsCommand())
+        ..addCommand(AuditCommand())
         ..addCommand(WhoamiCommand())
         ..addCommand(CertCommand());
   return runner;
@@ -127,6 +129,7 @@ class HubCommand extends Command<void> {
   /// Creates the hub command group.
   HubCommand() {
     addSubcommand(HubStartCommand());
+    addSubcommand(HubMetricsCommand());
   }
 
   @override
@@ -134,6 +137,32 @@ class HubCommand extends Command<void> {
 
   @override
   String get description => 'Manage the OmnyServer Hub.';
+}
+
+/// `omnyserver hub metrics`
+class HubMetricsCommand extends Command<void> {
+  /// Creates the hub-metrics command.
+  HubMetricsCommand() {
+    _addApiOptions(argParser);
+  }
+
+  @override
+  String get name => 'metrics';
+
+  @override
+  String get description => "Print the Hub's Prometheus metrics.";
+
+  @override
+  Future<void> run() async {
+    final client = _apiClientFrom(argResults!);
+    try {
+      // `/metrics` is Prometheus text outside the versioned API, and it is not
+      // token-gated — so this works against any reachable Hub.
+      stdout.write(await client.getText('/metrics'));
+    } finally {
+      client.close();
+    }
+  }
 }
 
 /// `omnyserver hub start`
@@ -340,8 +369,13 @@ class NodeCommand extends Command<void> {
   /// Creates the node command group.
   NodeCommand() {
     addSubcommand(NodeStartCommand());
+    addSubcommand(NodeShowCommand());
     addSubcommand(NodeStatusCommand());
+    addSubcommand(NodeMetricsCommand());
+    addSubcommand(NodeCapabilitiesCommand());
     addSubcommand(NodeRestartCommand());
+    addSubcommand(NodeShutdownCommand());
+    addSubcommand(NodeUpdateCommand());
   }
 
   @override
@@ -548,6 +582,122 @@ class NodeStatusCommand extends Command<void> {
   }
 }
 
+/// `omnyserver node show <id>`
+class NodeShowCommand extends Command<void> {
+  /// Creates the node-show command.
+  NodeShowCommand() {
+    _addApiOptions(argParser);
+  }
+
+  @override
+  String get name => 'show';
+
+  @override
+  String get description => 'Show a node descriptor (via the Hub API).';
+
+  @override
+  Future<void> run() => _getAndPrint(argResults!, 'show', (id) => '/nodes/$id');
+}
+
+/// `omnyserver node capabilities <id>`
+class NodeCapabilitiesCommand extends Command<void> {
+  /// Creates the node-capabilities command.
+  NodeCapabilitiesCommand() {
+    _addApiOptions(argParser);
+  }
+
+  @override
+  String get name => 'capabilities';
+
+  @override
+  String get description =>
+      "Show a node's advertised capabilities (via the Hub API).";
+
+  @override
+  Future<void> run() => _getAndPrint(
+    argResults!,
+    'capabilities',
+    (id) => '/nodes/$id/capabilities',
+  );
+}
+
+/// `omnyserver node metrics <id>`
+class NodeMetricsCommand extends Command<void> {
+  /// Creates the node-metrics command.
+  NodeMetricsCommand() {
+    _addApiOptions(argParser);
+    argParser
+      ..addOption(
+        'since',
+        help:
+            'Window back from now (30s, 15m, 1h, 7d) or an ISO-8601 instant. '
+            'Defaults to everything retained.',
+      )
+      ..addOption('limit', defaultsTo: '100', help: 'Maximum samples.')
+      ..addFlag(
+        'json',
+        negatable: false,
+        help: 'Emit the raw series instead of a table.',
+      );
+  }
+
+  @override
+  String get name => 'metrics';
+
+  @override
+  String get description =>
+      "Show a node's resource history — the samples the Hub has been recording "
+      'on every heartbeat.';
+
+  @override
+  Future<void> run() async {
+    final args = argResults!;
+    final rest = args.rest;
+    if (rest.isEmpty) throw CliError('usage: node metrics <id> [--since 1h]');
+    final since = args['since'] as String?;
+    final query = [
+      'limit=${Uri.encodeQueryComponent(args['limit'] as String)}',
+      if (since != null) 'since=${Uri.encodeQueryComponent(since)}',
+    ].join('&');
+
+    final client = _apiClientFrom(args);
+    try {
+      final series = await client.get('/nodes/${rest.first}/metrics?$query');
+      if (args['json'] as bool) {
+        stdout.writeln(const JsonEncoder.withIndent('  ').convert(series));
+        return;
+      }
+      final points = (series as List).cast<Map>();
+      if (points.isEmpty) {
+        stdout.writeln('no samples (the node may not have heartbeated yet)');
+        return;
+      }
+      stdout.writeln('AT                        CPU%    MEM%   DISK%');
+      // Newest first from the API; print oldest first so it reads as a timeline.
+      for (final p in points.reversed) {
+        final at = DateTime.parse(p['at'] as String).toLocal();
+        final cpu = (p['cpuPercent'] as num).toDouble();
+        final mem = _pct(p['memoryUsedBytes'], p['memoryTotalBytes']);
+        final disk = _pct(p['storageUsedBytes'], p['storageCapacityBytes']);
+        stdout.writeln(
+          '${at.toString().padRight(26)}'
+          '${cpu.toStringAsFixed(1).padLeft(5)}  '
+          '${mem.padLeft(6)}  ${disk.padLeft(6)}',
+        );
+      }
+    } finally {
+      client.close();
+    }
+  }
+
+  static String _pct(Object? used, Object? total) {
+    final u = (used as num?)?.toDouble() ?? 0;
+    final t = (total as num?)?.toDouble() ?? 0;
+    if (t <= 0) return '—';
+    return '${(u / t * 100).toStringAsFixed(0)}%';
+  }
+}
+
 /// `omnyserver node restart <id>`
 class NodeRestartCommand extends Command<void> {
   /// Creates the node-restart command.
@@ -572,6 +722,86 @@ class NodeRestartCommand extends Command<void> {
     } finally {
       client.close();
     }
+  }
+}
+
+/// `omnyserver node shutdown <id>`
+class NodeShutdownCommand extends Command<void> {
+  /// Creates the node-shutdown command.
+  NodeShutdownCommand() {
+    _addApiOptions(argParser);
+  }
+
+  @override
+  String get name => 'shutdown';
+
+  @override
+  String get description => 'Shut a node down (via the Hub API).';
+
+  @override
+  Future<void> run() async {
+    final rest = argResults!.rest;
+    if (rest.isEmpty) throw CliError('usage: node shutdown <id>');
+    final client = _apiClientFrom(argResults!);
+    try {
+      await client.post('/nodes/${rest.first}/shutdown');
+      stdout.writeln('shutdown requested for ${rest.first}');
+    } finally {
+      client.close();
+    }
+  }
+}
+
+/// `omnyserver node update <id>`
+class NodeUpdateCommand extends Command<void> {
+  /// Creates the node-update command.
+  NodeUpdateCommand() {
+    _addApiOptions(argParser);
+    argParser.addOption(
+      'target',
+      defaultsTo: 'agent',
+      help: 'What to update on the node.',
+    );
+  }
+
+  @override
+  String get name => 'update';
+
+  @override
+  String get description => 'Update a node (via the Hub API).';
+
+  @override
+  Future<void> run() async {
+    final rest = argResults!.rest;
+    if (rest.isEmpty) {
+      throw CliError('usage: node update <id> [--target agent]');
+    }
+    final client = _apiClientFrom(argResults!);
+    try {
+      final target = argResults!['target'] as String;
+      await client.post('/nodes/${rest.first}/update', {'target': target});
+      stdout.writeln('update ($target) requested for ${rest.first}');
+    } finally {
+      client.close();
+    }
+  }
+}
+
+/// GETs [path] for the node named in the first positional argument and prints
+/// the JSON — the shape every read-only node command shares.
+Future<void> _getAndPrint(
+  ArgResults args,
+  String usage,
+  String Function(String id) path,
+) async {
+  final rest = args.rest;
+  if (rest.isEmpty) throw CliError('usage: node $usage <id>');
+  final client = _apiClientFrom(args);
+  try {
+    final body = await client.get(path(rest.first));
+    stdout.writeln(const JsonEncoder.withIndent('  ').convert(body));
+  } finally {
+    client.close();
   }
 }
 
@@ -730,6 +960,154 @@ class FormulaRunCommand extends Command<void> {
           'version': argResults!['formula-version'],
       });
       stdout.writeln(const JsonEncoder.withIndent('  ').convert(result));
+    } finally {
+      client.close();
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// events / audit
+// ---------------------------------------------------------------------------
+
+/// `omnyserver events`
+class EventsCommand extends Command<void> {
+  /// Creates the events command.
+  EventsCommand() {
+    _addApiOptions(argParser);
+    argParser.addFlag(
+      'follow',
+      abbr: 'f',
+      negatable: false,
+      help: 'Stream events as they happen, instead of printing recent ones.',
+    );
+  }
+
+  @override
+  String get name => 'events';
+
+  @override
+  String get description => 'Show Hub events; -f streams them live.';
+
+  @override
+  Future<void> run() async {
+    final args = argResults!;
+    if (args['follow'] as bool) return _follow(args);
+
+    final client = _apiClientFrom(args);
+    try {
+      final events = (await client.get('/events') as List).cast<Map>();
+      if (events.isEmpty) {
+        stdout.writeln('no events yet');
+        return;
+      }
+      for (final e in events) {
+        stdout.writeln(_format(e));
+      }
+    } finally {
+      client.close();
+    }
+  }
+
+  /// `tail -f` for the fleet, over Server-Sent Events.
+  ///
+  /// The response never ends, so this reads the socket directly rather than
+  /// going through [HubApiClient], which buffers a body to completion.
+  Future<void> _follow(ArgResults args) async {
+    final base = Uri.parse(args['api'] as String);
+    final ca = args['ca'] as String?;
+    final http = HttpClient(
+      context: ca == null
+          ? null
+          : (SecurityContext(withTrustedRoots: true)
+              ..setTrustedCertificates(ca)),
+    );
+    if (args['insecure'] as bool) {
+      http.badCertificateCallback = (_, _, _) => true;
+    }
+
+    try {
+      final request = await http.getUrl(
+        base.replace(path: '/api/v1/events/stream'),
+      );
+      final token = args['token'] as String?;
+      final principal = args['principal'] as String?;
+      if (token != null) request.headers.set('authorization', 'Bearer $token');
+      if (principal != null) {
+        request.headers.set('x-omny-principal', principal);
+      }
+      final response = await request.close();
+      if (response.statusCode >= 400) {
+        final body = await response.transform(utf8.decoder).join();
+        throw CliError(
+          'stream failed (HTTP ${response.statusCode}): ${body.trim()}',
+        );
+      }
+
+      stdout.writeln('streaming events — Ctrl-C to stop');
+      // SSE frames a `data:` line per event and dispatches on a blank line;
+      // comment lines (`: ping`) are keep-alives and carry nothing.
+      await for (final line
+          in response.transform(utf8.decoder).transform(const LineSplitter())) {
+        if (!line.startsWith('data: ')) continue;
+        final payload = jsonDecode(line.substring(6));
+        if (payload is Map) {
+          stdout.writeln(_format(payload));
+        }
+      }
+    } finally {
+      http.close(force: true);
+    }
+  }
+
+  static String _format(Map<dynamic, dynamic> event) {
+    final at = event['at'];
+    final type = event['type'];
+    final rest = {...event}
+      ..remove('at')
+      ..remove('type');
+    final fields = rest.entries.map((e) => '${e.key}=${e.value}').join(' ');
+    return '$at  $type${fields.isEmpty ? '' : '  $fields'}';
+  }
+}
+
+/// `omnyserver audit`
+class AuditCommand extends Command<void> {
+  /// Creates the audit command.
+  AuditCommand() {
+    _addApiOptions(argParser);
+  }
+
+  @override
+  String get name => 'audit';
+
+  @override
+  String get description =>
+      'Show the audit trail — who did what, as the Hub verified it.';
+
+  @override
+  Future<void> run() async {
+    final client = _apiClientFrom(argResults!);
+    try {
+      final entries = (await client.get('/audit') as List).cast<Map>();
+      if (entries.isEmpty) {
+        stdout.writeln('no audited actions yet');
+        return;
+      }
+      // Local time, seconds precision: an ISO instant with microseconds is 27
+      // characters of mostly noise, and it ran into the next column.
+      stdout.writeln('AT                   PRINCIPAL     ACTION');
+      for (final e in entries) {
+        final at = DateTime.parse(
+          e['at'] as String,
+        ).toLocal().toString().split('.').first;
+        final target = e['target'] == null ? '' : ' ${e['target']}';
+        stdout.writeln(
+          '${at.padRight(20)} '
+          '${'${e['principal']}'.padRight(13)}'
+          '${e['action']}$target  (${e['outcome']})',
+        );
+      }
     } finally {
       client.close();
     }

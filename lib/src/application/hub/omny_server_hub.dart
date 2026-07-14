@@ -4,6 +4,7 @@ import 'package:omnyhub/omnyhub.dart' as omnyhub;
 
 import '../../domain/auth/principal.dart';
 import '../../domain/entities/audit_entry.dart';
+import '../../domain/entities/metric_point.dart';
 import '../../domain/entities/node_descriptor.dart';
 import '../../domain/entities/node_status.dart';
 import '../../domain/entities/preset.dart';
@@ -516,6 +517,24 @@ class OmnyServerHub {
   Future<void> _recordMetric(NodeId id, NodeStatus status) => config
       .metricRepository
       .record(MetricSample(nodeId: id, at: status.capturedAt, status: status));
+
+  /// A node's resource history, newest first — the samples the Hub has been
+  /// recording on every heartbeat all along.
+  ///
+  /// Projected down to [MetricPoint]s: a stored sample is a whole [NodeStatus],
+  /// process table included, and a chart wants none of that.
+  Future<List<MetricPoint>> metricsFor(
+    NodeId id, {
+    int limit = 100,
+    DateTime? since,
+  }) async {
+    final samples = await config.metricRepository.recentFor(
+      id,
+      limit: limit,
+      since: since,
+    );
+    return [for (final s in samples) MetricPoint.fromStatus(s.status)];
+  }
 
   /// A node's connection is gone (dropped or timed out). The registry keeps the
   /// record, marked offline; we persist that and announce it.

@@ -90,6 +90,26 @@ void main() {
     }
   });
 
+  test('a query string reaches the Hub as a query, not as path', () async {
+    // Uri.replace(path:) percent-encodes a `?`, which buried the whole query
+    // inside the path and made `/nodes/x/metrics?since=1h` match no route at
+    // all — a 404 for every parameterised endpoint.
+    final cluster = await TestCluster.start();
+    final api = HttpApiServer(hub: cluster.hub, host: '127.0.0.1', port: 0);
+    await api.start();
+    await cluster.startNode(id: 'worker-01');
+
+    final client = HubApiClient(Uri.parse('http://127.0.0.1:${api.boundPort}'));
+    try {
+      final series = await client.get('/nodes/worker-01/metrics?limit=1');
+      expect(series, isA<List>());
+    } finally {
+      client.close();
+      await api.close();
+      await cluster.dispose();
+    }
+  });
+
   test('buildRunner registers the documented commands', () {
     final runner = buildRunner();
     expect(

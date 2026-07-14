@@ -50,3 +50,16 @@
 .pad-lg {
   padding: 32px;
 }
+
+/* Resource history. The line inherits `currentColor`, so it follows the theme
+   rather than pinning a colour that would disappear on a dark background. */
+.sparkline {
+  gap: 4px;
+  color: var(--accent);
+}
+.sparkline .spark {
+  display: block;
+  border-radius: var(--radius-sm);
+  background: var(--bg-sunken);
+  padding: 4px 0;
+}

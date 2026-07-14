@@ -63,7 +63,16 @@ class HubApiClient {
   }
 
   Future<dynamic> _send(String method, String path, [Object? body]) async {
-    final uri = baseUrl.replace(path: '/api/v1$path');
+    // `Uri.replace(path: …)` percent-encodes a `?`, which would bury the query
+    // string inside the path and turn `/nodes/x/metrics?since=1h` into a route
+    // that matches nothing. Split it off and hand it over as a query.
+    final split = path.indexOf('?');
+    final uri = split == -1
+        ? baseUrl.replace(path: '/api/v1$path')
+        : baseUrl.replace(
+            path: '/api/v1${path.substring(0, split)}',
+            query: path.substring(split + 1),
+          );
     final response = await _transport.send(
       method,
       uri,

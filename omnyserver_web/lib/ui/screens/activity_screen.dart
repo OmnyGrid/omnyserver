@@ -9,11 +9,12 @@ import '../../app/app_context.dart';
 
 /// What the Hub has been doing, and who told it to.
 ///
-/// Two feeds side by side, because they answer different questions. *Events* are
-/// what happened to the fleet (a node connected, a formula finished). The *audit
-/// trail* is who asked for it — and since the Hub verifies a grant rather than
-/// believing a header, the principal shown here is one it established, not one
-/// the caller claimed.
+/// Two feeds, because they answer different questions. *Events* are what happened
+/// to the fleet (a node connected, a formula finished) and arrive **live**, over
+/// Server-Sent Events — the recent ones are fetched once to fill the pane, and
+/// everything after that is pushed. The *audit trail* is who asked for it, and
+/// since the Hub verifies a grant rather than believing a header, the principal
+/// shown is one it established, not one the caller claimed.
 class ActivityScreen implements Screen {
   /// The app context.
   final AppContext ctx;
@@ -23,11 +24,15 @@ class ActivityScreen implements Screen {
 
   late final web.HTMLElement _events;
   late final web.HTMLElement _audit;
+  late final web.HTMLElement _liveBadge;
+  StreamSubscription<OmnyEvent>? _stream;
+  bool _disposed = false;
 
   /// Builds the screen.
   ActivityScreen(this.ctx) {
     _events = div();
     _audit = div();
+    _liveBadge = el('span', classes: 'badge', text: 'connecting…');
 
     element = el(
       'div',
@@ -45,7 +50,14 @@ class ActivityScreen implements Screen {
           'div',
           classes: 'card stack',
           children: [
-            el('h3', text: 'Events'),
+            el(
+              'div',
+              classes: 'row',
+              children: [
+                el('h3', classes: 'grow', text: 'Events'),
+                _liveBadge,
+              ],
+            ),
             _events,
           ],
         ),
@@ -66,6 +78,48 @@ class ActivityScreen implements Screen {
   void _load() {
     unawaited(_loadEvents());
     unawaited(_loadAudit());
+    _listen();
+  }
+
+  /// Subscribes to the live stream, so the pane keeps up with the fleet instead
+  /// of being however stale the last refresh left it.
+  void _listen() {
+    unawaited(_stream?.cancel());
+    _stream = ctx.service.eventStream().listen(
+      _prepend,
+      onError: (Object e) {
+        if (_disposed) return;
+        // The list still holds what was fetched; only the *live* half is gone,
+        // so say that rather than blanking the pane.
+        _liveBadge
+          ..textContent = 'offline'
+          ..className = 'badge offline';
+      },
+      onDone: () {
+        if (_disposed) return;
+        _liveBadge
+          ..textContent = 'disconnected'
+          ..className = 'badge offline';
+      },
+    );
+    _liveBadge
+      ..textContent = 'live'
+      ..className = 'badge online';
+  }
+
+  /// Puts a freshly-arrived event at the top of the feed.
+  void _prepend(OmnyEvent event) {
+    if (_disposed) return;
+    // The first live event replaces whatever placeholder the fetch left.
+    final placeholder = _events.querySelector('.empty');
+    if (placeholder != null) clearChildren(_events);
+
+    _events.insertBefore(_eventRow(event, DateTime.now()), _events.firstChild);
+
+    // Keep the pane bounded: this stream runs for as long as the tab is open.
+    while (_events.childElementCount > 100) {
+      _events.lastElementChild?.remove();
+    }
   }
 
   Future<void> _loadEvents() async {
@@ -79,22 +133,9 @@ class ActivityScreen implements Screen {
         return;
       }
       final now = DateTime.now();
-      for (final event in events.reversed.take(50)) {
-        final json = event.toJson();
-        _events.appendChild(
-          el(
-            'div',
-            classes: 'row',
-            children: [
-              el('div', classes: 'mono grow', text: _describe(json)),
-              el(
-                'div',
-                classes: 'muted',
-                text: relativeTime(event.at.toLocal(), now),
-              ),
-            ],
-          ),
-        );
+      // Newest first, matching the live feed that prepends onto the same list.
+      for (final event in events.take(50)) {
+        _events.appendChild(_eventRow(event, now));
       }
     } on AppError catch (e) {
       clearChildren(_events);
@@ -140,6 +181,17 @@ class ActivityScreen implements Screen {
     ],
   );
 
+  /// One row, used for both the fetched history and the live feed, so an event
+  /// does not change appearance the moment it stops being new.
+  web.HTMLElement _eventRow(OmnyEvent event, DateTime now) => el(
+    'div',
+    classes: 'row',
+    children: [
+      el('div', classes: 'mono grow', text: _describe(event.toJson())),
+      el('div', classes: 'muted', text: relativeTime(event.at.toLocal(), now)),
+    ],
+  );
+
   /// An event's own JSON is the most faithful description of it — the payload
   /// differs per type, and inventing a sentence per type would drift.
   String _describe(Map<String, dynamic> json) {
@@ -152,5 +204,10 @@ class ActivityScreen implements Screen {
   }
 
   @override
-  void dispose() {}
+  void dispose() {
+    _disposed = true;
+    // Cancelling aborts the fetch, which is how the Hub learns this client is
+    // gone rather than waiting for a keep-alive ping to fail.
+    unawaited(_stream?.cancel());
+  }
 }

@@ -1,5 +1,9 @@
+import 'dart:convert';
+
 import 'package:omnyserver/omnyserver_client_web.dart';
 import 'package:omnyshell_web/foundation.dart' show AppError, AppErrorKind;
+
+import 'sse_client.dart';
 
 /// The identity the Hub resolved the current credentials to.
 class Identity {
@@ -144,12 +148,42 @@ class OmnyServerService {
     ),
   );
 
+  /// A node's resource history, newest first — for charting.
+  Future<List<MetricPoint>> metrics(String id, {String since = '1h'}) => _guard(
+    () async =>
+        ((await client.get('/nodes/$id/metrics?since=$since&limit=200'))
+                as List)
+            .map(
+              (p) => MetricPoint.fromJson((p as Map).cast<String, dynamic>()),
+            )
+            .toList(),
+  );
+
   /// Recent Hub events, newest first.
   Future<List<OmnyEvent>> events() => _guard(
     () async => ((await client.get('/events')) as List)
         .map((e) => OmnyEvent.fromJson((e as Map).cast<String, dynamic>()))
         .toList(),
   );
+
+  /// Every event as it happens, over Server-Sent Events.
+  ///
+  /// Not `EventSource`, which cannot send an `Authorization` header and would
+  /// force the token into the URL — where it lands in proxy logs and browser
+  /// history. `fetch` can carry the header, and its response body is a readable
+  /// stream, so the frames are decoded here instead.
+  Stream<OmnyEvent> eventStream() {
+    final uri = client.baseUrl.replace(path: '/api/v1/events/stream');
+    return sseStream(
+      uri,
+      headers: {
+        if (_client?.token != null) 'authorization': 'Bearer ${_client!.token}',
+        if (_client?.principal != null) 'x-omny-principal': _client!.principal!,
+      },
+    ).map(
+      (data) => OmnyEvent.fromJson(jsonDecode(data) as Map<String, dynamic>),
+    );
+  }
 
   /// Recent audit entries, newest first.
   Future<List<AuditEntry>> audit() => _guard(

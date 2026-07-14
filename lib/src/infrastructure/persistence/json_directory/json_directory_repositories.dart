@@ -181,7 +181,11 @@ class JsonMetricRepository implements MetricRepository {
   }
 
   @override
-  Future<List<MetricSample>> recentFor(NodeId nodeId, {int limit = 100}) async {
+  Future<List<MetricSample>> recentFor(
+    NodeId nodeId, {
+    int limit = 100,
+    DateTime? since,
+  }) async {
     final file = _fileFor(nodeId.value);
     if (!file.existsSync()) return const [];
     final lines = file.readAsLinesSync().where((l) => l.trim().isNotEmpty);
@@ -194,6 +198,7 @@ class JsonMetricRepository implements MetricRepository {
             status: NodeStatus.fromJson(j['status'] as Map<String, dynamic>),
           ),
         )
+        .where((s) => since == null || !s.at.isBefore(since))
         .toList()
         .reversed
         .take(limit)

@@ -8,6 +8,7 @@ import 'package:web/web.dart' as web;
 import '../../app/app_context.dart';
 import '../../state/nodes_controller.dart';
 import '../format.dart';
+import '../sparkline.dart';
 
 /// One node: what it is, what it is doing, and what you can do to it.
 ///
@@ -28,7 +29,10 @@ class NodeDetailScreen implements Screen {
   late final web.HTMLElement _statusBody;
   late final web.HTMLElement _infoBody;
   late final web.HTMLElement _actionsBody;
+  late final web.HTMLElement _historyBody;
   StreamSubscription<void>? _sub;
+  Timer? _historyTimer;
+  bool _disposed = false;
 
   /// Builds the screen.
   NodeDetailScreen(this.ctx, this.nodeId) {
@@ -36,6 +40,7 @@ class NodeDetailScreen implements Screen {
     _statusBody = div();
     _infoBody = div();
     _actionsBody = el('div', classes: 'row');
+    _historyBody = div();
 
     element = el(
       'div',
@@ -66,6 +71,14 @@ class NodeDetailScreen implements Screen {
           'div',
           classes: 'card stack',
           children: [
+            el('h3', text: 'Last hour'),
+            _historyBody,
+          ],
+        ),
+        el(
+          'div',
+          classes: 'card stack',
+          children: [
             el('h3', text: 'Actions'),
             _actionsBody,
           ],
@@ -79,6 +92,72 @@ class NodeDetailScreen implements Screen {
     _renderStatus();
     unawaited(_status.start());
     unawaited(_loadDescriptor());
+    unawaited(_loadHistory());
+    // The Hub records a sample per heartbeat; re-reading every half minute keeps
+    // the charts moving without hammering it.
+    _historyTimer = Timer.periodic(
+      const Duration(seconds: 30),
+      (_) => unawaited(_loadHistory()),
+    );
+  }
+
+  /// The resource history the Hub has been recording on every heartbeat all
+  /// along — and which, until now, nothing ever read back.
+  Future<void> _loadHistory() async {
+    try {
+      final points = await ctx.service.metrics(nodeId, since: '1h');
+      if (_disposed) return;
+      clearChildren(_historyBody);
+
+      if (points.length < 2) {
+        _historyBody.appendChild(
+          emptyState(
+            'Not enough history yet — samples land on each heartbeat.',
+          ),
+        );
+        return;
+      }
+
+      // The API returns newest-first; a chart reads left-to-right in time.
+      final series = points.reversed.toList();
+      final cpu = [for (final p in series) p.cpuPercent];
+      final memory = [for (final p in series) p.memoryPercent ?? 0];
+      final disk = [for (final p in series) p.storagePercent ?? 0];
+
+      _historyBody
+        ..appendChild(
+          sparkline(
+            cpu,
+            label: 'CPU',
+            caption: '${cpu.last.toStringAsFixed(1)}%',
+          ),
+        )
+        ..appendChild(
+          sparkline(
+            memory,
+            label: 'Memory',
+            caption: '${memory.last.toStringAsFixed(0)}%',
+          ),
+        )
+        ..appendChild(
+          sparkline(
+            disk,
+            label: 'Disk',
+            caption: '${disk.last.toStringAsFixed(0)}%',
+          ),
+        )
+        ..appendChild(
+          el(
+            'div',
+            classes: 'hint',
+            text: '${series.length} samples over the last hour.',
+          ),
+        );
+    } on AppError catch (e) {
+      if (_disposed) return;
+      clearChildren(_historyBody);
+      _historyBody.appendChild(errorBanner(e));
+    }
   }
 
   Future<void> _loadDescriptor() async {
@@ -310,6 +389,8 @@ class NodeDetailScreen implements Screen {
 
   @override
   void dispose() {
+    _disposed = true;
+    _historyTimer?.cancel();
     _status.dispose();
     unawaited(_sub?.cancel());
   }

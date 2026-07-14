@@ -247,6 +247,18 @@ A grant's roles are checked against the Hub's `Authorizer` before it may touch
 the API at all, and the fail-closed default reserves it for `admin` — so
 `node-account`'s token connects nodes and nothing more, even if it leaks.
 
+Watch the fleet, and read a node's history:
+
+```sh
+omnyserver events --follow                      # tail -f for the fleet (SSE)
+omnyserver node metrics worker-01 --since 1h    # CPU / memory / disk over time
+omnyserver audit                                # who did what, as the Hub verified it
+```
+
+`node metrics` reads history the Hub has been recording on **every heartbeat**
+all along — no extra configuration, and it works for any node that has been
+connected long enough to report twice.
+
 `omnyserver whoami` answers what the Hub makes of your credentials:
 
 ```sh

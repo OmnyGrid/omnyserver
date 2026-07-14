@@ -1,3 +1,54 @@
+## 0.7.0
+
+History, a live stream, and the CLI commands the API always had but the CLI
+never exposed.
+
+```sh
+omnyserver node metrics worker-01 --since 1h   # the samples the Hub already had
+omnyserver events --follow                     # tail -f for the fleet
+```
+
+### Added
+
+- **`GET /nodes/{id}/metrics`** and **`omnyserver node metrics <id>`**. The Hub
+  has been recording a full `NodeStatus` to its `MetricRepository` on *every
+  heartbeat* since the beginning — and nothing has ever read one back. This is
+  that history, projected down to the handful of numbers a chart is actually
+  drawn from (`MetricPoint`): a stored sample carries the whole process table, so
+  serving it raw would cost megabytes to draw a line.
+
+  `?since=` takes `30s` / `15m` / `1h` / `7d` as well as an ISO-8601 instant,
+  because "the last hour" is the thing an operator means, and making them compute
+  a timestamp for it is a small cruelty. `MetricRepository.recentFor` grew a
+  `since` parameter, applied before `limit` so a window is a window and not
+  "the newest N that happen to fall in one".
+
+- **`GET /events/stream`** (Server-Sent Events) and **`omnyserver events -f`**.
+  `/events` returns a bounded snapshot, so anything built on it is a few seconds
+  stale and keeps re-fetching a list it has mostly seen. This is the same events,
+  pushed — each flushed as it happens, with the event's type as the SSE `event:`
+  name so a browser can `addEventListener('node.connected', …)` rather than
+  switching on a payload field. `HttpApiServer.eventKeepAlive` tunes the ping.
+
+- **The CLI commands the API already answered**: `node shutdown`, `node update`,
+  `node show`, `node capabilities`, `events`, `audit`, `hub metrics`. The
+  dashboard could do all of these and the CLI could not.
+
+### Fixed
+
+- **`HubApiClient` mangled query strings.** `Uri.replace(path: …)` percent-encodes
+  a `?`, so `/nodes/x/metrics?since=1h` became a path with a `%3F` in it and
+  matched no route at all — a 404 for *every* endpoint taking a parameter. Found
+  by running the CLI against a real Hub; a unit test would not have noticed,
+  because both sides were mocked.
+
+- **Stopping the Hub blocked on live event streams.** An SSE response never ends,
+  so a shutdown waited for each idle client's next keep-alive ping to fail — a
+  Hub taking fifteen seconds to stop because somebody left a dashboard open.
+  `HttpApiServer.close()` now hangs them up first.
+
+---
+
 ## 0.6.0
 
 The Hub becomes callable from a browser. This is the foundation for the

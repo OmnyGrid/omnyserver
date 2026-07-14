@@ -234,10 +234,19 @@ class SqliteMetricRepository implements MetricRepository {
   Future<List<MetricSample>> recentFor(
     NodeId nodeId, {
     int limit = 100,
+    DateTime? since,
   }) async => db
       .select(
-        'SELECT at, data FROM metrics WHERE node_id = ? ORDER BY at DESC LIMIT ?',
-        [nodeId.value, limit],
+        'SELECT at, data FROM metrics WHERE node_id = ?'
+        '${since == null ? '' : ' AND at >= ?'}'
+        ' ORDER BY at DESC LIMIT ?',
+        [
+          nodeId.value,
+          // `at` is stored as an ISO-8601 UTC string, which sorts and compares
+          // lexicographically in the same order as the instants themselves.
+          if (since != null) since.toUtc().toIso8601String(),
+          limit,
+        ],
       )
       .map(
         (r) => MetricSample(

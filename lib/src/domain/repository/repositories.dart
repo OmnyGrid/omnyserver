@@ -89,5 +89,13 @@ abstract class MetricRepository {
   Future<void> record(MetricSample sample);
 
   /// Returns recent samples for [nodeId], newest first, up to [limit].
-  Future<List<MetricSample>> recentFor(NodeId nodeId, {int limit = 100});
+  ///
+  /// [since] bounds the window: only samples captured at or after it are
+  /// returned. Applied *before* [limit], so "the last hour" is the last hour and
+  /// not the newest [limit] samples that happen to fall in it.
+  Future<List<MetricSample>> recentFor(
+    NodeId nodeId, {
+    int limit = 100,
+    DateTime? since,
+  });
 }

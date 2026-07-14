@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
@@ -15,9 +16,11 @@ import 'package:omnyhub/omnyhub.dart'
         Principal,
         RouterService,
         Service,
+        SseEvent,
         StaticTls,
         UnauthorizedException,
-        cors;
+        cors,
+        sseResponse;
 
 import '../../application/hub/event_aggregator.dart';
 import '../../application/hub/hub_metrics.dart';
@@ -25,6 +28,7 @@ import '../../application/hub/omny_server_hub.dart';
 import '../../domain/auth/credential.dart';
 import '../../domain/auth/principal.dart' as domain;
 import '../../domain/entities/preset.dart';
+import '../../domain/events/omny_event.dart';
 import '../../domain/formula/formula_action.dart';
 import '../../domain/value_objects/node_id.dart';
 import '../../shared/errors/omnyserver_exception.dart';
@@ -64,7 +68,22 @@ class HttpApiServer {
   /// Optional TLS context (plaintext when null).
   final SecurityContext? securityContext;
 
+  /// How often an idle event stream sends a keep-alive comment.
+  ///
+  /// It is not only an idle-timeout defence against a proxy in front of the Hub:
+  /// a write is the only way a vanished client is ever noticed, so this is also
+  /// how long a dead subscriber lingers.
+  final Duration eventKeepAlive;
+
   OmnyHub? _server;
+
+  /// The live event streams currently attached to clients.
+  ///
+  /// Tracked so [close] can hang them up. An SSE response never ends on its own,
+  /// so without this a shutdown would block until each idle client's next
+  /// keep-alive ping failed to write — a Hub taking 15 seconds to stop because
+  /// somebody left a dashboard open.
+  final Set<StreamController<OmnyEvent>> _eventStreams = {};
 
   /// Creates an API server.
   HttpApiServer({
@@ -75,6 +94,7 @@ class HttpApiServer {
     this.host = '0.0.0.0',
     this.port = 8080,
     this.securityContext,
+    this.eventKeepAlive = const Duration(seconds: 15),
   });
 
   /// The bound port (valid after [start]).
@@ -145,8 +165,12 @@ class HttpApiServer {
     _server = server;
   }
 
-  /// Stops the server.
+  /// Stops the server, hanging up any live event streams first.
   Future<void> close() async {
+    for (final stream in [..._eventStreams]) {
+      await stream.close();
+    }
+    _eventStreams.clear();
     await _server?.stop();
     _server = null;
   }
@@ -182,11 +206,15 @@ class HttpApiServer {
           '/api/v1/nodes/<id>/capabilities',
           (r, p) async => _getCapabilities(p),
         )
+        ..get('/api/v1/nodes/<id>/metrics', (r, p) => _getMetrics(r, p))
         ..post('/api/v1/nodes/<id>/restart', (r, p) => _restart(r, p))
         ..post('/api/v1/nodes/<id>/shutdown', (r, p) => _shutdown(r, p))
         ..post('/api/v1/nodes/<id>/update', (r, p) => _update(r, p))
         ..post('/api/v1/nodes/<id>/formula', (r, p) => _formula(r, p))
         ..post('/api/v1/presets/apply', (r, p) => _applyPreset(r))
+        // Before `/events`: the router takes the first match, so the more
+        // specific path has to be offered first.
+        ..get('/api/v1/events/stream', (r, p) async => _eventStream())
         ..get('/api/v1/events', (r, p) async => _events())
         ..get('/api/v1/audit', (r, p) => _audit())
         // Last, so it only sees paths no route above matched. It answers every
@@ -325,8 +353,96 @@ class HttpApiServer {
     return jsonOk(result.toJson());
   }
 
+  /// A node's resource history, for charting.
+  ///
+  /// `?since=` takes an ISO-8601 instant or a duration shorthand (`1h`, `30m`,
+  /// `7d`) — the latter because the thing an operator actually wants is "the
+  /// last hour", and making them compute a timestamp for that is a small cruelty.
+  Future<HubResponse> _getMetrics(
+    HubRequest request,
+    Map<String, String> params,
+  ) async {
+    final id = _nodeId(params);
+    if (hub.getNode(id) == null) {
+      throw NotFoundException('unknown node ${id.value}');
+    }
+    final query = request.uri.queryParameters;
+    final limit = int.tryParse(query['limit'] ?? '') ?? 100;
+    if (limit <= 0) return ApiErrors.badRequest('limit must be positive');
+
+    final DateTime? since;
+    try {
+      since = _parseSince(query['since']);
+    } on FormatException catch (e) {
+      return ApiErrors.badRequest('invalid since: ${e.message}');
+    }
+
+    final points = await hub.metricsFor(id, limit: limit, since: since);
+    return jsonOk([for (final p in points) p.toJson()]);
+  }
+
+  /// Parses `?since=` as a duration back from now (`90s`, `15m`, `1h`, `7d`) or
+  /// an absolute ISO-8601 instant.
+  DateTime? _parseSince(String? raw) {
+    if (raw == null || raw.isEmpty) return null;
+    final shorthand = RegExp(r'^(\d+)([smhd])$').firstMatch(raw);
+    if (shorthand != null) {
+      final n = int.parse(shorthand.group(1)!);
+      final span = switch (shorthand.group(2)!) {
+        's' => Duration(seconds: n),
+        'm' => Duration(minutes: n),
+        'h' => Duration(hours: n),
+        _ => Duration(days: n),
+      };
+      return hub.config.clock.now().toUtc().subtract(span);
+    }
+    return DateTime.parse(raw).toUtc();
+  }
+
   HubResponse _events() =>
       jsonOk((events?.recent() ?? const []).map((e) => e.toJson()).toList());
+
+  /// Every event as it happens, as Server-Sent Events.
+  ///
+  /// The polling endpoint above returns a bounded snapshot, so a dashboard built
+  /// on it is always a few seconds stale and re-fetches a list it has mostly seen
+  /// already. This is the same events, pushed: one long-lived response per
+  /// client, each event flushed as it occurs.
+  ///
+  /// Each event carries its own type as the SSE `event:` name, so a browser can
+  /// `addEventListener('node.connected', …)` rather than switching on a payload
+  /// field.
+  HubResponse _eventStream() {
+    final events = _trackedEvents();
+    return sseResponse(
+      events.stream.map(
+        (event) => SseEvent.json(event.toJson(), event: event.type),
+      ),
+      keepAlive: eventKeepAlive,
+      // The client went away: stop feeding this one.
+      onCancel: () => _eventStreams.remove(events),
+    );
+  }
+
+  /// The Hub's event bus, per client, behind a controller [close] can hang up.
+  StreamController<OmnyEvent> _trackedEvents() {
+    late final StreamController<OmnyEvent> controller;
+    StreamSubscription<OmnyEvent>? subscription;
+
+    controller = StreamController<OmnyEvent>(
+      onListen: () {
+        subscription = hub.config.eventBus.events.listen((event) {
+          if (!controller.isClosed) controller.add(event);
+        }, onError: controller.addError);
+      },
+      onCancel: () async {
+        _eventStreams.remove(controller);
+        await subscription?.cancel();
+      },
+    );
+    _eventStreams.add(controller);
+    return controller;
+  }
 
   Future<HubResponse> _audit() async {
     final recent = await hub.audit.recent();
