@@ -1,3 +1,47 @@
+## 0.9.0
+
+Desired state and drift — the thesis the package was named for, and the one part
+of it that was never wired up.
+
+```sh
+omnyserver state set docker-host.json --label env=prod   # declare; runs nothing
+omnyserver state diff --label env=prod                   # has it drifted?
+omnyserver state reconcile --label env=prod              # make it true again
+```
+
+### Added
+
+- **`DesiredState`, `CurrentState`, `StateReconciler` and
+  `DefaultStateReconciler` have existed in the domain from the very first commit,
+  connected to nothing.** They are now a feature.
+
+  `PUT /nodes/{id}/desired-state` declares what a node is supposed to be.
+  `GET /nodes/{id}/drift` answers whether it still is, by planning what would have
+  to run to make the declaration true again — an empty plan means no drift.
+  `POST /nodes/{id}/reconcile` runs exactly that plan.
+
+  **Declaring is not applying, and the split is the whole point.** Applying a
+  preset and watching it succeed tells you only that it succeeded; it cannot tell
+  you anything a week later, after somebody logged into the box and changed
+  something by hand. A declaration keeps answering.
+
+  Reconciling is idempotent by construction: a converged node has an empty plan,
+  so the second run does nothing. That is what makes it safe on a timer or in a
+  pipeline — and `state diff` exits non-zero when anything has drifted, so it is
+  usable as a check.
+
+- **`omnyserver state set | show | diff | reconcile | clear`**, all taking the
+  same fleet selectors as the rest of the CLI (`--label env=prod`, `--all`).
+
+- **`DesiredStateRepository`**, with the three implementations the other
+  repositories have (in-memory, JSON-directory, SQLite), so a declaration outlives
+  the Hub that recorded it. `HubConfig.reconciler` is the seam for a richer
+  planner (dependency ordering, version comparison) later.
+
+- `HubApiClient.put` and `.delete`, which the API had no need of until now.
+
+---
+
 ## 0.8.0
 
 A fleet you can address, and a credential that can only watch it.

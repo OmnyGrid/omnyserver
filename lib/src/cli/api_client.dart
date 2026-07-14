@@ -52,6 +52,12 @@ class HubApiClient {
   Future<dynamic> post(String path, [Object? body]) =>
       _send('POST', path, body);
 
+  /// PUT `/api/v1[path]` with an optional JSON [body].
+  Future<dynamic> put(String path, [Object? body]) => _send('PUT', path, body);
+
+  /// DELETE `/api/v1[path]`.
+  Future<dynamic> delete(String path) => _send('DELETE', path);
+
   /// GET a raw text endpoint (e.g. `/metrics`) outside the versioned API.
   Future<String> getText(String absolutePath) async {
     final response = await _transport.send(

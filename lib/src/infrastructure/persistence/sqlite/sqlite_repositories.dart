@@ -8,6 +8,7 @@ import '../../../domain/entities/node_descriptor.dart';
 import '../../../domain/entities/node_status.dart';
 import '../../../domain/entities/preset.dart';
 import '../../../domain/repository/repositories.dart';
+import '../../../domain/state/desired_state.dart';
 import '../../../domain/value_objects/formula_id.dart';
 import '../../../domain/value_objects/node_id.dart';
 import '../../../domain/value_objects/preset_id.dart';
@@ -38,6 +39,9 @@ class SqliteStore {
       CREATE TABLE IF NOT EXISTS nodes (id TEXT PRIMARY KEY, data TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS presets (id TEXT PRIMARY KEY, data TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS formulas (id TEXT PRIMARY KEY, data TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS desired (
+        node_id TEXT PRIMARY KEY, data TEXT NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS audit (
         id TEXT PRIMARY KEY, at TEXT NOT NULL, data TEXT NOT NULL
       );
@@ -59,6 +63,10 @@ class SqliteStore {
 
   /// The formula repository.
   late final SqliteFormulaRepository formulas = SqliteFormulaRepository(db);
+
+  /// The desired-state repository.
+  late final SqliteDesiredStateRepository desired =
+      SqliteDesiredStateRepository(db);
 
   /// The audit repository.
   late final SqliteAuditRepository audit = SqliteAuditRepository(db);
@@ -143,6 +151,46 @@ class SqlitePresetRepository implements PresetRepository {
   @override
   Future<bool> delete(PresetId id) async {
     db.execute('DELETE FROM presets WHERE id = ?', [id.value]);
+    return db.updatedRows > 0;
+  }
+}
+
+/// SQLite-backed [DesiredStateRepository].
+class SqliteDesiredStateRepository implements DesiredStateRepository {
+  /// The database handle.
+  final Database db;
+
+  /// Creates the repository.
+  SqliteDesiredStateRepository(this.db);
+
+  @override
+  Future<void> save(NodeId nodeId, DesiredState state) async => db.execute(
+    'INSERT OR REPLACE INTO desired (node_id, data) VALUES (?, ?)',
+    [nodeId.value, jsonEncode(state.toJson())],
+  );
+
+  @override
+  Future<DesiredState?> find(NodeId nodeId) async {
+    final rows = db.select('SELECT data FROM desired WHERE node_id = ?', [
+      nodeId.value,
+    ]);
+    if (rows.isEmpty) return null;
+    return DesiredState.fromJson(
+      jsonDecode(rows.first['data'] as String) as Map<String, dynamic>,
+    );
+  }
+
+  @override
+  Future<Map<String, DesiredState>> all() async => {
+    for (final row in db.select('SELECT node_id, data FROM desired'))
+      row['node_id'] as String: DesiredState.fromJson(
+        jsonDecode(row['data'] as String) as Map<String, dynamic>,
+      ),
+  };
+
+  @override
+  Future<bool> delete(NodeId nodeId) async {
+    db.execute('DELETE FROM desired WHERE node_id = ?', [nodeId.value]);
     return db.updatedRows > 0;
   }
 }

@@ -3,6 +3,8 @@ import 'dart:io';
 import '../../domain/auth/authenticator.dart';
 import '../../domain/events/event_bus.dart';
 import '../../domain/repository/repositories.dart';
+import '../../domain/state/state_reconciler.dart';
+import '../../infrastructure/state/default_reconciler.dart';
 import '../../infrastructure/auth/role_based_authorizer.dart';
 import '../../infrastructure/persistence/memory/memory_repositories.dart';
 import '../../shared/utils/clock.dart';
@@ -95,6 +97,15 @@ class HubConfig {
   /// Persists historical metric samples.
   final MetricRepository metricRepository;
 
+  /// Persists the state each node is *supposed* to be in.
+  ///
+  /// The other repositories record what happened; this one records what is meant
+  /// to be true, and the difference between the two is drift.
+  final DesiredStateRepository desiredStateRepository;
+
+  /// Plans how to move a node from what it is to what it should be.
+  final StateReconciler reconciler;
+
   /// Optional log sink.
   final void Function(String message)? logger;
 
@@ -122,6 +133,8 @@ class HubConfig {
     NodeRepository? nodeRepository,
     AuditRepository? auditRepository,
     MetricRepository? metricRepository,
+    DesiredStateRepository? desiredStateRepository,
+    StateReconciler? reconciler,
     this.logger,
   }) : assert(
          (securityContext == null) != (tlsDirectory == null),
@@ -131,5 +144,8 @@ class HubConfig {
        eventBus = eventBus ?? BroadcastEventBus(),
        nodeRepository = nodeRepository ?? MemoryNodeRepository(),
        auditRepository = auditRepository ?? MemoryAuditRepository(),
-       metricRepository = metricRepository ?? MemoryMetricRepository();
+       metricRepository = metricRepository ?? MemoryMetricRepository(),
+       desiredStateRepository =
+           desiredStateRepository ?? MemoryDesiredStateRepository(),
+       reconciler = reconciler ?? const DefaultStateReconciler();
 }

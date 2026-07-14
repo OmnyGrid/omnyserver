@@ -42,6 +42,7 @@ CommandRunner<void> buildRunner() {
         ..addCommand(NodesCommand())
         ..addCommand(PresetCommand())
         ..addCommand(FormulaCommand())
+        ..addCommand(StateCommand())
         ..addCommand(EventsCommand())
         ..addCommand(AuditCommand())
         ..addCommand(WhoamiCommand())
@@ -1131,6 +1132,212 @@ class FormulaRunCommand extends Command<void> {
         return '$formula $action: ${ok ? 'ok' : 'FAILED'}'
             '${changed ? ' (changed)' : ''}$detail';
       });
+    } finally {
+      client.close();
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// state — declare what a node should be, and ask whether it still is
+// ---------------------------------------------------------------------------
+
+/// `omnyserver state …`
+class StateCommand extends Command<void> {
+  /// Creates the state command group.
+  StateCommand() {
+    addSubcommand(StateSetCommand());
+    addSubcommand(StateShowCommand());
+    addSubcommand(StateDiffCommand());
+    addSubcommand(StateReconcileCommand());
+    addSubcommand(StateClearCommand());
+  }
+
+  @override
+  String get name => 'state';
+
+  @override
+  String get description =>
+      'Declare the state a node should be in, and reconcile it when it drifts.';
+}
+
+/// `omnyserver state set <preset.json> [<node>] [--label …]`
+class StateSetCommand extends Command<void> {
+  /// Creates the state-set command.
+  StateSetCommand() {
+    _addApiOptions(argParser);
+    _addSelectorOptions(argParser);
+  }
+
+  @override
+  String get name => 'set';
+
+  @override
+  String get description =>
+      'Declare the state (from a preset file) selected nodes should be in. '
+      'Runs nothing — use `state reconcile` for that.';
+
+  @override
+  Future<void> run() async {
+    final args = argResults!;
+    final rest = args.rest;
+    if (rest.isEmpty) {
+      throw CliError('usage: state set <preset.json> [<node>] [--label …]');
+    }
+    final file = File(rest.first);
+    if (!file.existsSync()) {
+      throw CliError('preset file not found: ${rest.first}');
+    }
+    final preset = jsonDecode(file.readAsStringSync());
+
+    final client = _apiClientFrom(args);
+    try {
+      final nodes = await _selectNodes(
+        client,
+        args,
+        positional: rest.skip(1).toList(),
+      );
+      await _fanOut(nodes, (node) async {
+        final reply =
+            await client.put('/nodes/$node/desired-state', {'preset': preset})
+                as Map;
+        // Said plainly, because "declared" and "applied" are easy to confuse and
+        // the difference is the whole feature.
+        return 'declared ${reply['steps']} steps (nothing has run yet)';
+      });
+    } finally {
+      client.close();
+    }
+  }
+}
+
+/// `omnyserver state show <node>`
+class StateShowCommand extends Command<void> {
+  /// Creates the state-show command.
+  StateShowCommand() {
+    _addApiOptions(argParser);
+  }
+
+  @override
+  String get name => 'show';
+
+  @override
+  String get description => 'Show what a node is declared to be.';
+
+  @override
+  Future<void> run() =>
+      _getAndPrint(argResults!, 'show', (id) => '/nodes/$id/desired-state');
+}
+
+/// `omnyserver state diff [<node>] [--label …]`
+class StateDiffCommand extends Command<void> {
+  /// Creates the state-diff command.
+  StateDiffCommand() {
+    _addApiOptions(argParser);
+    _addSelectorOptions(argParser);
+  }
+
+  @override
+  String get name => 'diff';
+
+  @override
+  String get description =>
+      'Show how far selected nodes have drifted from what they were declared '
+      'to be. Runs nothing.';
+
+  @override
+  Future<void> run() async {
+    final args = argResults!;
+    final client = _apiClientFrom(args);
+    try {
+      final nodes = await _selectNodes(client, args, positional: args.rest);
+      var drifted = 0;
+      for (final node in nodes) {
+        try {
+          final plan = await client.get('/nodes/$node/drift') as Map;
+          if (plan['converged'] == true) {
+            stdout.writeln('${node.padRight(20)} converged');
+            continue;
+          }
+          drifted++;
+          final actions = (plan['actions'] as List).cast<Map>();
+          stdout.writeln(
+            '${node.padRight(20)} DRIFTED — ${actions.length} to run',
+          );
+          for (final step in actions) {
+            stdout.writeln('  ${step['action']} ${step['formula']}');
+          }
+        } on HubApiException catch (e) {
+          stderr.writeln('${node.padRight(20)} ${e.message}');
+        }
+      }
+      // Exit non-zero when anything has drifted, so this is usable as a check in
+      // a pipeline — "is the fleet still what we said it was?"
+      if (drifted > 0) exitCode = 1;
+    } finally {
+      client.close();
+    }
+  }
+}
+
+/// `omnyserver state reconcile [<node>] [--label …]`
+class StateReconcileCommand extends Command<void> {
+  /// Creates the state-reconcile command.
+  StateReconcileCommand() {
+    _addApiOptions(argParser);
+    _addSelectorOptions(argParser);
+  }
+
+  @override
+  String get name => 'reconcile';
+
+  @override
+  String get description =>
+      'Run whatever it takes to make selected nodes match what they were '
+      'declared to be. Idempotent: a converged node does nothing.';
+
+  @override
+  Future<void> run() async {
+    final args = argResults!;
+    final client = _apiClientFrom(args);
+    try {
+      final nodes = await _selectNodes(client, args, positional: args.rest);
+      await _fanOut(nodes, (node) async {
+        final reply = await client.post('/nodes/$node/reconcile') as Map;
+        final results = (reply['results'] as List).cast<Map>();
+        if (results.isEmpty) return 'already converged — nothing to do';
+        final failed = results.where((r) => r['success'] != true).length;
+        return failed == 0
+            ? 'converged (${results.length} steps ran)'
+            : 'FAILED $failed/${results.length} steps';
+      });
+    } finally {
+      client.close();
+    }
+  }
+}
+
+/// `omnyserver state clear <node>`
+class StateClearCommand extends Command<void> {
+  /// Creates the state-clear command.
+  StateClearCommand() {
+    _addApiOptions(argParser);
+  }
+
+  @override
+  String get name => 'clear';
+
+  @override
+  String get description => 'Stop expecting anything of a node.';
+
+  @override
+  Future<void> run() async {
+    final rest = argResults!.rest;
+    if (rest.isEmpty) throw CliError('usage: state clear <node>');
+    final client = _apiClientFrom(argResults!);
+    try {
+      await client.delete('/nodes/${rest.first}/desired-state');
+      stdout.writeln('cleared the desired state of ${rest.first}');
     } finally {
       client.close();
     }

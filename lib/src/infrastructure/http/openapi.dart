@@ -124,6 +124,44 @@ Map<String, dynamic> openApiDocument() => {
         },
       },
     },
+    '/nodes/{id}/desired-state': {
+      'get': {
+        'summary': 'What a node is declared to be',
+        'parameters': [_pathId],
+        'responses': {'200': _ok('{steps: [...]}'), '404': _err},
+      },
+      'put': {
+        'summary': 'Declare what a node should be — runs nothing',
+        'parameters': [_pathId],
+        'requestBody': _jsonBody({'preset': 'object', 'steps': 'array'}),
+        'responses': {'200': _ok('Declared'), '404': _err},
+      },
+      'delete': {
+        'summary': 'Stop expecting anything of a node',
+        'parameters': [_pathId],
+        'responses': {'200': _ok('Cleared'), '404': _err},
+      },
+    },
+    '/nodes/{id}/drift': {
+      'get': {
+        'summary':
+            'How far a node has drifted from what it was declared to be '
+            '(plans; runs nothing)',
+        'parameters': [_pathId],
+        'responses': {
+          '200': _ok('{converged, actions, notes}'),
+          '404': _err,
+        },
+      },
+    },
+    '/nodes/{id}/reconcile': {
+      'post': {
+        'summary':
+            'Run whatever the drift plan says is outstanding (idempotent)',
+        'parameters': [_pathId],
+        'responses': {'200': _ok('Apply result'), '404': _err, '502': _err},
+      },
+    },
     '/events': {
       'get': {
         'summary': 'Recent Hub events',

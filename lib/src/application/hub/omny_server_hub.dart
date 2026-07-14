@@ -12,6 +12,9 @@ import '../../domain/events/omny_event.dart';
 import '../../domain/formula/formula_action.dart';
 import '../../domain/repository/repositories.dart';
 import '../../domain/value_objects/node_id.dart';
+import '../../domain/value_objects/preset_id.dart';
+import '../../domain/state/state_reconciler.dart';
+import '../../domain/state/desired_state.dart';
 import '../../domain/value_objects/principal_id.dart';
 import '../../infrastructure/auth/node_connection_authenticator.dart';
 import '../../infrastructure/node/node_mapping.dart';
@@ -517,6 +520,94 @@ class OmnyServerHub {
   Future<void> _recordMetric(NodeId id, NodeStatus status) => config
       .metricRepository
       .record(MetricSample(nodeId: id, at: status.capturedAt, status: status));
+
+  // ---------------------------------------------------------------------------
+  // Desired state: what a node is supposed to be, and how far it has drifted.
+  // ---------------------------------------------------------------------------
+
+  /// Declares the state [id] should be in.
+  ///
+  /// Declaring is not applying. Nothing runs on the node here — this records the
+  /// intent, so that [drift] can answer "is it still true?" later, and keep
+  /// answering it after someone logs into the machine and changes something by
+  /// hand. That question is the reason to declare a state at all; re-applying a
+  /// preset and watching it succeed only tells you it succeeded.
+  Future<void> setDesiredState(
+    NodeId id,
+    DesiredState state, {
+    String principal = 'system',
+  }) async {
+    await config.desiredStateRepository.save(id, state);
+    await audit.record(
+      principal: principal,
+      action: 'state.declare',
+      target: id.value,
+      outcome: AuditOutcome.success,
+      detail: '${state.steps.length} steps',
+    );
+  }
+
+  /// The state [id] should be in, or `null` if none was ever declared.
+  Future<DesiredState?> desiredStateFor(NodeId id) =>
+      config.desiredStateRepository.find(id);
+
+  /// Stops expecting anything of [id].
+  Future<bool> clearDesiredState(NodeId id) =>
+      config.desiredStateRepository.delete(id);
+
+  /// How far [id] has drifted from what was declared for it.
+  ///
+  /// The plan is what would have to *run* to make the declaration true again. An
+  /// empty plan means the node has not drifted — which is the useful answer, and
+  /// the one nothing could ask for before.
+  ///
+  /// Current state is read from what the node advertises, so this costs nothing
+  /// and works on an offline node too (against its last-known capabilities).
+  Future<Reconciliation> drift(NodeId id) async {
+    final node = getNode(id);
+    if (node == null) throw NotFoundException('unknown node ${id.value}');
+
+    final desired = await config.desiredStateRepository.find(id);
+    if (desired == null) {
+      throw NotFoundException('no desired state declared for ${id.value}');
+    }
+
+    return config.reconciler.reconcile(
+      desired,
+      CurrentState(capabilities: node.capabilities),
+    );
+  }
+
+  /// Runs whatever [drift] says is outstanding, and returns what happened.
+  ///
+  /// Idempotent by construction: a converged node has an empty plan, so
+  /// reconciling it twice runs nothing the second time. That is what makes this
+  /// safe to put on a timer or in a pipeline.
+  Future<PresetApplyResult> reconcile(
+    NodeId id, {
+    String principal = 'system',
+  }) async {
+    final plan = await drift(id);
+    if (plan.converged) {
+      return PresetApplyResult(
+        requestId: config.idGenerator.next(),
+        success: true,
+        results: const [],
+      );
+    }
+    // The plan is a list of steps, which is exactly a preset — so it runs through
+    // the same path an operator's preset does, and is audited the same way.
+    return applyPreset(
+      id,
+      Preset(
+        id: PresetId('reconcile'),
+        name: 'reconcile',
+        description: 'Converging ${id.value} to its declared state',
+        steps: plan.actions,
+      ),
+      principal: principal,
+    );
+  }
 
   /// A node's resource history, newest first — the samples the Hub has been
   /// recording on every heartbeat all along.

@@ -9,6 +9,8 @@ import '../../../domain/entities/node_descriptor.dart';
 import '../../../domain/entities/node_status.dart';
 import '../../../domain/entities/preset.dart';
 import '../../../domain/repository/repositories.dart';
+import '../../../shared/json/json_codec_helpers.dart';
+import '../../../domain/state/desired_state.dart';
 import '../../../domain/value_objects/formula_id.dart';
 import '../../../domain/value_objects/node_id.dart';
 import '../../../domain/value_objects/preset_id.dart';
@@ -102,6 +104,33 @@ class JsonPresetRepository implements PresetRepository {
 
   @override
   Future<bool> delete(PresetId id) async => _store.deleteObject(id.value);
+}
+
+/// JSON-directory [DesiredStateRepository] (`<root>/desired/<node>.json`).
+class JsonDesiredStateRepository implements DesiredStateRepository {
+  final _JsonDir _store;
+
+  /// Creates a desired-state repository rooted at [path].
+  JsonDesiredStateRepository(String path) : _store = _JsonDir(path, 'desired');
+
+  @override
+  Future<void> save(NodeId nodeId, DesiredState state) async => _store
+      .writeObject(nodeId.value, {'nodeId': nodeId.value, ...state.toJson()});
+
+  @override
+  Future<DesiredState?> find(NodeId nodeId) async {
+    final json = _store.readObject(nodeId.value);
+    return json == null ? null : DesiredState.fromJson(json);
+  }
+
+  @override
+  Future<Map<String, DesiredState>> all() async => {
+    for (final json in _store.readAll())
+      Json.requireString(json, 'nodeId'): DesiredState.fromJson(json),
+  };
+
+  @override
+  Future<bool> delete(NodeId nodeId) async => _store.deleteObject(nodeId.value);
 }
 
 /// JSON-directory [FormulaRepository] (`<root>/formulas/<id>.json`).

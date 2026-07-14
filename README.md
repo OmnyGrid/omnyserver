@@ -264,6 +264,27 @@ omnyserver preset apply docker-host.json --all
 or `--all`, and report a result per node. A selector matching nothing is an
 error, not a quiet success — "applied to 0 nodes" reads like it worked.
 
+### Desired state, and drift
+
+Declare what a node is *supposed* to be, then ask — at any point later — whether
+it still is:
+
+```sh
+omnyserver state set docker-host.json --label env=prod   # declare; runs nothing
+omnyserver state diff --label env=prod                   # has it drifted?
+omnyserver state reconcile --label env=prod              # make it true again
+```
+
+**Declaring is not applying.** `preset apply` runs steps and tells you they
+succeeded; it cannot tell you anything a week later, after somebody logged into
+the machine and changed something by hand. A declaration keeps answering:
+`state diff` re-plans against what the node currently advertises, and an empty
+plan means no drift.
+
+`state reconcile` runs exactly what the plan says is outstanding, so a converged
+node does nothing at all — idempotent, and safe on a timer. `state diff` exits
+non-zero when anything has drifted, so it works as a check in a pipeline.
+
 ### Roles
 
 | Role | May |

@@ -3,6 +3,7 @@ import '../entities/formula_spec.dart';
 import '../entities/node_descriptor.dart';
 import '../entities/node_status.dart';
 import '../entities/preset.dart';
+import '../state/desired_state.dart';
 import '../value_objects/formula_id.dart';
 import '../value_objects/node_id.dart';
 import '../value_objects/preset_id.dart';
@@ -23,6 +24,26 @@ abstract class NodeRepository {
 
   /// Deletes the node with [id]; returns true if a node was removed.
   Future<bool> delete(NodeId id);
+}
+
+/// Persists the state each node is *supposed* to be in.
+///
+/// The Hub's other repositories record what happened; this one records what is
+/// meant to be true. The difference between the two is drift, and being able to
+/// ask for it — rather than re-applying a preset and hoping — is the whole point
+/// of declaring a state at all.
+abstract class DesiredStateRepository {
+  /// Sets the state [nodeId] should converge to.
+  Future<void> save(NodeId nodeId, DesiredState state);
+
+  /// The state [nodeId] should be in, or `null` if none was ever declared.
+  Future<DesiredState?> find(NodeId nodeId);
+
+  /// Every declared state, by node id.
+  Future<Map<String, DesiredState>> all();
+
+  /// Stops expecting anything of [nodeId]; returns true if it had a state.
+  Future<bool> delete(NodeId nodeId);
 }
 
 /// Persists [Preset]s.

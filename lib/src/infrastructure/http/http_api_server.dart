@@ -30,6 +30,7 @@ import '../../domain/auth/principal.dart' as domain;
 import '../../domain/entities/preset.dart';
 import '../../domain/events/omny_event.dart';
 import '../../domain/formula/formula_action.dart';
+import '../../domain/state/desired_state.dart';
 import '../../domain/value_objects/node_id.dart';
 import '../../domain/value_objects/principal_id.dart';
 import '../../shared/errors/omnyserver_exception.dart';
@@ -208,6 +209,14 @@ class HttpApiServer {
           (r, p) async => _getCapabilities(p),
         )
         ..get('/api/v1/nodes/<id>/metrics', (r, p) => _getMetrics(r, p))
+        ..get('/api/v1/nodes/<id>/desired-state', (r, p) => _getDesired(p))
+        ..put('/api/v1/nodes/<id>/desired-state', (r, p) => _putDesired(r, p))
+        ..delete(
+          '/api/v1/nodes/<id>/desired-state',
+          (r, p) => _deleteDesired(r, p),
+        )
+        ..get('/api/v1/nodes/<id>/drift', (r, p) => _getDrift(p))
+        ..post('/api/v1/nodes/<id>/reconcile', (r, p) => _reconcile(r, p))
         ..post('/api/v1/nodes/<id>/restart', (r, p) => _restart(r, p))
         ..post('/api/v1/nodes/<id>/shutdown', (r, p) => _shutdown(r, p))
         ..post('/api/v1/nodes/<id>/update', (r, p) => _update(r, p))
@@ -389,6 +398,95 @@ class HttpApiServer {
       preset,
       principal: _principal(request),
     );
+    return jsonOk(result.toJson());
+  }
+
+  /// What a node is supposed to be.
+  Future<HubResponse> _getDesired(Map<String, String> params) async {
+    final id = _nodeId(params);
+    final desired = await hub.desiredStateFor(id);
+    if (desired == null) {
+      throw NotFoundException('no desired state declared for ${id.value}');
+    }
+    return jsonOk(desired.toJson());
+  }
+
+  /// Declares what a node should be. `PUT`, because declaring the same state
+  /// twice is the same declaration — this is a fact about the node, not an
+  /// instruction to it.
+  ///
+  /// Nothing runs here. `POST /reconcile` is what acts.
+  Future<HubResponse> _putDesired(
+    HubRequest request,
+    Map<String, String> params,
+  ) async {
+    final id = _nodeId(params);
+    _authorize(request, 'state.declare', target: id.value);
+    if (hub.getNode(id) == null) {
+      throw NotFoundException('unknown node ${id.value}');
+    }
+
+    final body = await _readJson(request);
+    // Either a bare `{steps: [...]}`, or a whole preset — an operator declaring
+    // "this node is a docker host" has a preset in hand, not a step list.
+    final DesiredState desired;
+    if (body['preset'] case final Map preset) {
+      desired = DesiredState.fromPresets([
+        Preset.fromJson(preset.cast<String, dynamic>()),
+      ]);
+    } else {
+      desired = DesiredState.fromJson(body);
+    }
+
+    await hub.setDesiredState(id, desired, principal: _principal(request));
+    return jsonOk({
+      'status': 'declared',
+      'nodeId': id.value,
+      'steps': desired.steps.length,
+    });
+  }
+
+  Future<HubResponse> _deleteDesired(
+    HubRequest request,
+    Map<String, String> params,
+  ) async {
+    final id = _nodeId(params);
+    _authorize(request, 'state.declare', target: id.value);
+    final removed = await hub.clearDesiredState(id);
+    if (!removed) {
+      throw NotFoundException('no desired state declared for ${id.value}');
+    }
+    return jsonOk({'status': 'cleared', 'nodeId': id.value});
+  }
+
+  /// How far a node has drifted from what was declared for it.
+  ///
+  /// A read: it plans, and runs nothing. An empty `actions` list means the node
+  /// still is what it was declared to be — which is the question nothing could
+  /// ask before, and the reason to declare a state rather than just apply a
+  /// preset and hope.
+  Future<HubResponse> _getDrift(Map<String, String> params) async {
+    final id = _nodeId(params);
+    final plan = await hub.drift(id);
+    return jsonOk({
+      'nodeId': id.value,
+      'converged': plan.converged,
+      'actions': [for (final step in plan.actions) step.toJson()],
+      'notes': plan.notes,
+    });
+  }
+
+  /// Runs whatever the drift plan says is outstanding.
+  ///
+  /// Idempotent: a converged node has an empty plan, so this runs nothing the
+  /// second time — which is what makes it safe on a timer.
+  Future<HubResponse> _reconcile(
+    HubRequest request,
+    Map<String, String> params,
+  ) async {
+    final id = _nodeId(params);
+    _authorize(request, 'state.reconcile', target: id.value);
+    final result = await hub.reconcile(id, principal: _principal(request));
     return jsonOk(result.toJson());
   }
 

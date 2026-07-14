@@ -3,6 +3,7 @@ import '../../../domain/entities/formula_spec.dart';
 import '../../../domain/entities/node_descriptor.dart';
 import '../../../domain/entities/preset.dart';
 import '../../../domain/repository/repositories.dart';
+import '../../../domain/state/desired_state.dart';
 import '../../../domain/value_objects/formula_id.dart';
 import '../../../domain/value_objects/node_id.dart';
 import '../../../domain/value_objects/preset_id.dart';
@@ -39,6 +40,25 @@ class MemoryPresetRepository implements PresetRepository {
 
   @override
   Future<bool> delete(PresetId id) async => _presets.remove(id.value) != null;
+}
+
+/// In-memory [DesiredStateRepository].
+class MemoryDesiredStateRepository implements DesiredStateRepository {
+  final Map<String, DesiredState> _states = {};
+
+  @override
+  Future<void> save(NodeId nodeId, DesiredState state) async =>
+      _states[nodeId.value] = state;
+
+  @override
+  Future<DesiredState?> find(NodeId nodeId) async => _states[nodeId.value];
+
+  @override
+  Future<Map<String, DesiredState>> all() async => Map.of(_states);
+
+  @override
+  Future<bool> delete(NodeId nodeId) async =>
+      _states.remove(nodeId.value) != null;
 }
 
 /// In-memory [FormulaRepository].
