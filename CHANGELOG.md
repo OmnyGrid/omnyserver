@@ -1,10 +1,12 @@
-## 0.16.0
+## 0.15.0
 
-The Hub is controlled with an API token or a grant. It now actually checks.
+A Hub you have to babysit is not a Hub you can run. And a Hub that answers
+anybody is not a Hub you can leave running.
 
 ```sh
-omnyserver hub start --cert … --key … --grant alice:s3cr3t:admin
-curl https://hub:8443/api/v1/nodes                    # 401, as it always should have been
+omnyserver service install hub  --tls-dir /etc/letsencrypt/live/hub.example.com
+omnyserver service install node --hub wss://hub:8443 --id worker-01 --token …
+omnyserver service status hub
 ```
 
 ### Fixed
@@ -31,32 +33,6 @@ curl https://hub:8443/api/v1/nodes                    # 401, as it always should
 
   Anyone relying on the old behaviour was relying on an open API. Pass
   `--api-token`, or authenticate with a grant (`--token` + `--principal`).
-
-### Added
-
-- **`--cors-origin '*'`** — allow any origin. It used to be accepted and then
-  silently match nothing, since it was compared as a literal origin string:
-  a flag that looked configured and did nothing, which is the same failure the
-  last release set out to remove.
-
-  A wildcard is a real widening — any page may call the API — but not an open
-  door: the Hub sends no `allow-credentials`, so a browser attaches nothing
-  ambient and a caller still needs a token it was given. The Hub says so at
-  startup, because that is not a thing to discover by reading the flags months
-  later. It cannot be mixed with a named allow-list: asking for both is asking
-  for everything.
-
----
-
-## 0.15.0
-
-A Hub you have to babysit is not a Hub you can run.
-
-```sh
-omnyserver service install hub  --tls-dir /etc/letsencrypt/live/hub.example.com
-omnyserver service install node --hub wss://hub:8443 --id worker-01 --token …
-omnyserver service status hub
-```
 
 ### Added
 
@@ -87,6 +63,18 @@ omnyserver service status hub
   the SCM kills it for not answering (error 1053).
 
 - **`--ephemeral` on `hub start`** — the escape hatch for the change below.
+
+- **`--cors-origin '*'`** — allow any origin. It used to be accepted and then
+  silently match nothing, since it was compared as a literal origin string: a
+  flag that looked configured and did nothing, which is the very failure the rest
+  of this release sets out to remove.
+
+  A wildcard is a real widening — any page may call the API — but not an open
+  door: the Hub sends no `allow-credentials`, so a browser attaches nothing
+  ambient and a caller still needs a token it was given. The Hub says so at
+  startup, because that is not a thing to discover by reading the flags months
+  later. It cannot be mixed with a named allow-list: asking for both is asking
+  for everything.
 
 ### Changed
 

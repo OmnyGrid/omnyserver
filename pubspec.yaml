@@ -5,7 +5,7 @@ description: >-
   capability detection, presets, formulas and desired-state reconciliation,
   exposed both as first-class Dart APIs and a REST HTTP API. Ships Hub, Node and
   CLI implementations.
-version: 0.16.0
+version: 0.15.0
 repository: https://github.com/OmnyGrid/omnyserver
 
 environment:

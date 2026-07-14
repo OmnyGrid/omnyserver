@@ -42,7 +42,7 @@ it only removes the master key, leaving grants as the way in. A Hub started with
 neither authenticates nobody: every call is a `401`, and the Hub says so at
 startup rather than looking healthy while answering no one.
 
-> Until 0.16.0 this was not true. With no `--api-token`, the API was registered
+> Until 0.15.0 this was not true. With no `--api-token`, the API was registered
 > with *no authenticator at all* and served every route to anyone who could
 > reach the port — grants are only consulted from inside that authenticator, so
 > `--grant` looked like it secured the API and did not. If you run a Hub without
