@@ -1,3 +1,19 @@
+## 0.2.2
+
+- **The login screen now shows its versions** — the dashboard build and the
+  OmnyServer version it was built against, e.g. `Dashboard v0.2.2 · OmnyServer
+  v0.15.0`. Both are compile-time (you are not connected to a Hub yet), so the
+  line names the API the dashboard targets, not the Hub you go on to sign in to
+  — which the tooltip spells out. A `omnyServerWebVersion` constant
+  (`lib/version.dart`), kept in sync with `pubspec.yaml` by a test, backs it.
+
+- **Dropped `frame-ancestors` from the injected Content-Security-Policy.** It is
+  only honoured in a real HTTP header, never in a `<meta>` tag — and GitHub Pages
+  does not let us set headers — so it bought no clickjacking protection and cost
+  a console error on every page load. Removing it clears the error; every other
+  directive is unchanged. (The `.map` 404s in the console are release-build noise
+  and unrelated.)
+
 ## 0.2.1
 
 - **Icons — the dashboard can now be installed.** The manifest shipped with
