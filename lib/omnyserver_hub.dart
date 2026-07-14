@@ -10,7 +10,10 @@ export 'omnyserver.dart';
 // Hub runtime.
 export 'src/application/hub/audit_log.dart';
 export 'src/application/hub/event_aggregator.dart';
+export 'src/application/hub/alert_monitor.dart';
 export 'src/application/hub/hub_config.dart';
+export 'src/application/hub/operation_store.dart';
+export 'src/application/hub/log_buffer.dart';
 export 'src/application/hub/hub_metrics.dart';
 export 'src/application/hub/omny_server_hub.dart';
 
@@ -43,6 +46,7 @@ export 'package:omnyhub/omnyhub.dart'
 // Auth infrastructure.
 export 'src/infrastructure/auth/authorized_keys_store.dart';
 export 'src/infrastructure/auth/composite_authenticator.dart';
+export 'src/infrastructure/auth/grant_authenticator.dart';
 export 'src/infrastructure/auth/public_key_authenticator.dart';
 export 'src/infrastructure/auth/role_based_authorizer.dart';
 export 'src/infrastructure/auth/token_authenticator.dart';

@@ -1,8 +1,11 @@
 import 'dart:io';
 
 import '../../domain/auth/authenticator.dart';
+import '../../domain/entities/alert.dart';
 import '../../domain/events/event_bus.dart';
 import '../../domain/repository/repositories.dart';
+import '../../domain/state/state_reconciler.dart';
+import '../../infrastructure/state/default_reconciler.dart';
 import '../../infrastructure/auth/role_based_authorizer.dart';
 import '../../infrastructure/persistence/memory/memory_repositories.dart';
 import '../../shared/utils/clock.dart';
@@ -57,6 +60,17 @@ class HubConfig {
   /// same port and certificate as everything else. See `ShellHub`.
   final String shellMount;
 
+  /// Browser origins allowed to call the HTTP API (e.g.
+  /// `https://dashboard.example.com`), or empty for none.
+  ///
+  /// A browser refuses to hand a page the response to a cross-origin request
+  /// unless the server says that origin may have it — and a web dashboard is
+  /// *always* a different origin from the Hub, even in development (`webdev` on
+  /// `:8080`, Hub on `:8443`). So without this, the dashboard sees only network
+  /// errors. Empty by default: a Hub with no browser client stays exactly as it
+  /// was, and no origin is trusted by accident.
+  final List<String> corsOrigins;
+
   /// How often nodes should heartbeat. Advertised to each node at registration.
   final Duration heartbeatInterval;
 
@@ -84,6 +98,55 @@ class HubConfig {
   /// Persists historical metric samples.
   final MetricRepository metricRepository;
 
+  /// Persists formulas a site has registered beyond the built-ins.
+  ///
+  /// Read by the catalogue the Hub serves, so a client can be *told* what a node
+  /// can do rather than made to guess it into a free-text box.
+  final FormulaRepository formulaRepository;
+
+  /// Persists the presets an operator has saved on the Hub.
+  ///
+  /// A preset is a reusable declaration ("this is what a docker host is"), so
+  /// keeping it on the Hub means every operator and every script applies the
+  /// *same* one, rather than each shipping their own copy of a JSON file that
+  /// has quietly diverged.
+  final PresetRepository presetRepository;
+
+  /// Persists the credentials the Hub has issued at runtime.
+  ///
+  /// Separate from [authenticator], which is how a credential is *checked*: this
+  /// is where one comes from. A Hub that only ever uses `--grant` flags never
+  /// touches it.
+  final GrantRepository grantRepository;
+
+  /// Persists the state each node is *supposed* to be in.
+  ///
+  /// The other repositories record what happened; this one records what is meant
+  /// to be true, and the difference between the two is drift.
+  final DesiredStateRepository desiredStateRepository;
+
+  /// Plans how to move a node from what it is to what it should be.
+  final StateReconciler reconciler;
+
+  /// The conditions worth being told about (`disk>90`, `cpu>95 for 5m`,
+  /// `offline for 2m`).
+  ///
+  /// Empty by default, and deliberately: a tool that invents its own thresholds
+  /// is a tool that pages you at 3am about a disk it decided was too full.
+  final List<AlertRule> alertRules;
+
+  /// How often pending `offline` alerts are re-checked.
+  ///
+  /// An absence produces no events, so nothing else would ever notice that a node
+  /// has now been gone long enough to be worth mentioning.
+  final Duration alertInterval;
+
+  /// How many log lines the Hub retains per node.
+  ///
+  /// A tail for looking at a misbehaving node, not a log server: see `LogBuffer`
+  /// for why this is bounded and in memory.
+  final int logCapacityPerNode;
+
   /// Optional log sink.
   final void Function(String message)? logger;
 
@@ -101,6 +164,7 @@ class HubConfig {
     Authorizer? authorizer,
     this.nodeMount = '/node',
     this.shellMount = '/shell',
+    this.corsOrigins = const [],
     this.heartbeatInterval = const Duration(seconds: 15),
     this.heartbeatTimeout = const Duration(seconds: 45),
     this.requestTimeout = const Duration(seconds: 30),
@@ -110,6 +174,14 @@ class HubConfig {
     NodeRepository? nodeRepository,
     AuditRepository? auditRepository,
     MetricRepository? metricRepository,
+    FormulaRepository? formulaRepository,
+    PresetRepository? presetRepository,
+    GrantRepository? grantRepository,
+    DesiredStateRepository? desiredStateRepository,
+    StateReconciler? reconciler,
+    this.alertRules = const [],
+    this.alertInterval = const Duration(seconds: 15),
+    this.logCapacityPerNode = 500,
     this.logger,
   }) : assert(
          (securityContext == null) != (tlsDirectory == null),
@@ -119,5 +191,11 @@ class HubConfig {
        eventBus = eventBus ?? BroadcastEventBus(),
        nodeRepository = nodeRepository ?? MemoryNodeRepository(),
        auditRepository = auditRepository ?? MemoryAuditRepository(),
-       metricRepository = metricRepository ?? MemoryMetricRepository();
+       metricRepository = metricRepository ?? MemoryMetricRepository(),
+       formulaRepository = formulaRepository ?? MemoryFormulaRepository(),
+       presetRepository = presetRepository ?? MemoryPresetRepository(),
+       grantRepository = grantRepository ?? MemoryGrantRepository(),
+       desiredStateRepository =
+           desiredStateRepository ?? MemoryDesiredStateRepository(),
+       reconciler = reconciler ?? const DefaultStateReconciler();
 }

@@ -16,3 +16,4 @@ doc/api/
 .DS_Store
 build/
 tmp/
+pubspec_overrides.yaml

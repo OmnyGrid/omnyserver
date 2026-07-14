@@ -5,10 +5,13 @@ import 'package:path/path.dart' as p;
 
 import '../../../domain/entities/audit_entry.dart';
 import '../../../domain/entities/formula_spec.dart';
+import '../../../domain/entities/grant.dart';
 import '../../../domain/entities/node_descriptor.dart';
 import '../../../domain/entities/node_status.dart';
 import '../../../domain/entities/preset.dart';
 import '../../../domain/repository/repositories.dart';
+import '../../../shared/json/json_codec_helpers.dart';
+import '../../../domain/state/desired_state.dart';
 import '../../../domain/value_objects/formula_id.dart';
 import '../../../domain/value_objects/node_id.dart';
 import '../../../domain/value_objects/preset_id.dart';
@@ -104,6 +107,71 @@ class JsonPresetRepository implements PresetRepository {
   Future<bool> delete(PresetId id) async => _store.deleteObject(id.value);
 }
 
+/// JSON-directory [GrantRepository] (`<root>/grants/<id>.json`).
+///
+/// A file per grant, holding a hash rather than a token — so this directory is
+/// not a list of passwords, and losing it costs you the ability to revoke, not
+/// the secrecy of what you issued.
+class JsonGrantRepository implements GrantRepository {
+  final _JsonDir _store;
+
+  /// Creates a grant repository rooted at [path].
+  JsonGrantRepository(String path) : _store = _JsonDir(path, 'grants');
+
+  @override
+  Future<void> save(Grant grant) async =>
+      _store.writeObject(grant.id, grant.toJson());
+
+  @override
+  Future<Grant?> find(String id) async {
+    final json = _store.readObject(id);
+    return json == null ? null : Grant.fromJson(json);
+  }
+
+  @override
+  Future<Grant?> findByTokenHash(String tokenHash) async {
+    for (final json in _store.readAll()) {
+      final grant = Grant.fromJson(json);
+      if (grant.tokenHash == tokenHash) return grant;
+    }
+    return null;
+  }
+
+  @override
+  Future<List<Grant>> all() async =>
+      _store.readAll().map(Grant.fromJson).toList();
+
+  @override
+  Future<bool> delete(String id) async => _store.deleteObject(id);
+}
+
+/// JSON-directory [DesiredStateRepository] (`<root>/desired/<node>.json`).
+class JsonDesiredStateRepository implements DesiredStateRepository {
+  final _JsonDir _store;
+
+  /// Creates a desired-state repository rooted at [path].
+  JsonDesiredStateRepository(String path) : _store = _JsonDir(path, 'desired');
+
+  @override
+  Future<void> save(NodeId nodeId, DesiredState state) async => _store
+      .writeObject(nodeId.value, {'nodeId': nodeId.value, ...state.toJson()});
+
+  @override
+  Future<DesiredState?> find(NodeId nodeId) async {
+    final json = _store.readObject(nodeId.value);
+    return json == null ? null : DesiredState.fromJson(json);
+  }
+
+  @override
+  Future<Map<String, DesiredState>> all() async => {
+    for (final json in _store.readAll())
+      Json.requireString(json, 'nodeId'): DesiredState.fromJson(json),
+  };
+
+  @override
+  Future<bool> delete(NodeId nodeId) async => _store.deleteObject(nodeId.value);
+}
+
 /// JSON-directory [FormulaRepository] (`<root>/formulas/<id>.json`).
 class JsonFormulaRepository implements FormulaRepository {
   final _JsonDir _store;
@@ -181,7 +249,11 @@ class JsonMetricRepository implements MetricRepository {
   }
 
   @override
-  Future<List<MetricSample>> recentFor(NodeId nodeId, {int limit = 100}) async {
+  Future<List<MetricSample>> recentFor(
+    NodeId nodeId, {
+    int limit = 100,
+    DateTime? since,
+  }) async {
     final file = _fileFor(nodeId.value);
     if (!file.existsSync()) return const [];
     final lines = file.readAsLinesSync().where((l) => l.trim().isNotEmpty);
@@ -194,6 +266,7 @@ class JsonMetricRepository implements MetricRepository {
             status: NodeStatus.fromJson(j['status'] as Map<String, dynamic>),
           ),
         )
+        .where((s) => since == null || !s.at.isBefore(since))
         .toList()
         .reversed
         .take(limit)

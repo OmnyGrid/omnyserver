@@ -3,14 +3,25 @@ import 'dart:async';
 import 'package:omnyhub/omnyhub.dart' as omnyhub;
 
 import '../../domain/auth/principal.dart';
+import '../../domain/entities/alert.dart';
 import '../../domain/entities/audit_entry.dart';
+import '../../domain/entities/metric_point.dart';
+import '../../domain/entities/operation.dart';
 import '../../domain/entities/node_descriptor.dart';
+import '../../infrastructure/auth/grant_authenticator.dart';
+import '../../domain/entities/grant.dart';
+import '../../domain/entities/log_line.dart';
+import '../../domain/formula/standard_formulas.dart';
+import '../../domain/entities/formula_spec.dart';
 import '../../domain/entities/node_status.dart';
 import '../../domain/entities/preset.dart';
 import '../../domain/events/omny_event.dart';
 import '../../domain/formula/formula_action.dart';
 import '../../domain/repository/repositories.dart';
 import '../../domain/value_objects/node_id.dart';
+import '../../domain/value_objects/preset_id.dart';
+import '../../domain/state/state_reconciler.dart';
+import '../../domain/state/desired_state.dart';
 import '../../domain/value_objects/principal_id.dart';
 import '../../infrastructure/auth/node_connection_authenticator.dart';
 import '../../infrastructure/node/node_mapping.dart';
@@ -19,7 +30,10 @@ import '../../shared/errors/error_codes.dart';
 import '../../shared/errors/omnyserver_exception.dart';
 import '../../shared/utils/clock.dart';
 import '../../shared/utils/id_generator.dart';
+import 'alert_monitor.dart';
 import 'audit_log.dart';
+import 'operation_store.dart';
+import 'log_buffer.dart';
 import 'hub_config.dart';
 
 /// The key OmnyServer's last status snapshot is cached under, in the omnyhub
@@ -40,6 +54,21 @@ const String _statusState = 'status';
 class OmnyServerHub {
   /// The hub configuration.
   final HubConfig config;
+
+  /// The tail of what nodes have reported.
+  ///
+  /// Bounded and in memory — see [LogBuffer]. Nodes have been pushing log batches
+  /// from the start; until now the Hub decoded them and threw them away.
+  late final LogBuffer logs = LogBuffer(
+    capacityPerNode: config.logCapacityPerNode,
+  );
+
+  /// Watches the fleet against the Hub's alert rules.
+  late final AlertMonitor alerts = AlertMonitor(
+    rules: config.alertRules,
+    eventBus: config.eventBus,
+    clock: config.clock,
+  );
 
   /// The audit log.
   late final AuditLog audit = AuditLog(
@@ -66,6 +95,7 @@ class OmnyServerHub {
   );
 
   omnyhub.OmnyHub? _server;
+  Timer? _alertTicker;
 
   /// Creates a Hub from [config].
   OmnyServerHub(this.config);
@@ -112,8 +142,25 @@ class OmnyServerHub {
     _extraMiddleware.add(middleware);
   }
 
+  /// Installs [middleware] *outside* the Hub's error mapping and authentication
+  /// — the outermost layer. Must be called before [start].
+  ///
+  /// This is where CORS goes. Ordinary middleware runs inside the error mapper,
+  /// so it never sees the `401` the authenticator throws or the `404` routing
+  /// throws — those become responses above it — and a browser would receive an
+  /// unreadable, opaque error instead of the real status. It also never sees a
+  /// preflight, which by specification carries no credentials and so is rejected
+  /// by the authenticator first.
+  void useOuter(omnyhub.Middleware middleware) {
+    if (_server != null) {
+      throw StateError('cannot add middleware to a running Hub');
+    }
+    _outerMiddleware.add(middleware);
+  }
+
   final List<_HostedService> _extraServices = [];
   final List<omnyhub.Middleware> _extraMiddleware = [];
+  final List<omnyhub.Middleware> _outerMiddleware = [];
 
   /// Binds the WSS endpoint and begins accepting connections.
   Future<void> start() async {
@@ -126,6 +173,7 @@ class OmnyServerHub {
         ),
       ],
       middleware: _extraMiddleware,
+      outerMiddleware: _outerMiddleware,
       // Drives the certificate re-check when the TLS material comes from a
       // directory: on renewal omnyhub rebinds the listener gap-free, so
       // established connections drain on the old certificate while new ones land
@@ -162,6 +210,14 @@ class OmnyServerHub {
     }
     await server.start();
     _server = server;
+
+    // Nothing else would ever notice that a node has now been gone *long enough*:
+    // an absence produces no events to react to, so the offline rules need a
+    // clock of their own.
+    if (config.alertRules.any((r) => r.metric == AlertMetric.offline)) {
+      _alertTicker = Timer.periodic(config.alertInterval, (_) => alerts.tick());
+    }
+
     _log('Hub listening on ${config.host}:$port');
   }
 
@@ -177,6 +233,9 @@ class OmnyServerHub {
 
   /// Stops the Hub and releases resources.
   Future<void> close() async {
+    _alertTicker?.cancel();
+    _alertTicker = null;
+    await logs.close();
     await _server?.stop();
     _server = null;
     await config.eventBus.close();
@@ -451,6 +510,9 @@ class OmnyServerHub {
     );
     await config.nodeRepository.save(registered);
     config.eventBus.publish(NodeConnected(registered.id, config.clock.now()));
+    // Back from the dead: whatever it was alerting about is over — including its
+    // thresholds, which cannot be judged on a node that reports nothing.
+    alerts.onConnected(registered.id.value);
     await audit.record(
       principal: principal.id,
       action: 'node.register',
@@ -487,17 +549,333 @@ class OmnyServerHub {
         from.state[_statusState] = report.status;
         unawaited(_recordMetric(NodeId(from.id.value), report.status));
       case Operations.logs:
-        // Accepted and dropped: OmnyServer has no log sink yet. Decoding it here
-        // still validates the frame, so a malformed batch is caught at the edge.
-        LogBatch.fromJson(payload);
+        final batch = LogBatch.fromJson(payload);
+        final now = config.clock.now().toUtc();
+        logs.record([
+          for (final line in batch.lines)
+            LogLine(
+              nodeId: from.id.value,
+              source: batch.source,
+              message: line,
+              // The Hub's clock, not the node's: a fleet's clocks disagree, and a
+              // tail interleaving several nodes is unreadable if each is telling
+              // a different time.
+              at: now,
+            ),
+        ]);
       default:
         _log('node ${from.id} sent an unknown notify: $action');
     }
   }
 
-  Future<void> _recordMetric(NodeId id, NodeStatus status) => config
-      .metricRepository
-      .record(MetricSample(nodeId: id, at: status.capturedAt, status: status));
+  Future<void> _recordMetric(NodeId id, NodeStatus status) {
+    // Judged on the reading the Hub already has, so alerting costs nothing extra
+    // and can never be staler than the fleet view itself.
+    alerts.onStatus(id.value, MetricPoint.fromStatus(status));
+    return config.metricRepository.record(
+      MetricSample(nodeId: id, at: status.capturedAt, status: status),
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // The catalogue: what can be asked of a node, and what has been saved to ask.
+  // ---------------------------------------------------------------------------
+
+  /// The formulas a node can run.
+  ///
+  /// The built-ins, plus anything registered in the Hub's [FormulaRepository].
+  /// A client that has to be *told* what to type into a free-text box is a client
+  /// that gets it wrong; this is what it reads instead.
+  Future<List<FormulaSpec>> listFormulas() async {
+    final custom = await config.formulaRepository.all();
+    final byId = {
+      for (final spec in standardFormulaSpecs) spec.id.value: spec,
+      // A site's own registration wins over a built-in of the same name.
+      for (final spec in custom) spec.id.value: spec,
+    };
+    return byId.values.toList()
+      ..sort((a, b) => a.id.value.compareTo(b.id.value));
+  }
+
+  /// Saves a preset on the Hub, so every operator applies the same one.
+  Future<void> savePreset(Preset preset, {String principal = 'system'}) async {
+    await config.presetRepository.save(preset);
+    await audit.record(
+      principal: principal,
+      action: 'preset.save',
+      target: preset.id.value,
+      outcome: AuditOutcome.success,
+      detail: '${preset.steps.length} steps',
+    );
+  }
+
+  /// Every saved preset.
+  Future<List<Preset>> listPresets() => config.presetRepository.all();
+
+  /// The saved preset with [id], or `null`.
+  Future<Preset?> presetFor(PresetId id) => config.presetRepository.find(id);
+
+  /// Deletes a saved preset.
+  Future<bool> deletePreset(PresetId id) => config.presetRepository.delete(id);
+
+  // ---------------------------------------------------------------------------
+  // Operations: work that takes longer than a caller should be made to wait.
+  // ---------------------------------------------------------------------------
+
+  /// The operations in flight, and the last few that finished.
+  late final OperationStore operations = OperationStore();
+
+  /// Dispatches [work] and returns at once with a handle on it.
+  ///
+  /// The work is *the same work* the synchronous call does — `runFormula`,
+  /// `applyPreset`, `reconcile`. Only who waits for it changes. A `docker verify`
+  /// answers in a second and should just answer; a `docker install` can take
+  /// minutes, and a caller that waits gets the Hub's `requestTimeout` instead of
+  /// an answer — while the node carries on working. The operator is then told a
+  /// failure that did not happen.
+  ///
+  /// Completion is announced on the event bus, so a client learns on the stream
+  /// it is already watching rather than polling for an answer it will either ask
+  /// for too often or find out about too late.
+  Operation dispatch({
+    required String kind,
+    required NodeId nodeId,
+    required String summary,
+    required String principal,
+    required Future<Map<String, dynamic>> Function() work,
+  }) {
+    final operation = Operation(
+      id: config.idGenerator.next(),
+      kind: kind,
+      nodeId: nodeId.value,
+      principal: principal,
+      status: OperationStatus.running,
+      summary: summary,
+      startedAt: config.clock.now().toUtc(),
+    );
+    operations.put(operation);
+    config.eventBus.publish(
+      OperationStarted(
+        nodeId,
+        operation.id,
+        kind,
+        summary,
+        config.clock.now().toUtc(),
+      ),
+    );
+
+    unawaited(
+      work()
+          .then(
+            (result) => _finishOperation(
+              operation,
+              status: OperationStatus.succeeded,
+              result: result,
+            ),
+          )
+          .catchError((Object error) {
+            // A failure here has nowhere to be thrown *to* — the caller left
+            // long ago. It belongs on the operation, which is the thing they
+            // will come back and read.
+            _finishOperation(
+              operation,
+              status: OperationStatus.failed,
+              error: error is OmnyServerException
+                  ? error.message
+                  : error.toString(),
+            );
+          }),
+    );
+
+    return operation;
+  }
+
+  void _finishOperation(
+    Operation operation, {
+    required OperationStatus status,
+    Map<String, dynamic>? result,
+    String? error,
+  }) {
+    final now = config.clock.now().toUtc();
+    operations.put(
+      operation.completed(
+        status: status,
+        at: now,
+        result: result,
+        error: error,
+      ),
+    );
+    config.eventBus.publish(
+      OperationFinished(
+        NodeId(operation.nodeId),
+        operation.id,
+        operation.kind,
+        status == OperationStatus.succeeded,
+        now,
+      ),
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // Grants: credentials the Hub hands out, and takes back.
+  // ---------------------------------------------------------------------------
+
+  /// Issues a credential for [principal] with [roles], and returns the grant
+  /// **and its token**.
+  ///
+  /// This is the only moment the token exists in readable form. The Hub keeps
+  /// its SHA-256 and nothing else, so it cannot show it again later, and neither
+  /// can anyone who steals the Hub's storage. Lost tokens are replaced, not
+  /// recovered — which is why a grant has an id you can revoke it by.
+  Future<({Grant grant, String token})> issueGrant({
+    required PrincipalId principal,
+    required Set<String> roles,
+    String note = '',
+    String issuedBy = 'system',
+  }) async {
+    final token = newToken();
+    final grant = Grant(
+      id: config.idGenerator.next(),
+      principal: principal,
+      roles: roles,
+      tokenHash: hashToken(token),
+      createdAt: config.clock.now().toUtc(),
+      note: note,
+    );
+    await config.grantRepository.save(grant);
+    await audit.record(
+      principal: issuedBy,
+      action: 'grant.issue',
+      target: principal.value,
+      outcome: AuditOutcome.success,
+      detail: 'roles: ${(roles.toList()..sort()).join(',')}',
+    );
+    return (grant: grant, token: token);
+  }
+
+  /// Every credential the Hub has issued. Hashes, never tokens.
+  Future<List<Grant>> listGrants() => config.grantRepository.all();
+
+  /// Revokes a credential. The next request that presents its token fails.
+  Future<bool> revokeGrant(String id, {String revokedBy = 'system'}) async {
+    final grant = await config.grantRepository.find(id);
+    if (grant == null) return false;
+    await config.grantRepository.delete(id);
+    await audit.record(
+      principal: revokedBy,
+      action: 'grant.revoke',
+      target: grant.principal.value,
+      outcome: AuditOutcome.success,
+      detail: 'grant $id',
+    );
+    return true;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Desired state: what a node is supposed to be, and how far it has drifted.
+  // ---------------------------------------------------------------------------
+
+  /// Declares the state [id] should be in.
+  ///
+  /// Declaring is not applying. Nothing runs on the node here — this records the
+  /// intent, so that [drift] can answer "is it still true?" later, and keep
+  /// answering it after someone logs into the machine and changes something by
+  /// hand. That question is the reason to declare a state at all; re-applying a
+  /// preset and watching it succeed only tells you it succeeded.
+  Future<void> setDesiredState(
+    NodeId id,
+    DesiredState state, {
+    String principal = 'system',
+  }) async {
+    await config.desiredStateRepository.save(id, state);
+    await audit.record(
+      principal: principal,
+      action: 'state.declare',
+      target: id.value,
+      outcome: AuditOutcome.success,
+      detail: '${state.steps.length} steps',
+    );
+  }
+
+  /// The state [id] should be in, or `null` if none was ever declared.
+  Future<DesiredState?> desiredStateFor(NodeId id) =>
+      config.desiredStateRepository.find(id);
+
+  /// Stops expecting anything of [id].
+  Future<bool> clearDesiredState(NodeId id) =>
+      config.desiredStateRepository.delete(id);
+
+  /// How far [id] has drifted from what was declared for it.
+  ///
+  /// The plan is what would have to *run* to make the declaration true again. An
+  /// empty plan means the node has not drifted — which is the useful answer, and
+  /// the one nothing could ask for before.
+  ///
+  /// Current state is read from what the node advertises, so this costs nothing
+  /// and works on an offline node too (against its last-known capabilities).
+  Future<Reconciliation> drift(NodeId id) async {
+    final node = getNode(id);
+    if (node == null) throw NotFoundException('unknown node ${id.value}');
+
+    final desired = await config.desiredStateRepository.find(id);
+    if (desired == null) {
+      throw NotFoundException('no desired state declared for ${id.value}');
+    }
+
+    return config.reconciler.reconcile(
+      desired,
+      CurrentState(capabilities: node.capabilities),
+    );
+  }
+
+  /// Runs whatever [drift] says is outstanding, and returns what happened.
+  ///
+  /// Idempotent by construction: a converged node has an empty plan, so
+  /// reconciling it twice runs nothing the second time. That is what makes this
+  /// safe to put on a timer or in a pipeline.
+  Future<PresetApplyResult> reconcile(
+    NodeId id, {
+    String principal = 'system',
+  }) async {
+    final plan = await drift(id);
+    if (plan.converged) {
+      return PresetApplyResult(
+        requestId: config.idGenerator.next(),
+        success: true,
+        results: const [],
+      );
+    }
+    // The plan is a list of steps, which is exactly a preset — so it runs through
+    // the same path an operator's preset does, and is audited the same way.
+    return applyPreset(
+      id,
+      Preset(
+        id: PresetId('reconcile'),
+        name: 'reconcile',
+        description: 'Converging ${id.value} to its declared state',
+        steps: plan.actions,
+      ),
+      principal: principal,
+    );
+  }
+
+  /// A node's resource history, newest first — the samples the Hub has been
+  /// recording on every heartbeat all along.
+  ///
+  /// Projected down to [MetricPoint]s: a stored sample is a whole [NodeStatus],
+  /// process table included, and a chart wants none of that.
+  Future<List<MetricPoint>> metricsFor(
+    NodeId id, {
+    int limit = 100,
+    DateTime? since,
+  }) async {
+    final samples = await config.metricRepository.recentFor(
+      id,
+      limit: limit,
+      since: since,
+    );
+    return [for (final s in samples) MetricPoint.fromStatus(s.status)];
+  }
 
   /// A node's connection is gone (dropped or timed out). The registry keeps the
   /// record, marked offline; we persist that and announce it.
@@ -505,6 +883,7 @@ class OmnyServerHub {
     if (node == null) return;
     final id = NodeId(node.id.value);
     config.eventBus.publish(NodeDisconnected(id, config.clock.now()));
+    alerts.onDisconnected(id.value);
     try {
       final descriptor = nodeDescriptorFrom(node.descriptor);
       unawaited(config.nodeRepository.save(descriptor.copyWith(online: false)));

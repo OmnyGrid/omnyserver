@@ -1,0 +1,11 @@
+{
+  "name": "OmnyServer — Fleet",
+  "short_name": "OmnyServer",
+  "description": "Dashboard for an OmnyServer Hub: the fleet, live node status, formulas, presets and shells.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#0f1318",
+  "theme_color": "#0f1318",
+  "icons": []
+}

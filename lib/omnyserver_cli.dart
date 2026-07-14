@@ -8,4 +8,8 @@ library;
 export 'omnyserver.dart';
 
 export 'src/cli/api_client.dart';
+// The VM's HTTP transport, and where the TLS knobs live — a browser owns its own
+// TLS stack, so they cannot sit on the client itself.
+export 'src/cli/api_transport.dart';
+export 'src/cli/api_transport_io.dart';
 export 'src/cli/cli.dart';

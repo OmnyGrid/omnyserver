@@ -231,6 +231,215 @@ omnyserver preset apply docker-host.json worker-01 --api https://hub:8443 --ca c
 The CLI's operational commands call the Hub's HTTP API — exactly the surface any
 other client uses.
 
+Every one of them takes either credential the Hub knows:
+
+```sh
+# The Hub's master API token — one shared secret, audited as "api".
+omnyserver node status worker-01 --api https://hub:8443 --token api-secret
+
+# Your own grant (--grant alice:admin-token:admin) — an identity the Hub
+# verifies, so the audit trail names you and your roles decide what you may do.
+omnyserver node status worker-01 --api https://hub:8443 \
+                                 --principal alice --token admin-token
+```
+
+A grant's roles are checked against the Hub's `Authorizer` before it may touch
+the API at all, and the fail-closed default reserves it for `admin` — so
+`node-account`'s token connects nodes and nothing more, even if it leaks.
+
+### Formulas and presets
+
+Ask the Hub what nodes can actually do, rather than guessing into a free-text
+box:
+
+```sh
+omnyserver formula list
+# FORMULA     NAME              ACTIONS
+# dart        Dart SDK          install, update, uninstall, verify
+# docker      Docker            install, update, start, stop, restart, uninstall, verify
+```
+
+Save a preset on the Hub once, and apply it by id everywhere:
+
+```sh
+omnyserver preset save docker-host.json
+omnyserver preset apply docker-host --label env=prod
+```
+
+A preset file is whatever copy *you* happen to have; a saved preset is the one
+everybody agrees on. `preset apply` still accepts a file, for a one-off.
+
+### Addressing the fleet
+
+Label a node when it starts, then select on the label:
+
+```sh
+omnyserver node start --id web-01 --label env=prod --label role=web
+omnyserver nodes list  --label env=prod
+omnyserver nodes list  --offline                      # the ones wanting attention
+
+omnyserver formula run docker --label env=prod --action verify   # every prod node
+omnyserver preset apply docker-host.json --all
+```
+
+`formula run` and `preset apply` take one node, `--node` (repeatable), `--label`,
+or `--all`, and report a result per node. A selector matching nothing is an
+error, not a quiet success — "applied to 0 nodes" reads like it worked.
+
+### Issuing credentials
+
+Grants can be baked into the command line (`--grant alice:admin-token:admin`), or
+issued at runtime and revoked without restarting the Hub:
+
+```sh
+omnyserver hub start … --data-dir /var/lib/omnyserver   # or the grants die with it
+omnyserver grant add bob --role viewer --note 'read-only dashboard'
+omnyserver grant list
+omnyserver grant revoke <id>        # the next request with that token fails
+```
+
+**The Hub stores a hash, not the token.** It is printed once, when issued, and
+cannot be shown again — so the Hub's storage is not a list of passwords, and a
+lost token is replaced rather than recovered. That is what the grant id is for.
+
+Issuing and revoking are `admin`-only, so an operator can run the fleet but not
+mint itself an admin token.
+
+> **`--data-dir` is not optional in production.** Without it the Hub keeps nodes,
+> the audit trail, metrics, declared state *and issued credentials* in memory
+> only, and forgets all of it when it stops.
+
+### Desired state, and drift
+
+Declare what a node is *supposed* to be, then ask — at any point later — whether
+it still is:
+
+```sh
+omnyserver state set docker-host.json --label env=prod   # declare; runs nothing
+omnyserver state diff --label env=prod                   # has it drifted?
+omnyserver state reconcile --label env=prod              # make it true again
+```
+
+**Declaring is not applying.** `preset apply` runs steps and tells you they
+succeeded; it cannot tell you anything a week later, after somebody logged into
+the machine and changed something by hand. A declaration keeps answering:
+`state diff` re-plans against what the node currently advertises, and an empty
+plan means no drift.
+
+`state reconcile` runs exactly what the plan says is outstanding, so a converged
+node does nothing at all — idempotent, and safe on a timer. `state diff` exits
+non-zero when anything has drifted, so it works as a check in a pipeline.
+
+### Roles
+
+| Role | May |
+|---|---|
+| `viewer` | read the API: fleet, live status, history, events, audit |
+| `operator` | also act: restart, shut down, update, formulas, presets |
+| `admin` | everything |
+| `node` | enrol a node — and nothing else; it cannot reach the API at all |
+
+So a read-only dashboard link is a `--grant bob:view-token:viewer`, and a leaked
+node credential still cannot operate the fleet.
+
+### Long-running work
+
+```sh
+omnyserver formula run docker worker-01 --action install --async
+# worker-01   dispatched — ops show 2f6eadcd-…
+
+omnyserver ops list
+omnyserver ops show 2f6eadcd-… --wait
+```
+
+`formula run`, `preset apply` and `state reconcile` answer synchronously, which is
+right for a `verify` and wrong for an `install`: the Hub gives up after its request
+timeout, the node carries on working, and you are told a failure that did not
+happen. `--async` hands back an id instead. The work is the same — only who waits
+for it changes.
+
+### Alerts
+
+```sh
+omnyserver hub start … --alert 'disk>90' --alert 'cpu>95 for 5m' \
+                       --alert 'offline for 2m'
+omnyserver alerts    # what is wrong right now; non-zero while anything is
+```
+
+Judged on the heartbeats the Hub already receives. `for 5m` is what separates an
+alert from a twitch: a node at 95% CPU for one heartbeat is a build running, and
+one at 95% for five minutes is a problem. An alert is announced once and resolved
+when it clears.
+
+There are no default rules — a tool that invents its own thresholds is a tool that
+pages you at 3am about a disk it decided was too full.
+
+Read a node's log without logging into it:
+
+```sh
+omnyserver node logs worker-01 -f
+```
+
+The Hub keeps a bounded tail (the last 500 lines per node, in memory) — for
+looking at a machine that is misbehaving now. It is not the audit trail, and not
+a substitute for shipping logs somewhere that keeps them. Nodes ship their log by
+default (`node start --no-ship-logs` opts out).
+
+Watch the fleet, and read a node's history:
+
+```sh
+omnyserver events --follow                      # tail -f for the fleet (SSE)
+omnyserver node metrics worker-01 --since 1h    # CPU / memory / disk over time
+omnyserver audit                                # who did what, as the Hub verified it
+```
+
+`node metrics` reads history the Hub has been recording on **every heartbeat**
+all along — no extra configuration, and it works for any node that has been
+connected long enough to report twice.
+
+`omnyserver whoami` answers what the Hub makes of your credentials:
+
+```sh
+omnyserver whoami --api https://hub:8443 --principal alice --token admin-token
+# principal: alice
+# roles:     admin
+```
+
+### From a browser
+
+The Hub's API is callable from a web app — that is what `omnyserver_web`, the
+dashboard, is built on. Two things are needed, and both are needed:
+
+```sh
+omnyserver hub start --cert certs/server.crt --key certs/server.key \
+                     --api-token api-secret --grant alice:admin-token:admin \
+                     --cors-origin https://dashboard.example.com
+```
+
+- **`--cors-origin`** — a browser will not hand a page a cross-origin response
+  unless the server says that origin may have it, and a dashboard is *always* a
+  different origin than the Hub (in development too: `webdev` on `:8080`, Hub on
+  `:8443`). Without it the app sees network errors and nothing else.
+- **A publicly-trusted certificate**, or one trusted at the OS/browser level. The
+  browser owns the TLS stack; there is no in-page `--insecure` to offer, and a
+  self-signed Hub simply will not load.
+
+Client code imports the browser-safe barrel, and drives the very same
+`HubApiClient` the CLI does:
+
+```dart
+import 'package:omnyserver/omnyserver_client_web.dart';
+
+final client = HubApiClient(
+  Uri.parse('https://hub.example.com:8443'),
+  principal: 'alice',
+  token: 'admin-token',
+);
+final nodes = (await client.get('/nodes') as List)
+    .map((n) => NodeDescriptor.fromJson((n as Map).cast()))
+    .toList();
+```
+
 ### HTTP API
 
 Served over HTTPS on the Hub's own port, alongside the node control channel —

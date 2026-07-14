@@ -1,0 +1,32 @@
+name: omnyserver_web
+description: >-
+  Browser dashboard for an OmnyServer Hub — see the fleet, watch live node
+  status, run formulas and presets, and open a shell on any node. Installable
+  PWA, no custom backend.
+version: 0.2.0
+repository: https://github.com/OmnyGrid/omnyserver
+publish_to: none
+
+environment:
+  sdk: ^3.12.2
+
+dependencies:
+  # The Hub's REST client and the entities it decodes, browser-safe. 0.14.0 is
+  # the version that exposes `omnyserver_client_web.dart` and the transport seam
+  # this app is built on. CI and the Pages deploy override this with a path
+  # dependency on `..`, so the dashboard always ships against the API it is
+  # released beside.
+  omnyserver: ^0.14.0
+  # The shared web foundation: state primitives, storage, router, UI kit — and
+  # the terminal, so a node's shell opens here instead of being rebuilt.
+  omnyshell_web: ^1.15.0
+  # The OmnyShell client the terminal drives. The Hub hosts a broker on the same
+  # port (`hub start --shell`), so one login serves both fleets.
+  omnyshell: ^1.56.1
+  web: ^1.1.1
+
+dev_dependencies:
+  build_runner: ^2.15.1
+  build_web_compilers: ^4.8.0
+  lints: ^6.1.0
+  test: ^1.31.2

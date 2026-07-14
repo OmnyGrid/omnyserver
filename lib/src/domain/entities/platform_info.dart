@@ -1,8 +1,14 @@
-import 'dart:io';
-
 import 'package:meta/meta.dart';
 
 import '../../shared/json/json_codec_helpers.dart';
+// The host-facts capture is the one thing here that needs `dart:io`. It lives
+// behind a conditional import so this entity — which a browser dashboard has to
+// deserialize — carries no `dart:io` into the web graph. dart2js silently emits
+// *nothing* for an entrypoint that reaches an unsupported SDK library, so a
+// single stray import is not a warning but an invisible build failure.
+import 'platform_info_io.dart'
+    if (dart.library.js_interop) 'platform_info_web.dart'
+    as host;
 
 /// Static facts about a node's host operating system and agent build, reported
 /// once at registration (and refreshed on reconnect).
@@ -40,20 +46,12 @@ class PlatformInfo {
   });
 
   /// Captures the platform info of the current process's host.
-  factory PlatformInfo.local({required String agentVersion}) {
-    final v = Platform.version;
-    final arch = v.contains('arm64') || v.contains('aarch64')
-        ? 'arm64'
-        : (v.contains('x64') || v.contains('x86_64') ? 'x64' : 'unknown');
-    return PlatformInfo(
-      hostname: Platform.localHostname,
-      osName: Platform.operatingSystem,
-      osVersion: Platform.operatingSystemVersion,
-      architecture: arch,
-      kernelVersion: Platform.operatingSystemVersion,
-      agentVersion: agentVersion,
-    );
-  }
+  ///
+  /// Native only: a browser has no host to describe, and calling this there
+  /// throws [UnsupportedError]. A web client reads platform info off the Hub's
+  /// API with [fromJson] instead.
+  factory PlatformInfo.local({required String agentVersion}) =>
+      host.localPlatformInfo(agentVersion: agentVersion);
 
   /// JSON form.
   Map<String, dynamic> toJson() => {

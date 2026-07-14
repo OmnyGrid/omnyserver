@@ -1,0 +1,95 @@
+/* Dashboard-specific styling, layered over the shared `kit.css`.
+ *
+ * Everything generic — tokens, buttons, cards, modals, toasts, the terminal
+ * chrome — comes from omnyshell_web, so the two apps read as one product. Only
+ * what is peculiar to a fleet view lives here. */
+
+/* The fleet list: a node row is a click target, so make that legible. */
+.list-item {
+  cursor: pointer;
+  transition: border-color 120ms ease;
+}
+.list-item:hover {
+  border-color: var(--border-strong);
+}
+
+/* Fact rows (platform, memory, disks): a fixed label column so the values line
+   up into a scannable column instead of ragged text. */
+.stack > .row > .muted:first-child {
+  min-width: 120px;
+  flex: 0 0 auto;
+}
+
+/* Long values (a UID, a kernel string) truncate rather than widening the card. */
+.ellipsis {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The process table is dense, numeric, and read by eye — monospace keeps the
+   columns aligned without a real <table>. */
+.mono {
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+}
+
+/* Login sits centred rather than top-aligned like the other screens. */
+.center-host {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 70vh;
+  padding: 24px;
+}
+.center-host .card {
+  width: 100%;
+  max-width: 420px;
+}
+.pad-lg {
+  padding: 32px;
+}
+
+/* Resource history. The line inherits `currentColor`, so it follows the theme
+   rather than pinning a colour that would disappear on a dark background. */
+.sparkline {
+  gap: 4px;
+  color: var(--accent);
+}
+.sparkline .spark {
+  display: block;
+  border-radius: var(--radius-sm);
+  background: var(--bg-sunken);
+  padding: 4px 0;
+}
+
+/* The log tail. A fixed height that scrolls, rather than a pane that grows the
+   page: a log is something you look *into*, not something the rest of the screen
+   should be pushed off the bottom by. */
+.log-lines {
+  max-height: 320px;
+  overflow-y: auto;
+  background: var(--bg-sunken);
+  border-radius: var(--radius-sm);
+  padding: 8px;
+}
+.log-line {
+  gap: 10px;
+  align-items: baseline;
+  padding: 1px 0;
+}
+.log-line .mono {
+  font-size: 0.8rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* Alerts sit above the fleet, and are the one thing on the page that should
+   catch the eye. */
+.alerts {
+  border-left: 3px solid var(--danger);
+}
+.alerts .row {
+  cursor: pointer;
+}

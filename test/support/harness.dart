@@ -73,6 +73,7 @@ class TestCluster {
     NodeRepository? nodeRepository,
     AuditRepository? auditRepository,
     MetricRepository? metricRepository,
+    List<String> corsOrigins = const [],
   }) async {
     final grants =
         tokens ??
@@ -86,12 +87,20 @@ class TestCluster {
             roles: const {'node'},
           ),
         };
+    // Both credential sources, as `hub start` wires them: the flag-based grants,
+    // then the ones the Hub issues at runtime.
+    final grantStore = MemoryGrantRepository();
     final hub = OmnyServerHub(
       HubConfig(
         host: '127.0.0.1',
         port: 0,
         securityContext: await TestCerts.serverContext(),
-        authenticator: TokenAuthenticator(grants),
+        authenticator: CompositeAuthenticator([
+          TokenAuthenticator(grants),
+          GrantAuthenticator(grantStore),
+        ]),
+        grantRepository: grantStore,
+        corsOrigins: corsOrigins,
         heartbeatInterval: heartbeatInterval,
         heartbeatTimeout: heartbeatTimeout,
         clock: clock ?? const SystemClock(),

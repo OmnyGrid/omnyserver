@@ -1,3 +1,433 @@
+## 0.14.0
+
+Work that takes longer than a caller should be made to wait.
+
+```sh
+omnyserver formula run docker w1 --action install --async   # returns at once
+omnyserver ops list
+omnyserver ops show <id> --wait
+```
+
+### Added
+
+- **`async: true` on `/nodes/{id}/formula`, `/presets/apply` and
+  `/nodes/{id}/reconcile`; `GET /operations`, `GET /operations/{id}`;
+  `--async` on the three CLI commands; `omnyserver ops list | show [--wait]`.**
+
+  These calls answer synchronously: the caller waits, and the Hub gives up after
+  `requestTimeout`. That is right for a `verify` — and wrong for an `install`,
+  which can take minutes. The caller gets a timeout, **the node carries on
+  working**, and the operator is told a failure that did not happen.
+
+  `async` hands back a handle instead of an answer (`202`), and the work is *the
+  same work* — `runFormula`, `applyPreset`, `reconcile`, dispatched rather than
+  awaited. Only who waits for it changes, which is exactly why **the synchronous
+  contract is untouched**: it is still the right answer for the calls it was right
+  for, and a `verify` should just answer.
+
+  A failure lands **on the operation**, because an error thrown into a caller who
+  left has nowhere to go. `OperationStarted` / `OperationFinished` ride the event
+  bus, so a client learns on the stream it is already watching rather than polling
+  for an answer it will either ask for too often or find out about too late.
+
+- The dashboard dispatches formula runs and preset applies asynchronously, and
+  grows an operations tray that updates from the event stream. A browser tab is
+  the worst possible place to wait on an install.
+
+---
+
+## 0.13.0
+
+Alerts — and the distinction the whole thing rests on: **a condition is not an
+alert**.
+
+```sh
+omnyserver hub start … --alert 'disk>90' --alert 'cpu>95 for 5m' --alert 'offline for 2m'
+omnyserver alerts     # what is wrong right now; exits non-zero if anything is
+```
+
+### Added
+
+- **`hub start --alert`, `GET /alerts`, `omnyserver alerts`, and an alerts panel
+  on the dashboard.** Rules are judged on the heartbeats the Hub already receives,
+  so alerting costs nothing extra and can never be staler than the fleet view.
+
+  A node at 95% CPU for one heartbeat is a build running; at 95% for five minutes
+  it is a problem. So a breach is *observed* immediately and *raised* only once it
+  has held for the rule's duration — and an alert is announced **once**, not on
+  every heartbeat, and **resolved** when it clears. Each of those is the
+  difference between alerting and noise, and an operator who has learned to ignore
+  alerts has no alerting at all.
+
+  There are **no default rules**. A tool that invents its own thresholds is a tool
+  that pages you at 3am about a disk it decided was too full.
+
+- `AlertRaised` and `AlertResolved` ride the existing event bus, so an alert
+  reaches the dashboard, `events --follow` and anything else watching by the paths
+  that already exist, rather than needing a delivery mechanism of its own.
+
+- `offline` rules get a ticker, because an absence produces no events: nothing
+  else would ever notice that a node has now been gone *long enough*.
+
+---
+
+## 0.12.0
+
+A node's log, readable without logging into the node.
+
+```sh
+omnyserver node logs worker-01          # the tail the Hub keeps
+omnyserver node logs worker-01 -f       # keep printing as it happens
+```
+
+### Added
+
+- **`GET /nodes/{id}/logs`, `/logs/stream` (SSE), and `omnyserver node logs [-f]`.**
+  Nodes have been able to push log batches since the first commit, and the Hub
+  decoded each one and **threw it away** — the code said so: *"Accepted and
+  dropped: OmnyServer has no log sink yet."* So a node's log stayed on the node,
+  where the only way to read it is to log into the machine, which is the thing a
+  fleet tool exists to avoid.
+
+  What the Hub keeps is a bounded, in-memory **tail** — the last 500 lines per
+  node (`HubConfig.logCapacityPerNode`). Deliberately not persisted: logs are the
+  highest-volume thing a fleet produces, and a Hub that wrote every line of every
+  node to disk would quietly become a log server nobody asked for, filling the
+  disk the audit trail and metric history actually need. This is for looking at a
+  machine that is misbehaving *now*. It is not the audit trail, and it is not a
+  substitute for shipping logs somewhere that keeps them.
+
+- **`node start --ship-logs`** (on by default), and `LogShipper`. The other half
+  of the same gap: `NodeAgent.sendLogs` existed and *nothing ever called it*. The
+  agent's own log now goes to its terminal and to the Hub. Batched rather than
+  sent line by line, because a control-frame round trip costs more than the line
+  it carries; and best-effort rather than queued, because an agent that queues
+  forever is an agent that eventually eats the machine.
+
+- The dashboard grows a live log pane, which follows the bottom unless you have
+  scrolled up — being yanked back to the tail while reading something is how a log
+  pane becomes useless.
+
+---
+
+## 0.11.0
+
+A catalogue of what a node can be asked to do, and a library of what has been
+saved to ask.
+
+```sh
+omnyserver formula list                        # what nodes can actually do
+omnyserver preset save docker-host.json        # once, on the Hub
+omnyserver preset apply docker-host --label env=prod   # by id, not by file
+```
+
+### Added
+
+- **`GET /formulas` and `omnyserver formula list`.** A client had no way to
+  *discover* what a node implements — it had to be told, out of band, what to
+  type into a free-text box, which is a client that gets it wrong. The catalogue
+  lists each formula and the actions it supports.
+
+  The specs moved into the domain (`standard_formulas.dart`) and the `Formula`
+  implementations now read them from there, so there is one definition rather
+  than two: a catalogue served by the Hub cannot promise a formula the nodes have
+  never heard of. The Hub does not — and should not — import the code that runs
+  them to find out what they are.
+
+- **A preset library: `GET/POST /presets`, `GET/DELETE /presets/{id}`, and
+  `preset save | list | show | delete`.** `PresetRepository` existed, with all
+  three of its implementations, wired to nothing. Every operator shipped their own
+  copy of a preset file, and the copies quietly diverged.
+
+  `preset apply` now takes a saved preset's **id** as well as a file, and
+  `POST /presets/apply` accepts `presetId`. The saved form is the one worth using:
+  a file is whatever copy *that* caller happens to have; an id is the one
+  everybody agrees on.
+
+- `--data-dir` persists saved presets and site-registered formulas too.
+
+---
+
+## 0.10.0
+
+Credentials the Hub hands out — and takes back — without a restart. And a Hub
+that remembers anything at all.
+
+```sh
+omnyserver hub start … --data-dir /var/lib/omnyserver
+omnyserver grant add bob --role viewer --note 'read-only dashboard'
+omnyserver grant list
+omnyserver grant revoke <id>          # the next request with that token fails
+```
+
+### Added
+
+- **`grant add | list | revoke`, and `GET/POST/DELETE /grants`.** Grants were
+  `hub start` flags: adding an operator, or revoking a leaked token, meant
+  restarting the Hub and dropping every node with it. That was tolerable when the
+  only client was a CLI holding a token in a shell variable. It is not, now that a
+  browser stores one.
+
+  **The Hub keeps a hash, not a token.** The plaintext exists exactly once, in the
+  response that created it, and the Hub cannot show it again — so its storage is
+  not a list of passwords, and a stolen grant file authenticates nobody. A lost
+  token is replaced, not recovered, which is why a grant has an id you revoke it
+  by.
+
+  Issuing and revoking are `admin`-only (`grant.manage` is deliberately unmapped),
+  so an operator can run the fleet but cannot quietly mint itself an admin token.
+  The flag-based grants still work: a `CompositeAuthenticator` checks the ones
+  baked into the command line, then the ones issued at runtime.
+
+- **`hub start --data-dir <dir>`.** The Hub had *no persistence at all* — every
+  node, every audit entry, every metric sample and every declared state lived in
+  memory and died with the process. The repositories and their JSON-directory and
+  SQLite implementations existed; nothing wired them up. Now `--data-dir` does,
+  and an issued credential survives the restart that would otherwise have made
+  runtime grants pointless.
+
+---
+
+## 0.9.0
+
+Desired state and drift — the thesis the package was named for, and the one part
+of it that was never wired up.
+
+```sh
+omnyserver state set docker-host.json --label env=prod   # declare; runs nothing
+omnyserver state diff --label env=prod                   # has it drifted?
+omnyserver state reconcile --label env=prod              # make it true again
+```
+
+### Added
+
+- **`DesiredState`, `CurrentState`, `StateReconciler` and
+  `DefaultStateReconciler` have existed in the domain from the very first commit,
+  connected to nothing.** They are now a feature.
+
+  `PUT /nodes/{id}/desired-state` declares what a node is supposed to be.
+  `GET /nodes/{id}/drift` answers whether it still is, by planning what would have
+  to run to make the declaration true again — an empty plan means no drift.
+  `POST /nodes/{id}/reconcile` runs exactly that plan.
+
+  **Declaring is not applying, and the split is the whole point.** Applying a
+  preset and watching it succeed tells you only that it succeeded; it cannot tell
+  you anything a week later, after somebody logged into the box and changed
+  something by hand. A declaration keeps answering.
+
+  Reconciling is idempotent by construction: a converged node has an empty plan,
+  so the second run does nothing. That is what makes it safe on a timer or in a
+  pipeline — and `state diff` exits non-zero when anything has drifted, so it is
+  usable as a check.
+
+- **`omnyserver state set | show | diff | reconcile | clear`**, all taking the
+  same fleet selectors as the rest of the CLI (`--label env=prod`, `--all`).
+
+- **`DesiredStateRepository`**, with the three implementations the other
+  repositories have (in-memory, JSON-directory, SQLite), so a declaration outlives
+  the Hub that recorded it. `HubConfig.reconciler` is the seam for a richer
+  planner (dependency ordering, version comparison) later.
+
+- `HubApiClient.put` and `.delete`, which the API had no need of until now.
+
+---
+
+## 0.8.0
+
+A fleet you can address, and a credential that can only watch it.
+
+```sh
+omnyserver node start --id web-01 --label env=prod --label role=web
+omnyserver nodes list --label env=prod
+omnyserver formula run docker --label env=prod --action verify   # every prod node
+```
+
+### Added
+
+- **Labels, end to end.** `NodeDescriptor` has carried a `labels` map since the
+  beginning and nothing could ever *set* one — `node start` had no flag — so
+  nothing could select on one either. Now `node start --label env=prod`
+  advertises them at registration, and `GET /nodes?label=env=prod&online=true`
+  filters on them server-side. Filtering at the Hub rather than in the client is
+  the difference between asking which machines are the production ones and
+  downloading the whole fleet to find out.
+
+- **Fleet selectors.** `formula run` and `preset apply` took exactly one node.
+  They now take `--label env=prod`, repeated `--node`, or `--all`, and report a
+  result per node with a tally. The fan-out is sequential on purpose: these are
+  fleet-changing operations, and a failure halfway through a hundred machines is
+  far easier to reason about when the ones before it are known to have finished.
+
+  A selector that matches nothing is an **error**, not a silent success —
+  "applied to 0 nodes" reads like it worked, and is exactly how a typo in a label
+  goes unnoticed until somebody wonders why production never changed.
+
+- **A `viewer` role.** `api.access` was fail-closed on `admin`, so every
+  dashboard user was a full operator and there was no way to hand somebody a link
+  that could not also shut a machine down. `viewer` can reach the API and read
+  everything — fleet, live status, history, events, audit — and change nothing;
+  `operator` can also act.
+
+  That required separating two questions the API had been conflating.
+  Authenticating (`api.access`) is not the same as being *allowed to act*, so the
+  mutating routes now consult the Hub's `Authorizer` per action
+  (`node.restart`, `formula.run`, …). Without that second check the role would
+  have been decoration: a viewer could still have restarted a machine.
+
+  Existing deployments are unaffected — `admin` remains the wildcard, the master
+  API token still acts, and a `node` credential still cannot reach the API at all.
+
+---
+
+## 0.7.0
+
+History, a live stream, and the CLI commands the API always had but the CLI
+never exposed.
+
+```sh
+omnyserver node metrics worker-01 --since 1h   # the samples the Hub already had
+omnyserver events --follow                     # tail -f for the fleet
+```
+
+### Added
+
+- **`GET /nodes/{id}/metrics`** and **`omnyserver node metrics <id>`**. The Hub
+  has been recording a full `NodeStatus` to its `MetricRepository` on *every
+  heartbeat* since the beginning — and nothing has ever read one back. This is
+  that history, projected down to the handful of numbers a chart is actually
+  drawn from (`MetricPoint`): a stored sample carries the whole process table, so
+  serving it raw would cost megabytes to draw a line.
+
+  `?since=` takes `30s` / `15m` / `1h` / `7d` as well as an ISO-8601 instant,
+  because "the last hour" is the thing an operator means, and making them compute
+  a timestamp for it is a small cruelty. `MetricRepository.recentFor` grew a
+  `since` parameter, applied before `limit` so a window is a window and not
+  "the newest N that happen to fall in one".
+
+- **`GET /events/stream`** (Server-Sent Events) and **`omnyserver events -f`**.
+  `/events` returns a bounded snapshot, so anything built on it is a few seconds
+  stale and keeps re-fetching a list it has mostly seen. This is the same events,
+  pushed — each flushed as it happens, with the event's type as the SSE `event:`
+  name so a browser can `addEventListener('node.connected', …)` rather than
+  switching on a payload field. `HttpApiServer.eventKeepAlive` tunes the ping.
+
+- **The CLI commands the API already answered**: `node shutdown`, `node update`,
+  `node show`, `node capabilities`, `events`, `audit`, `hub metrics`. The
+  dashboard could do all of these and the CLI could not.
+
+### Fixed
+
+- **`HubApiClient` mangled query strings.** `Uri.replace(path: …)` percent-encodes
+  a `?`, so `/nodes/x/metrics?since=1h` became a path with a `%3F` in it and
+  matched no route at all — a 404 for *every* endpoint taking a parameter. Found
+  by running the CLI against a real Hub; a unit test would not have noticed,
+  because both sides were mocked.
+
+- **Stopping the Hub blocked on live event streams.** An SSE response never ends,
+  so a shutdown waited for each idle client's next keep-alive ping to fail — a
+  Hub taking fifteen seconds to stop because somebody left a dashboard open.
+  `HttpApiServer.close()` now hangs them up first.
+
+---
+
+## 0.6.0
+
+The Hub becomes callable from a browser. This is the foundation for the
+OmnyServer Web dashboard: the same `HubApiClient` the CLI drives the Hub with now
+compiles to JavaScript and runs on a page.
+
+```sh
+omnyserver hub start --cert certs/server.crt --key certs/server.key \
+                     --api-token api-secret --grant alice:admin-token:admin \
+                     --cors-origin https://dashboard.example.com
+omnyserver whoami --api https://hub:8443 --principal alice --token admin-token
+```
+
+### Added
+
+- **`lib/omnyserver_client_web.dart`** — a browser-safe barrel: the REST client
+  plus the entities it decodes (`NodeDescriptor`, `NodeStatus`, `OmnyEvent`,
+  `AuditEntry`, …). A web app imports this and gets the *same* `fromJson` the Hub
+  encodes with, so there is no second, drifting copy of the wire format.
+
+  `test/unit/web_barrel_dart_io_free_test.dart` walks the barrel's import graph
+  and fails if `dart:io` reappears anywhere in it. That is not fussiness:
+  `dart2js` emits **no output at all** for an entrypoint that reaches an
+  unsupported SDK library, so the build appears to succeed and the page is simply
+  blank.
+
+- **An HTTP transport seam.** `HubApiClient` now takes an `ApiTransport`:
+  `IoApiTransport` (`dart:io`'s `HttpClient`) on the VM, `FetchApiTransport`
+  (`fetch`) in a browser, or a fake in a test. TLS options moved onto the VM
+  transport, where they belong — a browser owns its own TLS stack and cannot be
+  handed a `SecurityContext` or told to accept a bad certificate.
+
+- **`hub start --cors-origin <origin>`** (repeatable) and `HubConfig.corsOrigins`.
+  A web dashboard is *always* a different origin from the Hub — in production and
+  in development alike (`webdev` on `:8080`, Hub on `:8443`) — so without this the
+  browser blocks every response and the app sees only network errors. Empty by
+  default: a Hub with no browser client is unchanged, and no origin is trusted by
+  accident.
+
+  It is installed with `OmnyServerHub.useOuter` (new), *outside* the error mapper
+  and authentication. Both matter. A `401`, `404` or `500` is rendered above
+  ordinary middleware, so CORS mounted there could never stamp one — and a
+  response a browser is not allowed to read arrives as an opaque network error,
+  not as "your token is wrong". And a preflight carries no credentials by
+  specification, so an authenticator that saw it first would reject it and no call
+  would ever succeed.
+
+- **`GET /api/v1/whoami`** and **`omnyserver whoami`** → `{principal, roles,
+  authenticated}`. A client cannot answer either question for itself: it cannot
+  tell a valid token from an invalid one until the first real call fails, long
+  after the login form is gone, and it cannot know which roles it holds, so it
+  would have to offer every action and let the Hub refuse half of them.
+
+### Fixed
+
+- `POST /nodes/{id}/formula` was missing from the OpenAPI document, so a client
+  generated from it would silently lack the ability to run formulas.
+
+---
+
+## 0.5.0
+
+Operators get an identity. The CLI's API commands now take `--principal`
+alongside `--token`, presenting a Hub **grant** — the credential nodes already
+use — instead of the Hub-wide master API token.
+
+```sh
+# hub start … --grant alice:admin-token:admin
+omnyserver node status worker-01 --api https://hub:8443 \
+                                 --principal alice --token admin-token
+```
+
+### Added
+
+- `--principal` on every CLI command that calls the Hub API (`node status`,
+  `node restart`, `nodes list`, `formula run`, `preset apply`). Paired with
+  `--token`, it is verified against the same grant store the node control channel
+  authenticates against: the principal and its roles come from the grant, not
+  from the caller. `HubApiClient` sends the pair as `x-omny-principal` plus the
+  bearer token.
+- `api.access`, the action a grant must be authorized for to use the HTTP API.
+  `RoleBasedAuthorizer` leaves it unmapped and so fail-closed on `admin`, which
+  is what stops a node's own grant (role `node`) from operating the fleet through
+  the API it can authenticate to — it gets a `403`.
+
+### Changed
+
+- The API's audit trail records the principal the Hub **verified** rather than
+  the one the caller asserted in `x-omny-principal`. With the master API token
+  the header still stands in as attribution (that token is already `admin`, so
+  there is nothing to escalate); with a grant it is ignored in favour of the
+  authenticated identity.
+- The master API token is compared in constant time, as grant tokens already
+  were.
+
+Existing setups are unaffected: `--token api-secret` alone behaves exactly as
+before, and an API with no `--api-token` stays open.
+
 ## 0.4.0
 
 Certificates that renew themselves. The Hub can now take its TLS material from a

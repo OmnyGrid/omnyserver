@@ -28,3 +28,10 @@ include: package:lints/recommended.yaml
 
 # For additional information about configuring this file, see
 # https://dart.dev/tools/analysis
+
+analyzer:
+  exclude:
+    # The dashboard is a package of its own, with its own dependencies, its own
+    # analysis and its own CI job. Analyzed from here its dependencies are not
+    # resolved, so every import in it reads as unresolved.
+    - omnyserver_web/**

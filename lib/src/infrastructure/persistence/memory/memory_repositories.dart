@@ -1,8 +1,10 @@
 import '../../../domain/entities/audit_entry.dart';
 import '../../../domain/entities/formula_spec.dart';
+import '../../../domain/entities/grant.dart';
 import '../../../domain/entities/node_descriptor.dart';
 import '../../../domain/entities/preset.dart';
 import '../../../domain/repository/repositories.dart';
+import '../../../domain/state/desired_state.dart';
 import '../../../domain/value_objects/formula_id.dart';
 import '../../../domain/value_objects/node_id.dart';
 import '../../../domain/value_objects/preset_id.dart';
@@ -39,6 +41,50 @@ class MemoryPresetRepository implements PresetRepository {
 
   @override
   Future<bool> delete(PresetId id) async => _presets.remove(id.value) != null;
+}
+
+/// In-memory [GrantRepository].
+class MemoryGrantRepository implements GrantRepository {
+  final Map<String, Grant> _grants = {};
+
+  @override
+  Future<void> save(Grant grant) async => _grants[grant.id] = grant;
+
+  @override
+  Future<Grant?> findByTokenHash(String tokenHash) async {
+    for (final grant in _grants.values) {
+      if (grant.tokenHash == tokenHash) return grant;
+    }
+    return null;
+  }
+
+  @override
+  Future<Grant?> find(String id) async => _grants[id];
+
+  @override
+  Future<List<Grant>> all() async => _grants.values.toList();
+
+  @override
+  Future<bool> delete(String id) async => _grants.remove(id) != null;
+}
+
+/// In-memory [DesiredStateRepository].
+class MemoryDesiredStateRepository implements DesiredStateRepository {
+  final Map<String, DesiredState> _states = {};
+
+  @override
+  Future<void> save(NodeId nodeId, DesiredState state) async =>
+      _states[nodeId.value] = state;
+
+  @override
+  Future<DesiredState?> find(NodeId nodeId) async => _states[nodeId.value];
+
+  @override
+  Future<Map<String, DesiredState>> all() async => Map.of(_states);
+
+  @override
+  Future<bool> delete(NodeId nodeId) async =>
+      _states.remove(nodeId.value) != null;
 }
 
 /// In-memory [FormulaRepository].
@@ -103,8 +149,15 @@ class MemoryMetricRepository implements MetricRepository {
   }
 
   @override
-  Future<List<MetricSample>> recentFor(NodeId nodeId, {int limit = 100}) async {
+  Future<List<MetricSample>> recentFor(
+    NodeId nodeId, {
+    int limit = 100,
+    DateTime? since,
+  }) async {
     final list = _samples[nodeId.value] ?? const [];
-    return list.reversed.take(limit).toList();
+    final window = since == null
+        ? list.reversed
+        : list.reversed.where((s) => !s.at.isBefore(since));
+    return window.take(limit).toList();
   }
 }

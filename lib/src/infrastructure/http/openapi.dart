@@ -17,6 +17,13 @@ Map<String, dynamic> openApiDocument() => {
     {'url': '/api/v1'},
   ],
   'paths': {
+    '/whoami': {
+      'get': {
+        'summary':
+            'The identity and roles the Hub resolves your credentials to',
+        'responses': {'200': _ok('{principal, roles, authenticated}')},
+      },
+    },
     '/nodes': {
       'get': {
         'summary': 'List all registered nodes',
@@ -66,17 +73,232 @@ Map<String, dynamic> openApiDocument() => {
         'responses': {'200': _ok('Accepted'), '404': _err, '502': _err},
       },
     },
+    '/nodes/{id}/formula': {
+      'post': {
+        'summary': 'Run a formula action on a node',
+        'parameters': [_pathId],
+        'requestBody': _jsonBody({
+          'formula': 'string',
+          'action': 'string',
+          'version': 'string',
+        }),
+        'responses': {
+          '200': _ok('Formula run result'),
+          '400': _err,
+          '404': _err,
+          '502': _err,
+        },
+      },
+    },
+    '/formulas': {
+      'get': {
+        'summary':
+            'The formulas a node can run, and the actions each implements',
+        'responses': {'200': _ok('Array of formula specs')},
+      },
+    },
+    '/presets': {
+      'get': {
+        'summary': 'The presets saved on the Hub',
+        'responses': {'200': _ok('Array of presets')},
+      },
+      'post': {
+        'summary': 'Save a preset on the Hub',
+        'requestBody': _jsonBody({
+          'id': 'string',
+          'name': 'string',
+          'steps': 'array',
+        }),
+        'responses': {'200': _ok('Saved'), '400': _err, '403': _err},
+      },
+    },
+    '/presets/{id}': {
+      'get': {
+        'summary': 'A saved preset',
+        'parameters': [_pathId],
+        'responses': {'200': _ok('Preset'), '404': _err},
+      },
+      'delete': {
+        'summary': 'Delete a saved preset',
+        'parameters': [_pathId],
+        'responses': {'200': _ok('Deleted'), '403': _err, '404': _err},
+      },
+    },
     '/presets/apply': {
       'post': {
-        'summary': 'Apply a preset to a node',
-        'requestBody': _jsonBody({'nodeId': 'string', 'preset': 'object'}),
+        'summary':
+            'Apply a preset to a node — one sent inline, or a saved one by '
+            'presetId',
+        'requestBody': _jsonBody({
+          'nodeId': 'string',
+          'preset': 'object',
+          'presetId': 'string',
+        }),
+        'responses': {
+          '200': _ok('Apply result'),
+          '400': _err,
+          '404': _err,
+          '502': _err,
+        },
+      },
+    },
+    '/nodes/{id}/metrics': {
+      'get': {
+        'summary': "A node's resource history, for charting",
+        'parameters': [
+          _pathId,
+          {
+            'name': 'since',
+            'in': 'query',
+            'description':
+                'Window back from now (30s, 15m, 1h, 7d) or an '
+                'ISO-8601 instant',
+            'schema': {'type': 'string'},
+          },
+          {
+            'name': 'limit',
+            'in': 'query',
+            'description': 'Maximum samples (default 100)',
+            'schema': {'type': 'integer'},
+          },
+        ],
+        'responses': {
+          '200': _ok('Array of metric points, newest first'),
+          '400': _err,
+          '404': _err,
+        },
+      },
+    },
+    '/nodes/{id}/logs': {
+      'get': {
+        'summary':
+            "The tail of what a node has reported (bounded, in memory — not a "
+            'log server)',
+        'parameters': [
+          _pathId,
+          {
+            'name': 'tail',
+            'in': 'query',
+            'description': 'How many lines (default 200)',
+            'schema': {'type': 'integer'},
+          },
+        ],
+        'responses': {'200': _ok('Array of log lines'), '404': _err},
+      },
+    },
+    '/nodes/{id}/logs/stream': {
+      'get': {
+        'summary': "A node's log as it happens (text/event-stream)",
+        'parameters': [_pathId],
+        'responses': {'200': _ok('A Server-Sent Events stream')},
+      },
+    },
+    '/nodes/{id}/desired-state': {
+      'get': {
+        'summary': 'What a node is declared to be',
+        'parameters': [_pathId],
+        'responses': {'200': _ok('{steps: [...]}'), '404': _err},
+      },
+      'put': {
+        'summary': 'Declare what a node should be — runs nothing',
+        'parameters': [_pathId],
+        'requestBody': _jsonBody({'preset': 'object', 'steps': 'array'}),
+        'responses': {'200': _ok('Declared'), '404': _err},
+      },
+      'delete': {
+        'summary': 'Stop expecting anything of a node',
+        'parameters': [_pathId],
+        'responses': {'200': _ok('Cleared'), '404': _err},
+      },
+    },
+    '/nodes/{id}/drift': {
+      'get': {
+        'summary':
+            'How far a node has drifted from what it was declared to be '
+            '(plans; runs nothing)',
+        'parameters': [_pathId],
+        'responses': {'200': _ok('{converged, actions, notes}'), '404': _err},
+      },
+    },
+    '/nodes/{id}/reconcile': {
+      'post': {
+        'summary':
+            'Run whatever the drift plan says is outstanding (idempotent)',
+        'parameters': [_pathId],
         'responses': {'200': _ok('Apply result'), '404': _err, '502': _err},
+      },
+    },
+    '/grants': {
+      'get': {
+        'summary': 'Issued credentials (hashes, never tokens) — admin only',
+        'responses': {'200': _ok('Array of grants'), '403': _err},
+      },
+      'post': {
+        'summary':
+            'Issue a credential — admin only. The token is returned once and '
+            'cannot be read back.',
+        'requestBody': _jsonBody({
+          'principal': 'string',
+          'roles': 'array',
+          'note': 'string',
+        }),
+        'responses': {
+          '200': _ok('The grant, and its token'),
+          '400': _err,
+          '403': _err,
+        },
+      },
+    },
+    '/grants/{id}': {
+      'delete': {
+        'summary': 'Revoke a credential — admin only',
+        'parameters': [_pathId],
+        'responses': {'200': _ok('Revoked'), '403': _err, '404': _err},
       },
     },
     '/events': {
       'get': {
         'summary': 'Recent Hub events',
         'responses': {'200': _ok('Array of events')},
+      },
+    },
+    '/events/stream': {
+      'get': {
+        'summary': 'Every event as it happens (text/event-stream)',
+        'responses': {'200': _ok('A Server-Sent Events stream')},
+      },
+    },
+    '/operations': {
+      'get': {
+        'summary': 'Operations in flight, and the last few that finished',
+        'parameters': [
+          {
+            'name': 'node',
+            'in': 'query',
+            'schema': {'type': 'string'},
+          },
+          {
+            'name': 'running',
+            'in': 'query',
+            'schema': {'type': 'boolean'},
+          },
+        ],
+        'responses': {'200': _ok('Array of operations')},
+      },
+    },
+    '/operations/{id}': {
+      'get': {
+        'summary': 'An operation, and what it produced',
+        'parameters': [_pathId],
+        'responses': {'200': _ok('Operation'), '404': _err},
+      },
+    },
+    '/alerts': {
+      'get': {
+        'summary':
+            'What is wrong right now (only what is currently breached; the '
+            'history is on the event stream)',
+        'responses': {'200': _ok('Array of active alerts')},
       },
     },
     '/audit': {

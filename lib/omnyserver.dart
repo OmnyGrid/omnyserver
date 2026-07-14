@@ -26,13 +26,18 @@ export 'src/domain/value_objects/principal_id.dart';
 
 // Entities.
 export 'src/domain/capabilities/capability.dart';
+export 'src/domain/entities/alert.dart';
 export 'src/domain/entities/audit_entry.dart';
 export 'src/domain/entities/formula_spec.dart';
+export 'src/domain/entities/grant.dart';
 export 'src/domain/entities/heartbeat.dart';
+export 'src/domain/entities/log_line.dart';
+export 'src/domain/entities/metric_point.dart';
 export 'src/domain/entities/node_capabilities.dart';
 export 'src/domain/entities/node_descriptor.dart';
 export 'src/domain/entities/node_status.dart';
 export 'src/domain/entities/platform_info.dart';
+export 'src/domain/entities/operation.dart';
 export 'src/domain/entities/preset.dart';
 export 'src/domain/entities/resource_metrics.dart';
 export 'src/domain/entities/service_descriptor.dart';
@@ -49,6 +54,7 @@ export 'src/domain/formula/formula_action.dart';
 export 'src/domain/formula/formula_context.dart';
 export 'src/domain/formula/formula_result.dart';
 export 'src/domain/state/desired_state.dart';
+export 'src/domain/state/drift.dart';
 export 'src/domain/state/state_reconciler.dart';
 
 // Repositories.

@@ -4,10 +4,12 @@ import 'package:sqlite3/sqlite3.dart';
 
 import '../../../domain/entities/audit_entry.dart';
 import '../../../domain/entities/formula_spec.dart';
+import '../../../domain/entities/grant.dart';
 import '../../../domain/entities/node_descriptor.dart';
 import '../../../domain/entities/node_status.dart';
 import '../../../domain/entities/preset.dart';
 import '../../../domain/repository/repositories.dart';
+import '../../../domain/state/desired_state.dart';
 import '../../../domain/value_objects/formula_id.dart';
 import '../../../domain/value_objects/node_id.dart';
 import '../../../domain/value_objects/preset_id.dart';
@@ -38,6 +40,12 @@ class SqliteStore {
       CREATE TABLE IF NOT EXISTS nodes (id TEXT PRIMARY KEY, data TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS presets (id TEXT PRIMARY KEY, data TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS formulas (id TEXT PRIMARY KEY, data TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS grants (
+        id TEXT PRIMARY KEY, token_hash TEXT NOT NULL UNIQUE, data TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS desired (
+        node_id TEXT PRIMARY KEY, data TEXT NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS audit (
         id TEXT PRIMARY KEY, at TEXT NOT NULL, data TEXT NOT NULL
       );
@@ -59,6 +67,13 @@ class SqliteStore {
 
   /// The formula repository.
   late final SqliteFormulaRepository formulas = SqliteFormulaRepository(db);
+
+  /// The grant repository.
+  late final SqliteGrantRepository grants = SqliteGrantRepository(db);
+
+  /// The desired-state repository.
+  late final SqliteDesiredStateRepository desired =
+      SqliteDesiredStateRepository(db);
 
   /// The audit repository.
   late final SqliteAuditRepository audit = SqliteAuditRepository(db);
@@ -143,6 +158,90 @@ class SqlitePresetRepository implements PresetRepository {
   @override
   Future<bool> delete(PresetId id) async {
     db.execute('DELETE FROM presets WHERE id = ?', [id.value]);
+    return db.updatedRows > 0;
+  }
+}
+
+/// SQLite-backed [GrantRepository].
+class SqliteGrantRepository implements GrantRepository {
+  /// The database handle.
+  final Database db;
+
+  /// Creates the repository.
+  SqliteGrantRepository(this.db);
+
+  @override
+  Future<void> save(Grant grant) async => db.execute(
+    'INSERT OR REPLACE INTO grants (id, token_hash, data) VALUES (?, ?, ?)',
+    [grant.id, grant.tokenHash, jsonEncode(grant.toJson())],
+  );
+
+  @override
+  Future<Grant?> find(String id) async {
+    final rows = db.select('SELECT data FROM grants WHERE id = ?', [id]);
+    return rows.isEmpty ? null : _decode(rows.first);
+  }
+
+  @override
+  Future<Grant?> findByTokenHash(String tokenHash) async {
+    // Indexed by the UNIQUE constraint, so authentication stays a lookup rather
+    // than a scan of every credential ever issued.
+    final rows = db.select('SELECT data FROM grants WHERE token_hash = ?', [
+      tokenHash,
+    ]);
+    return rows.isEmpty ? null : _decode(rows.first);
+  }
+
+  @override
+  Future<List<Grant>> all() async =>
+      db.select('SELECT data FROM grants').map(_decode).toList();
+
+  @override
+  Future<bool> delete(String id) async {
+    db.execute('DELETE FROM grants WHERE id = ?', [id]);
+    return db.updatedRows > 0;
+  }
+
+  Grant _decode(Row row) =>
+      Grant.fromJson(jsonDecode(row['data'] as String) as Map<String, dynamic>);
+}
+
+/// SQLite-backed [DesiredStateRepository].
+class SqliteDesiredStateRepository implements DesiredStateRepository {
+  /// The database handle.
+  final Database db;
+
+  /// Creates the repository.
+  SqliteDesiredStateRepository(this.db);
+
+  @override
+  Future<void> save(NodeId nodeId, DesiredState state) async => db.execute(
+    'INSERT OR REPLACE INTO desired (node_id, data) VALUES (?, ?)',
+    [nodeId.value, jsonEncode(state.toJson())],
+  );
+
+  @override
+  Future<DesiredState?> find(NodeId nodeId) async {
+    final rows = db.select('SELECT data FROM desired WHERE node_id = ?', [
+      nodeId.value,
+    ]);
+    if (rows.isEmpty) return null;
+    return DesiredState.fromJson(
+      jsonDecode(rows.first['data'] as String) as Map<String, dynamic>,
+    );
+  }
+
+  @override
+  Future<Map<String, DesiredState>> all() async => {
+    for (final row in db.select('SELECT node_id, data FROM desired'))
+      row['node_id'] as String: DesiredState.fromJson(
+        jsonDecode(row['data'] as String) as Map<String, dynamic>,
+      ),
+  };
+
+  @override
+  Future<bool> delete(NodeId nodeId) async {
+    db.execute('DELETE FROM desired WHERE node_id = ?', [nodeId.value]);
     return db.updatedRows > 0;
   }
 }
@@ -234,10 +333,19 @@ class SqliteMetricRepository implements MetricRepository {
   Future<List<MetricSample>> recentFor(
     NodeId nodeId, {
     int limit = 100,
+    DateTime? since,
   }) async => db
       .select(
-        'SELECT at, data FROM metrics WHERE node_id = ? ORDER BY at DESC LIMIT ?',
-        [nodeId.value, limit],
+        'SELECT at, data FROM metrics WHERE node_id = ?'
+        '${since == null ? '' : ' AND at >= ?'}'
+        ' ORDER BY at DESC LIMIT ?',
+        [
+          nodeId.value,
+          // `at` is stored as an ISO-8601 UTC string, which sorts and compares
+          // lexicographically in the same order as the instants themselves.
+          if (since != null) since.toUtc().toIso8601String(),
+          limit,
+        ],
       )
       .map(
         (r) => MetricSample(

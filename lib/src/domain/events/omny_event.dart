@@ -1,5 +1,7 @@
 import 'package:meta/meta.dart';
 
+import '../../shared/errors/omnyserver_exception.dart';
+import '../../shared/json/json_codec_helpers.dart';
 import '../value_objects/node_id.dart';
 
 /// Base type for every event emitted on the Hub's [EventBus].
@@ -23,6 +25,86 @@ sealed class OmnyEvent {
     'at': at.toUtc().toIso8601String(),
     ...payload(),
   };
+
+  /// Decodes the JSON form produced by [toJson].
+  ///
+  /// The counterpart the Hub's `/events` endpoint needs on the other side: it
+  /// encodes these, so a client — the web dashboard, or anything reading the
+  /// stream — must be able to decode them back into the sealed hierarchy rather
+  /// than picking at raw maps.
+  ///
+  /// An unrecognised `type` throws rather than being dropped: a client silently
+  /// ignoring events it does not understand is how a fleet view quietly goes
+  /// stale after the Hub learns a new one.
+  factory OmnyEvent.fromJson(Map<String, dynamic> json) {
+    final type = Json.requireString(json, 'type');
+    final at = Json.requireTimestamp(json, 'at');
+    NodeId node() => NodeId(Json.requireString(json, 'nodeId'));
+
+    return switch (type) {
+      'node.connected' => NodeConnected(node(), at),
+      'node.disconnected' => NodeDisconnected(
+        node(),
+        at,
+        reason: Json.optString(json, 'reason'),
+      ),
+      'heartbeat.received' => HeartbeatReceived(
+        node(),
+        Json.requireInt(json, 'sequence'),
+        at,
+      ),
+      'formula.started' => FormulaStarted(
+        node(),
+        Json.requireString(json, 'formula'),
+        Json.requireString(json, 'action'),
+        at,
+      ),
+      'formula.finished' => FormulaFinished(
+        node(),
+        Json.requireString(json, 'formula'),
+        Json.requireString(json, 'action'),
+        Json.optBool(json, 'success'),
+        at,
+      ),
+      'preset.applied' => PresetApplied(
+        node(),
+        Json.requireString(json, 'preset'),
+        Json.optBool(json, 'success'),
+        at,
+      ),
+      'node.updated' => NodeUpdated(
+        node(),
+        Json.requireString(json, 'target'),
+        at,
+      ),
+      'operation.started' => OperationStarted(
+        node(),
+        Json.requireString(json, 'operationId'),
+        Json.requireString(json, 'kind'),
+        Json.requireString(json, 'summary'),
+        at,
+      ),
+      'operation.finished' => OperationFinished(
+        node(),
+        Json.requireString(json, 'operationId'),
+        Json.requireString(json, 'kind'),
+        Json.optBool(json, 'success'),
+        at,
+      ),
+      'alert.raised' => AlertRaised(
+        node(),
+        Json.requireString(json, 'rule'),
+        Json.requireString(json, 'message'),
+        at,
+      ),
+      'alert.resolved' => AlertResolved(
+        node(),
+        Json.requireString(json, 'rule'),
+        at,
+      ),
+      _ => throw ProtocolException('unknown event type "$type"'),
+    };
+  }
 
   /// Event-specific payload fields.
   @protected
@@ -189,4 +271,129 @@ final class NodeUpdated extends OmnyEvent {
 
   @override
   Map<String, dynamic> payload() => {'nodeId': nodeId.value, 'target': target};
+}
+
+/// A rule became breached by a node.
+///
+/// Raised on the same bus as everything else, so an alert reaches a dashboard,
+/// `events --follow` and the audit trail by the paths that already exist —
+/// rather than needing a delivery mechanism of its own.
+final class AlertRaised extends OmnyEvent {
+  /// The breaching node.
+  final NodeId nodeId;
+
+  /// The rule that is breached (its id, e.g. `disk>90`).
+  final String rule;
+
+  /// A line an operator can read.
+  final String message;
+
+  /// Creates the event.
+  const AlertRaised(this.nodeId, this.rule, this.message, DateTime at)
+    : super(at);
+
+  @override
+  String get type => 'alert.raised';
+
+  @override
+  Map<String, dynamic> payload() => {
+    'nodeId': nodeId.value,
+    'rule': rule,
+    'message': message,
+  };
+}
+
+/// A rule stopped being breached.
+///
+/// The counterpart matters: an alert that fires and never clears teaches an
+/// operator to ignore alerts.
+final class AlertResolved extends OmnyEvent {
+  /// The node that recovered.
+  final NodeId nodeId;
+
+  /// The rule that is no longer breached.
+  final String rule;
+
+  /// Creates the event.
+  const AlertResolved(this.nodeId, this.rule, DateTime at) : super(at);
+
+  @override
+  String get type => 'alert.resolved';
+
+  @override
+  Map<String, dynamic> payload() => {'nodeId': nodeId.value, 'rule': rule};
+}
+
+/// A long-running operation was dispatched to a node.
+final class OperationStarted extends OmnyEvent {
+  /// The target node.
+  final NodeId nodeId;
+
+  /// The operation's id — what a client asks about later.
+  final String operationId;
+
+  /// What is being done (`formula`, `preset`, `reconcile`).
+  final String kind;
+
+  /// A short description of what was asked.
+  final String summary;
+
+  /// Creates the event.
+  const OperationStarted(
+    this.nodeId,
+    this.operationId,
+    this.kind,
+    this.summary,
+    DateTime at,
+  ) : super(at);
+
+  @override
+  String get type => 'operation.started';
+
+  @override
+  Map<String, dynamic> payload() => {
+    'nodeId': nodeId.value,
+    'operationId': operationId,
+    'kind': kind,
+    'summary': summary,
+  };
+}
+
+/// A long-running operation finished.
+///
+/// This is what makes an asynchronous operation *usable*: a client that had to
+/// poll for the answer would either poll too often or find out too late. It
+/// learns on the stream it is already watching.
+final class OperationFinished extends OmnyEvent {
+  /// The target node.
+  final NodeId nodeId;
+
+  /// The operation's id.
+  final String operationId;
+
+  /// What was done.
+  final String kind;
+
+  /// Whether it did what was asked.
+  final bool success;
+
+  /// Creates the event.
+  const OperationFinished(
+    this.nodeId,
+    this.operationId,
+    this.kind,
+    this.success,
+    DateTime at,
+  ) : super(at);
+
+  @override
+  String get type => 'operation.finished';
+
+  @override
+  Map<String, dynamic> payload() => {
+    'nodeId': nodeId.value,
+    'operationId': operationId,
+    'kind': kind,
+    'success': success,
+  };
 }

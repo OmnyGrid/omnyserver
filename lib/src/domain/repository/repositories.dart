@@ -1,8 +1,10 @@
 import '../entities/audit_entry.dart';
 import '../entities/formula_spec.dart';
+import '../entities/grant.dart';
 import '../entities/node_descriptor.dart';
 import '../entities/node_status.dart';
 import '../entities/preset.dart';
+import '../state/desired_state.dart';
 import '../value_objects/formula_id.dart';
 import '../value_objects/node_id.dart';
 import '../value_objects/preset_id.dart';
@@ -23,6 +25,47 @@ abstract class NodeRepository {
 
   /// Deletes the node with [id]; returns true if a node was removed.
   Future<bool> delete(NodeId id);
+}
+
+/// Persists the credentials the Hub has issued.
+///
+/// Grants carry a token *hash*, never a token — see [Grant] — so this store can
+/// be a plain file on disk without being a list of passwords.
+abstract class GrantRepository {
+  /// Inserts or replaces [grant].
+  Future<void> save(Grant grant);
+
+  /// The grant whose token hashes to [tokenHash], or `null`.
+  Future<Grant?> findByTokenHash(String tokenHash);
+
+  /// The grant with [id], or `null`.
+  Future<Grant?> find(String id);
+
+  /// Every issued grant.
+  Future<List<Grant>> all();
+
+  /// Revokes the grant with [id]; returns true if one was removed.
+  Future<bool> delete(String id);
+}
+
+/// Persists the state each node is *supposed* to be in.
+///
+/// The Hub's other repositories record what happened; this one records what is
+/// meant to be true. The difference between the two is drift, and being able to
+/// ask for it — rather than re-applying a preset and hoping — is the whole point
+/// of declaring a state at all.
+abstract class DesiredStateRepository {
+  /// Sets the state [nodeId] should converge to.
+  Future<void> save(NodeId nodeId, DesiredState state);
+
+  /// The state [nodeId] should be in, or `null` if none was ever declared.
+  Future<DesiredState?> find(NodeId nodeId);
+
+  /// Every declared state, by node id.
+  Future<Map<String, DesiredState>> all();
+
+  /// Stops expecting anything of [nodeId]; returns true if it had a state.
+  Future<bool> delete(NodeId nodeId);
 }
 
 /// Persists [Preset]s.
@@ -89,5 +132,13 @@ abstract class MetricRepository {
   Future<void> record(MetricSample sample);
 
   /// Returns recent samples for [nodeId], newest first, up to [limit].
-  Future<List<MetricSample>> recentFor(NodeId nodeId, {int limit = 100});
+  ///
+  /// [since] bounds the window: only samples captured at or after it are
+  /// returned. Applied *before* [limit], so "the last hour" is the last hour and
+  /// not the newest [limit] samples that happen to fall in it.
+  Future<List<MetricSample>> recentFor(
+    NodeId nodeId, {
+    int limit = 100,
+    DateTime? since,
+  });
 }

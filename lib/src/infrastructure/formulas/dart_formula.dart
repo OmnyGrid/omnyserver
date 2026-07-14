@@ -1,6 +1,6 @@
 import '../../domain/entities/formula_spec.dart';
+import '../../domain/formula/standard_formulas.dart';
 import '../../domain/formula/formula_action.dart';
-import '../../domain/value_objects/formula_id.dart';
 import 'command_formula.dart';
 
 /// The built-in Dart formula: installs and verifies the Dart SDK.
@@ -13,17 +13,7 @@ class DartFormula extends CommandFormula {
   DartFormula({super.executor});
 
   @override
-  FormulaSpec get spec => FormulaSpec(
-    id: FormulaId('dart'),
-    name: 'Dart SDK',
-    description: 'Dart software development kit.',
-    actions: const {
-      FormulaAction.install,
-      FormulaAction.update,
-      FormulaAction.uninstall,
-      FormulaAction.verify,
-    },
-  );
+  FormulaSpec get spec => dartSpec;
 
   @override
   CommandStep get verifyStep => const CommandStep('dart', ['--version']);
