@@ -97,6 +97,13 @@ class HubConfig {
   /// Persists historical metric samples.
   final MetricRepository metricRepository;
 
+  /// Persists the credentials the Hub has issued at runtime.
+  ///
+  /// Separate from [authenticator], which is how a credential is *checked*: this
+  /// is where one comes from. A Hub that only ever uses `--grant` flags never
+  /// touches it.
+  final GrantRepository grantRepository;
+
   /// Persists the state each node is *supposed* to be in.
   ///
   /// The other repositories record what happened; this one records what is meant
@@ -133,6 +140,7 @@ class HubConfig {
     NodeRepository? nodeRepository,
     AuditRepository? auditRepository,
     MetricRepository? metricRepository,
+    GrantRepository? grantRepository,
     DesiredStateRepository? desiredStateRepository,
     StateReconciler? reconciler,
     this.logger,
@@ -145,6 +153,7 @@ class HubConfig {
        nodeRepository = nodeRepository ?? MemoryNodeRepository(),
        auditRepository = auditRepository ?? MemoryAuditRepository(),
        metricRepository = metricRepository ?? MemoryMetricRepository(),
+       grantRepository = grantRepository ?? MemoryGrantRepository(),
        desiredStateRepository =
            desiredStateRepository ?? MemoryDesiredStateRepository(),
        reconciler = reconciler ?? const DefaultStateReconciler();

@@ -43,6 +43,7 @@ CommandRunner<void> buildRunner() {
         ..addCommand(PresetCommand())
         ..addCommand(FormulaCommand())
         ..addCommand(StateCommand())
+        ..addCommand(GrantCommand())
         ..addCommand(EventsCommand())
         ..addCommand(AuditCommand())
         ..addCommand(WhoamiCommand())
@@ -293,6 +294,14 @@ class HubStartCommand extends Command<void> {
         'grant',
         help: 'Token grant "principal:token:role1,role2" (repeatable).',
       )
+      ..addOption(
+        'data-dir',
+        help:
+            'Directory to persist the Hub in (nodes, audit, metrics, desired '
+            'state, issued credentials). Without it everything is in memory and '
+            'a restart forgets the fleet — including any credential issued with '
+            '`grant add`.',
+      )
       ..addMultiOption(
         'cors-origin',
         help:
@@ -325,6 +334,15 @@ class HubStartCommand extends Command<void> {
     final nodePath = args['node-path'] as String;
     final shellPath = args['shell-path'] as String;
     final withShell = args['shell'] as bool;
+
+    // Without a data directory the Hub is a cache: it forgets the fleet, the
+    // audit trail and every credential it issued the moment it stops.
+    final dataDir = (args['data-dir'] as String?)?.trim();
+    final persistent = dataDir != null && dataDir.isNotEmpty;
+    final grantStore = persistent
+        ? JsonGrantRepository(dataDir)
+        : MemoryGrantRepository();
+
     final hub = OmnyServerHub(
       HubConfig(
         host: args['host'] as String,
@@ -333,7 +351,21 @@ class HubStartCommand extends Command<void> {
         shellMount: shellPath,
         securityContext: context,
         tlsDirectory: tlsDir,
-        authenticator: TokenAuthenticator(grants),
+        // Two sources of credentials, tried in order: the ones baked into this
+        // command line, then the ones the Hub has issued at runtime. That is what
+        // lets a Hub be bootstrapped from flags and then hand out (and take back)
+        // credentials without a restart.
+        authenticator: CompositeAuthenticator([
+          TokenAuthenticator(grants),
+          GrantAuthenticator(grantStore),
+        ]),
+        grantRepository: grantStore,
+        nodeRepository: persistent ? JsonNodeRepository(dataDir) : null,
+        auditRepository: persistent ? JsonAuditRepository(dataDir) : null,
+        metricRepository: persistent ? JsonMetricRepository(dataDir) : null,
+        desiredStateRepository: persistent
+            ? JsonDesiredStateRepository(dataDir)
+            : null,
         corsOrigins: args['cors-origin'] as List<String>,
         logger: stdout.writeln,
       ),
@@ -1132,6 +1164,156 @@ class FormulaRunCommand extends Command<void> {
         return '$formula $action: ${ok ? 'ok' : 'FAILED'}'
             '${changed ? ' (changed)' : ''}$detail';
       });
+    } finally {
+      client.close();
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// grant — credentials the Hub hands out, and takes back
+// ---------------------------------------------------------------------------
+
+/// `omnyserver grant …`
+class GrantCommand extends Command<void> {
+  /// Creates the grant command group.
+  GrantCommand() {
+    addSubcommand(GrantAddCommand());
+    addSubcommand(GrantListCommand());
+    addSubcommand(GrantRevokeCommand());
+  }
+
+  @override
+  String get name => 'grant';
+
+  @override
+  String get description =>
+      'Issue and revoke credentials, without restarting the Hub.';
+}
+
+/// `omnyserver grant add <principal> --role operator`
+class GrantAddCommand extends Command<void> {
+  /// Creates the grant-add command.
+  GrantAddCommand() {
+    _addApiOptions(argParser);
+    argParser
+      ..addMultiOption(
+        'role',
+        help: 'A role to grant (repeatable): viewer, operator, admin, node.',
+      )
+      ..addOption('note', help: 'Who this is for, and why.');
+  }
+
+  @override
+  String get name => 'add';
+
+  @override
+  String get description => 'Issue a credential. Prints the token once.';
+
+  @override
+  Future<void> run() async {
+    final args = argResults!;
+    final rest = args.rest;
+    if (rest.isEmpty) {
+      throw CliError('usage: grant add <principal> --role operator');
+    }
+    final roles = args['role'] as List<String>;
+    if (roles.isEmpty) {
+      throw CliError(
+        'name at least one --role (viewer, operator, admin, node) — a '
+        'credential that may do nothing is not a credential',
+      );
+    }
+
+    final client = _apiClientFrom(args);
+    try {
+      final grant =
+          await client.post('/grants', {
+                'principal': rest.first,
+                'roles': roles,
+                'note': args['note'] ?? '',
+              })
+              as Map;
+
+      stdout
+        ..writeln('principal: ${grant['principal']}')
+        ..writeln('roles:     ${(grant['roles'] as List).join(', ')}')
+        ..writeln('grant id:  ${grant['id']}   (revoke it with this)')
+        ..writeln('')
+        ..writeln('token:     ${grant['token']}')
+        ..writeln('')
+        // Said out loud, because a Hub that stores a hash genuinely cannot show
+        // it again — and an operator who assumes otherwise finds out too late.
+        ..writeln(
+          'This is the only time the token is shown: the Hub keeps a hash of '
+          'it, not the token.',
+        );
+    } finally {
+      client.close();
+    }
+  }
+}
+
+/// `omnyserver grant list`
+class GrantListCommand extends Command<void> {
+  /// Creates the grant-list command.
+  GrantListCommand() {
+    _addApiOptions(argParser);
+  }
+
+  @override
+  String get name => 'list';
+
+  @override
+  String get description => 'List issued credentials (hashes, never tokens).';
+
+  @override
+  Future<void> run() async {
+    final client = _apiClientFrom(argResults!);
+    try {
+      final grants = (await client.get('/grants') as List).cast<Map>();
+      if (grants.isEmpty) {
+        stdout.writeln('no credentials have been issued');
+        return;
+      }
+      stdout.writeln('ID                        PRINCIPAL     ROLES');
+      for (final g in grants) {
+        final id = '${g['id']}'.padRight(25);
+        final principal = '${g['principal']}'.padRight(13);
+        final roles = (g['roles'] as List).join(',');
+        final note = '${g['note'] ?? ''}';
+        stdout.writeln(
+          '$id $principal$roles${note.isEmpty ? '' : '   # $note'}',
+        );
+      }
+    } finally {
+      client.close();
+    }
+  }
+}
+
+/// `omnyserver grant revoke <id>`
+class GrantRevokeCommand extends Command<void> {
+  /// Creates the grant-revoke command.
+  GrantRevokeCommand() {
+    _addApiOptions(argParser);
+  }
+
+  @override
+  String get name => 'revoke';
+
+  @override
+  String get description =>
+      'Revoke a credential. The next request with its token fails.';
+
+  @override
+  Future<void> run() async {
+    final rest = argResults!.rest;
+    if (rest.isEmpty) throw CliError('usage: grant revoke <grant-id>');
+    final client = _apiClientFrom(argResults!);
+    try {
+      await client.delete('/grants/${rest.first}');
+      stdout.writeln('revoked ${rest.first}');
     } finally {
       client.close();
     }

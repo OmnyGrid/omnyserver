@@ -1,3 +1,43 @@
+## 0.10.0
+
+Credentials the Hub hands out — and takes back — without a restart. And a Hub
+that remembers anything at all.
+
+```sh
+omnyserver hub start … --data-dir /var/lib/omnyserver
+omnyserver grant add bob --role viewer --note 'read-only dashboard'
+omnyserver grant list
+omnyserver grant revoke <id>          # the next request with that token fails
+```
+
+### Added
+
+- **`grant add | list | revoke`, and `GET/POST/DELETE /grants`.** Grants were
+  `hub start` flags: adding an operator, or revoking a leaked token, meant
+  restarting the Hub and dropping every node with it. That was tolerable when the
+  only client was a CLI holding a token in a shell variable. It is not, now that a
+  browser stores one.
+
+  **The Hub keeps a hash, not a token.** The plaintext exists exactly once, in the
+  response that created it, and the Hub cannot show it again — so its storage is
+  not a list of passwords, and a stolen grant file authenticates nobody. A lost
+  token is replaced, not recovered, which is why a grant has an id you revoke it
+  by.
+
+  Issuing and revoking are `admin`-only (`grant.manage` is deliberately unmapped),
+  so an operator can run the fleet but cannot quietly mint itself an admin token.
+  The flag-based grants still work: a `CompositeAuthenticator` checks the ones
+  baked into the command line, then the ones issued at runtime.
+
+- **`hub start --data-dir <dir>`.** The Hub had *no persistence at all* — every
+  node, every audit entry, every metric sample and every declared state lived in
+  memory and died with the process. The repositories and their JSON-directory and
+  SQLite implementations existed; nothing wired them up. Now `--data-dir` does,
+  and an issued credential survives the restart that would otherwise have made
+  runtime grants pointless.
+
+---
+
 ## 0.9.0
 
 Desired state and drift — the thesis the package was named for, and the one part

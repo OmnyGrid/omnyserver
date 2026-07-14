@@ -6,6 +6,8 @@ import '../../domain/auth/principal.dart';
 import '../../domain/entities/audit_entry.dart';
 import '../../domain/entities/metric_point.dart';
 import '../../domain/entities/node_descriptor.dart';
+import '../../infrastructure/auth/grant_authenticator.dart';
+import '../../domain/entities/grant.dart';
 import '../../domain/entities/node_status.dart';
 import '../../domain/entities/preset.dart';
 import '../../domain/events/omny_event.dart';
@@ -520,6 +522,61 @@ class OmnyServerHub {
   Future<void> _recordMetric(NodeId id, NodeStatus status) => config
       .metricRepository
       .record(MetricSample(nodeId: id, at: status.capturedAt, status: status));
+
+  // ---------------------------------------------------------------------------
+  // Grants: credentials the Hub hands out, and takes back.
+  // ---------------------------------------------------------------------------
+
+  /// Issues a credential for [principal] with [roles], and returns the grant
+  /// **and its token**.
+  ///
+  /// This is the only moment the token exists in readable form. The Hub keeps
+  /// its SHA-256 and nothing else, so it cannot show it again later, and neither
+  /// can anyone who steals the Hub's storage. Lost tokens are replaced, not
+  /// recovered — which is why a grant has an id you can revoke it by.
+  Future<({Grant grant, String token})> issueGrant({
+    required PrincipalId principal,
+    required Set<String> roles,
+    String note = '',
+    String issuedBy = 'system',
+  }) async {
+    final token = newToken();
+    final grant = Grant(
+      id: config.idGenerator.next(),
+      principal: principal,
+      roles: roles,
+      tokenHash: hashToken(token),
+      createdAt: config.clock.now().toUtc(),
+      note: note,
+    );
+    await config.grantRepository.save(grant);
+    await audit.record(
+      principal: issuedBy,
+      action: 'grant.issue',
+      target: principal.value,
+      outcome: AuditOutcome.success,
+      detail: 'roles: ${(roles.toList()..sort()).join(',')}',
+    );
+    return (grant: grant, token: token);
+  }
+
+  /// Every credential the Hub has issued. Hashes, never tokens.
+  Future<List<Grant>> listGrants() => config.grantRepository.all();
+
+  /// Revokes a credential. The next request that presents its token fails.
+  Future<bool> revokeGrant(String id, {String revokedBy = 'system'}) async {
+    final grant = await config.grantRepository.find(id);
+    if (grant == null) return false;
+    await config.grantRepository.delete(id);
+    await audit.record(
+      principal: revokedBy,
+      action: 'grant.revoke',
+      target: grant.principal.value,
+      outcome: AuditOutcome.success,
+      detail: 'grant $id',
+    );
+    return true;
+  }
 
   // ---------------------------------------------------------------------------
   // Desired state: what a node is supposed to be, and how far it has drifted.

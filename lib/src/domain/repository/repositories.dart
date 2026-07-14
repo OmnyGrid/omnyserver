@@ -1,5 +1,6 @@
 import '../entities/audit_entry.dart';
 import '../entities/formula_spec.dart';
+import '../entities/grant.dart';
 import '../entities/node_descriptor.dart';
 import '../entities/node_status.dart';
 import '../entities/preset.dart';
@@ -24,6 +25,27 @@ abstract class NodeRepository {
 
   /// Deletes the node with [id]; returns true if a node was removed.
   Future<bool> delete(NodeId id);
+}
+
+/// Persists the credentials the Hub has issued.
+///
+/// Grants carry a token *hash*, never a token — see [Grant] — so this store can
+/// be a plain file on disk without being a list of passwords.
+abstract class GrantRepository {
+  /// Inserts or replaces [grant].
+  Future<void> save(Grant grant);
+
+  /// The grant whose token hashes to [tokenHash], or `null`.
+  Future<Grant?> findByTokenHash(String tokenHash);
+
+  /// The grant with [id], or `null`.
+  Future<Grant?> find(String id);
+
+  /// Every issued grant.
+  Future<List<Grant>> all();
+
+  /// Revokes the grant with [id]; returns true if one was removed.
+  Future<bool> delete(String id);
 }
 
 /// Persists the state each node is *supposed* to be in.

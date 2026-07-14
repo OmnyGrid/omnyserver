@@ -5,6 +5,7 @@ import 'package:path/path.dart' as p;
 
 import '../../../domain/entities/audit_entry.dart';
 import '../../../domain/entities/formula_spec.dart';
+import '../../../domain/entities/grant.dart';
 import '../../../domain/entities/node_descriptor.dart';
 import '../../../domain/entities/node_status.dart';
 import '../../../domain/entities/preset.dart';
@@ -104,6 +105,44 @@ class JsonPresetRepository implements PresetRepository {
 
   @override
   Future<bool> delete(PresetId id) async => _store.deleteObject(id.value);
+}
+
+/// JSON-directory [GrantRepository] (`<root>/grants/<id>.json`).
+///
+/// A file per grant, holding a hash rather than a token — so this directory is
+/// not a list of passwords, and losing it costs you the ability to revoke, not
+/// the secrecy of what you issued.
+class JsonGrantRepository implements GrantRepository {
+  final _JsonDir _store;
+
+  /// Creates a grant repository rooted at [path].
+  JsonGrantRepository(String path) : _store = _JsonDir(path, 'grants');
+
+  @override
+  Future<void> save(Grant grant) async =>
+      _store.writeObject(grant.id, grant.toJson());
+
+  @override
+  Future<Grant?> find(String id) async {
+    final json = _store.readObject(id);
+    return json == null ? null : Grant.fromJson(json);
+  }
+
+  @override
+  Future<Grant?> findByTokenHash(String tokenHash) async {
+    for (final json in _store.readAll()) {
+      final grant = Grant.fromJson(json);
+      if (grant.tokenHash == tokenHash) return grant;
+    }
+    return null;
+  }
+
+  @override
+  Future<List<Grant>> all() async =>
+      _store.readAll().map(Grant.fromJson).toList();
+
+  @override
+  Future<bool> delete(String id) async => _store.deleteObject(id);
 }
 
 /// JSON-directory [DesiredStateRepository] (`<root>/desired/<node>.json`).

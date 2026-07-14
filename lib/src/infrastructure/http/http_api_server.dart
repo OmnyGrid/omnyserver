@@ -222,6 +222,9 @@ class HttpApiServer {
         ..post('/api/v1/nodes/<id>/update', (r, p) => _update(r, p))
         ..post('/api/v1/nodes/<id>/formula', (r, p) => _formula(r, p))
         ..post('/api/v1/presets/apply', (r, p) => _applyPreset(r))
+        ..get('/api/v1/grants', (r, p) => _listGrants(r))
+        ..post('/api/v1/grants', (r, p) => _issueGrant(r))
+        ..delete('/api/v1/grants/<id>', (r, p) => _revokeGrant(r, p))
         // Before `/events`: the router takes the first match, so the more
         // specific path has to be offered first.
         ..get('/api/v1/events/stream', (r, p) async => _eventStream())
@@ -399,6 +402,65 @@ class HttpApiServer {
       principal: _principal(request),
     );
     return jsonOk(result.toJson());
+  }
+
+  /// Every credential the Hub has issued.
+  ///
+  /// Hashes, never tokens — there is nothing here to steal, which is the reason
+  /// the list is safe to show at all.
+  Future<HubResponse> _listGrants(HubRequest request) async {
+    _authorize(request, 'grant.manage');
+    final grants = await hub.listGrants();
+    return jsonOk([for (final grant in grants) grant.toJson()]);
+  }
+
+  /// Issues a credential, and returns its token **once**.
+  ///
+  /// The Hub keeps only a hash, so this response is the single moment the token
+  /// is readable. That is stated in the body rather than left to be discovered,
+  /// because an operator who closes the terminal has not lost access — they have
+  /// lost *that* credential, and the fix is to revoke it and issue another.
+  Future<HubResponse> _issueGrant(HubRequest request) async {
+    _authorize(request, 'grant.manage');
+    final body = await _readJson(request);
+
+    final principal = body['principal'];
+    if (principal is! String || principal.isEmpty) {
+      return ApiErrors.badRequest('principal is required');
+    }
+    final roles = ((body['roles'] as List?) ?? const []).cast<String>().toSet();
+    if (roles.isEmpty) {
+      return ApiErrors.badRequest(
+        'roles are required — a credential that may do nothing is not a '
+        'credential (try: viewer, operator, admin, node)',
+      );
+    }
+
+    final issued = await hub.issueGrant(
+      principal: PrincipalId(principal),
+      roles: roles,
+      note: (body['note'] as String?) ?? '',
+      issuedBy: _principal(request),
+    );
+
+    return jsonOk({
+      ...issued.grant.toJson(),
+      'token': issued.token,
+      'warning':
+          'This is the only time the token is shown. The Hub stores a hash of '
+          'it and cannot show it again.',
+    });
+  }
+
+  Future<HubResponse> _revokeGrant(
+    HubRequest request,
+    Map<String, String> params,
+  ) async {
+    _authorize(request, 'grant.manage');
+    final id = params['id']!;
+    final revoked = await hub.revokeGrant(id, revokedBy: _principal(request));
+    if (!revoked) throw NotFoundException('unknown grant $id');
+    return jsonOk({'status': 'revoked', 'id': id});
   }
 
   /// What a node is supposed to be.

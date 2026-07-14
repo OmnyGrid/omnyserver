@@ -4,6 +4,7 @@ import 'package:sqlite3/sqlite3.dart';
 
 import '../../../domain/entities/audit_entry.dart';
 import '../../../domain/entities/formula_spec.dart';
+import '../../../domain/entities/grant.dart';
 import '../../../domain/entities/node_descriptor.dart';
 import '../../../domain/entities/node_status.dart';
 import '../../../domain/entities/preset.dart';
@@ -39,6 +40,9 @@ class SqliteStore {
       CREATE TABLE IF NOT EXISTS nodes (id TEXT PRIMARY KEY, data TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS presets (id TEXT PRIMARY KEY, data TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS formulas (id TEXT PRIMARY KEY, data TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS grants (
+        id TEXT PRIMARY KEY, token_hash TEXT NOT NULL UNIQUE, data TEXT NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS desired (
         node_id TEXT PRIMARY KEY, data TEXT NOT NULL
       );
@@ -63,6 +67,9 @@ class SqliteStore {
 
   /// The formula repository.
   late final SqliteFormulaRepository formulas = SqliteFormulaRepository(db);
+
+  /// The grant repository.
+  late final SqliteGrantRepository grants = SqliteGrantRepository(db);
 
   /// The desired-state repository.
   late final SqliteDesiredStateRepository desired =
@@ -153,6 +160,50 @@ class SqlitePresetRepository implements PresetRepository {
     db.execute('DELETE FROM presets WHERE id = ?', [id.value]);
     return db.updatedRows > 0;
   }
+}
+
+/// SQLite-backed [GrantRepository].
+class SqliteGrantRepository implements GrantRepository {
+  /// The database handle.
+  final Database db;
+
+  /// Creates the repository.
+  SqliteGrantRepository(this.db);
+
+  @override
+  Future<void> save(Grant grant) async => db.execute(
+    'INSERT OR REPLACE INTO grants (id, token_hash, data) VALUES (?, ?, ?)',
+    [grant.id, grant.tokenHash, jsonEncode(grant.toJson())],
+  );
+
+  @override
+  Future<Grant?> find(String id) async {
+    final rows = db.select('SELECT data FROM grants WHERE id = ?', [id]);
+    return rows.isEmpty ? null : _decode(rows.first);
+  }
+
+  @override
+  Future<Grant?> findByTokenHash(String tokenHash) async {
+    // Indexed by the UNIQUE constraint, so authentication stays a lookup rather
+    // than a scan of every credential ever issued.
+    final rows = db.select('SELECT data FROM grants WHERE token_hash = ?', [
+      tokenHash,
+    ]);
+    return rows.isEmpty ? null : _decode(rows.first);
+  }
+
+  @override
+  Future<List<Grant>> all() async =>
+      db.select('SELECT data FROM grants').map(_decode).toList();
+
+  @override
+  Future<bool> delete(String id) async {
+    db.execute('DELETE FROM grants WHERE id = ?', [id]);
+    return db.updatedRows > 0;
+  }
+
+  Grant _decode(Row row) =>
+      Grant.fromJson(jsonDecode(row['data'] as String) as Map<String, dynamic>);
 }
 
 /// SQLite-backed [DesiredStateRepository].

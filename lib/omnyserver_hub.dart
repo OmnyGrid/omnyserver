@@ -43,6 +43,7 @@ export 'package:omnyhub/omnyhub.dart'
 // Auth infrastructure.
 export 'src/infrastructure/auth/authorized_keys_store.dart';
 export 'src/infrastructure/auth/composite_authenticator.dart';
+export 'src/infrastructure/auth/grant_authenticator.dart';
 export 'src/infrastructure/auth/public_key_authenticator.dart';
 export 'src/infrastructure/auth/role_based_authorizer.dart';
 export 'src/infrastructure/auth/token_authenticator.dart';

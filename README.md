@@ -264,6 +264,29 @@ omnyserver preset apply docker-host.json --all
 or `--all`, and report a result per node. A selector matching nothing is an
 error, not a quiet success — "applied to 0 nodes" reads like it worked.
 
+### Issuing credentials
+
+Grants can be baked into the command line (`--grant alice:admin-token:admin`), or
+issued at runtime and revoked without restarting the Hub:
+
+```sh
+omnyserver hub start … --data-dir /var/lib/omnyserver   # or the grants die with it
+omnyserver grant add bob --role viewer --note 'read-only dashboard'
+omnyserver grant list
+omnyserver grant revoke <id>        # the next request with that token fails
+```
+
+**The Hub stores a hash, not the token.** It is printed once, when issued, and
+cannot be shown again — so the Hub's storage is not a list of passwords, and a
+lost token is replaced rather than recovered. That is what the grant id is for.
+
+Issuing and revoking are `admin`-only, so an operator can run the fleet but not
+mint itself an admin token.
+
+> **`--data-dir` is not optional in production.** Without it the Hub keeps nodes,
+> the audit trail, metrics, declared state *and issued credentials* in memory
+> only, and forgets all of it when it stops.
+
 ### Desired state, and drift
 
 Declare what a node is *supposed* to be, then ask — at any point later — whether

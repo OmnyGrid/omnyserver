@@ -148,10 +148,7 @@ Map<String, dynamic> openApiDocument() => {
             'How far a node has drifted from what it was declared to be '
             '(plans; runs nothing)',
         'parameters': [_pathId],
-        'responses': {
-          '200': _ok('{converged, actions, notes}'),
-          '404': _err,
-        },
+        'responses': {'200': _ok('{converged, actions, notes}'), '404': _err},
       },
     },
     '/nodes/{id}/reconcile': {
@@ -160,6 +157,34 @@ Map<String, dynamic> openApiDocument() => {
             'Run whatever the drift plan says is outstanding (idempotent)',
         'parameters': [_pathId],
         'responses': {'200': _ok('Apply result'), '404': _err, '502': _err},
+      },
+    },
+    '/grants': {
+      'get': {
+        'summary': 'Issued credentials (hashes, never tokens) — admin only',
+        'responses': {'200': _ok('Array of grants'), '403': _err},
+      },
+      'post': {
+        'summary':
+            'Issue a credential — admin only. The token is returned once and '
+            'cannot be read back.',
+        'requestBody': _jsonBody({
+          'principal': 'string',
+          'roles': 'array',
+          'note': 'string',
+        }),
+        'responses': {
+          '200': _ok('The grant, and its token'),
+          '400': _err,
+          '403': _err,
+        },
+      },
+    },
+    '/grants/{id}': {
+      'delete': {
+        'summary': 'Revoke a credential — admin only',
+        'parameters': [_pathId],
+        'responses': {'200': _ok('Revoked'), '403': _err, '404': _err},
       },
     },
     '/events': {

@@ -1,5 +1,6 @@
 import '../../../domain/entities/audit_entry.dart';
 import '../../../domain/entities/formula_spec.dart';
+import '../../../domain/entities/grant.dart';
 import '../../../domain/entities/node_descriptor.dart';
 import '../../../domain/entities/preset.dart';
 import '../../../domain/repository/repositories.dart';
@@ -40,6 +41,31 @@ class MemoryPresetRepository implements PresetRepository {
 
   @override
   Future<bool> delete(PresetId id) async => _presets.remove(id.value) != null;
+}
+
+/// In-memory [GrantRepository].
+class MemoryGrantRepository implements GrantRepository {
+  final Map<String, Grant> _grants = {};
+
+  @override
+  Future<void> save(Grant grant) async => _grants[grant.id] = grant;
+
+  @override
+  Future<Grant?> findByTokenHash(String tokenHash) async {
+    for (final grant in _grants.values) {
+      if (grant.tokenHash == tokenHash) return grant;
+    }
+    return null;
+  }
+
+  @override
+  Future<Grant?> find(String id) async => _grants[id];
+
+  @override
+  Future<List<Grant>> all() async => _grants.values.toList();
+
+  @override
+  Future<bool> delete(String id) async => _grants.remove(id) != null;
 }
 
 /// In-memory [DesiredStateRepository].
