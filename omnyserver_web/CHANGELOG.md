@@ -1,3 +1,18 @@
+## 0.2.1
+
+- **Icons — the dashboard can now be installed.** The manifest shipped with
+  `"icons": []`, which is not a cosmetic gap: a PWA with no icon is one the
+  browser will not offer to install, so "installable" was a claim the app could
+  not honour.
+
+  Drawn from the OmnyGrid mark — the prompt chevron, the grid, the cursor. The
+  grid is the part that means something here (it is the fleet), and it is also
+  what tells this icon apart from OmnyShell's on a home screen, which is the
+  chevron alone. `any` at 192 and 512 on the app's own rounded tile; `maskable`
+  at both sizes, full-bleed with the mark inside the safe zone, so a platform
+  cropping to a circle or a squircle does not clip it; plus an apple-touch icon
+  and a favicon.
+
 ## 0.2.0
 
 The dashboard: a browser you can run a fleet from.

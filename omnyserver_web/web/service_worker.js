@@ -18,7 +18,7 @@
 // buffered or replayed. So those requests are left to the browser untouched.
 //
 // Bump CACHE_VERSION to invalidate old caches when the shell changes.
-const CACHE_VERSION = 'omnyserver-v1';
+const CACHE_VERSION = 'omnyserver-v2';
 
 const SHELL = [
   './',
@@ -30,6 +30,10 @@ const SHELL = [
   './vendor/xterm/xterm.min.css',
   './vendor/xterm/xterm.min.js',
   './vendor/xterm/addon-fit.min.js',
+  './icons/icon-192.png',
+  './icons/icon-512.png',
+  './icons/apple-touch-icon.png',
+  './icons/favicon.png',
 ];
 
 self.addEventListener('install', (event) => {
