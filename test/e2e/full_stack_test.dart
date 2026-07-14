@@ -25,13 +25,17 @@ void main() {
       ..attach(cluster.hub.config.eventBus);
     final api = HttpApiServer(
       hub: cluster.hub,
+      apiToken: 'api-secret',
       events: events,
       metrics: metrics,
       host: '127.0.0.1',
       port: 0,
     );
     await api.start();
-    final client = HubApiClient(Uri.parse('http://127.0.0.1:${api.boundPort}'));
+    final client = HubApiClient(
+      Uri.parse('http://127.0.0.1:${api.boundPort}'),
+      token: 'api-secret',
+    );
 
     final service = NodeFormulaService(
       registry: FormulaRegistry.standard(executor: _PresentExecutor()),

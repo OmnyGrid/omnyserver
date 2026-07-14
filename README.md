@@ -547,6 +547,15 @@ All transport is TLS. Authentication is pluggable (token / Ed25519 public key);
 authorization is role-based and fail-closed; identity is content-derived; every
 sensitive action is audited. See [doc/security.md](doc/security.md).
 
+The HTTP API is reached with the Hub's `--api-token`, or with a grant's
+`(principal, token)` pair — `--token` plus `--principal` on the CLI, which the
+Hub verifies against the same grant store the node channel uses, so the audit
+trail names the operator and their roles decide what they may do. There is no
+third way in, and no way in without one of them: a Hub started with neither
+authenticates nobody, and says so. Only `/healthz` and `/metrics` are open, so a
+load balancer and a Prometheus scraper — neither of which carries a token — can
+still tell whether the Hub is alive.
+
 ## The OmnyGrid ecosystem
 
 OmnyServer is one of four packages sharing the same identity-centric,

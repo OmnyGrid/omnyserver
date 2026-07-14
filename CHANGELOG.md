@@ -1,12 +1,38 @@
 ## 0.15.0
 
-A Hub you have to babysit is not a Hub you can run.
+A Hub you have to babysit is not a Hub you can run. And a Hub that answers
+anybody is not a Hub you can leave running.
 
 ```sh
 omnyserver service install hub  --tls-dir /etc/letsencrypt/live/hub.example.com
 omnyserver service install node --hub wss://hub:8443 --id worker-01 --token …
 omnyserver service status hub
 ```
+
+### Fixed
+
+- **The HTTP API was unauthenticated when no `--api-token` was set.**
+  `HttpApiServer.tokenAuthenticator()` returned `null` in that case, and a
+  service registered with a null authenticator is not authenticated at all — so
+  a Hub started with grants but no API token served the whole API to anyone who
+  could reach the port: list the fleet, read the audit log, run formulas on
+  every node, issue credentials.
+
+  `--grant` looked like it secured the API and did not. Grants are only ever
+  consulted from *inside* the authenticator that was not there, which is why
+  `whoami` answered `{"principal":"anonymous","authenticated":false}` even when
+  handed a valid grant token.
+
+  A Hub is controlled with the `--api-token` or with a grant's
+  `(principal, token)` pair, and with nothing else. It now enforces that
+  whether or not an API token is configured. A Hub with neither authenticates
+  **nobody** rather than everybody, and says so at startup. `/healthz` and
+  `/metrics` stay open on purpose — a load balancer and a Prometheus scraper
+  carry no bearer token, and locking them would make the Hub look dead to the
+  things that check whether it is.
+
+  Anyone relying on the old behaviour was relying on an open API. Pass
+  `--api-token`, or authenticate with a grant (`--token` + `--principal`).
 
 ### Added
 
@@ -37,6 +63,18 @@ omnyserver service status hub
   the SCM kills it for not answering (error 1053).
 
 - **`--ephemeral` on `hub start`** — the escape hatch for the change below.
+
+- **`--cors-origin '*'`** — allow any origin. It used to be accepted and then
+  silently match nothing, since it was compared as a literal origin string: a
+  flag that looked configured and did nothing, which is the very failure the rest
+  of this release sets out to remove.
+
+  A wildcard is a real widening — any page may call the API — but not an open
+  door: the Hub sends no `allow-credentials`, so a browser attaches nothing
+  ambient and a caller still needs a token it was given. The Hub says so at
+  startup, because that is not a thing to discover by reading the flags months
+  later. It cannot be mixed with a named allow-list: asking for both is asking
+  for everything.
 
 ### Changed
 

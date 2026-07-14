@@ -21,8 +21,8 @@ challenge nonce and resolve a `Principal`:
 
 ### The HTTP API
 
-`--api-token` gates `/api/v1` (without it the API is open, so it is for a
-loopback-only Hub). Two credentials are accepted on it:
+`/api/v1` is always authenticated. Two credentials are accepted, and there is no
+third — and no way in without one of them:
 
 - **The API token** — a Hub-wide master key with no identity of its own. It
   always grants `admin`; the optional `x-omny-principal` header only names the
@@ -36,6 +36,22 @@ loopback-only Hub). Two credentials are accepted on it:
 
 Prefer grants: they are per-operator (revoking one is dropping one `--grant`),
 they carry roles, and they cannot be forged by a caller who merely knows a name.
+
+`--api-token` is therefore optional, but **omitting it does not open the API** —
+it only removes the master key, leaving grants as the way in. A Hub started with
+neither authenticates nobody: every call is a `401`, and the Hub says so at
+startup rather than looking healthy while answering no one.
+
+> Until 0.15.0 this was not true. With no `--api-token`, the API was registered
+> with *no authenticator at all* and served every route to anyone who could
+> reach the port — grants are only consulted from inside that authenticator, so
+> `--grant` looked like it secured the API and did not. If you run a Hub without
+> `--api-token`, upgrade.
+
+`/healthz` and `/metrics` sit outside the API service and stay open: a load
+balancer and a Prometheus scraper carry no bearer token, and gating them would
+make the Hub look dead to the things that check whether it is alive. Neither
+exposes fleet data.
 
 ## Authorization
 

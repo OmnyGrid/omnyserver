@@ -84,7 +84,9 @@ void addHubStartOptions(
       help:
           'Browser origin allowed to call the HTTP API, e.g. '
           'https://dashboard.example.com (repeatable). Required for a web '
-          'dashboard — a browser is always a different origin than the Hub.',
+          'dashboard — a browser is always a different origin than the Hub. '
+          'Pass "*" to allow any origin: callers still need a token (the Hub '
+          'sends no allow-credentials), but any page may then ask.',
     );
 }
 
