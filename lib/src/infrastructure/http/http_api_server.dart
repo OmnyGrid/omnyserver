@@ -110,6 +110,9 @@ class HttpApiServer {
   /// installs the same request accounting and error envelope.
   List<Middleware> buildMiddleware() => [_countRequests(), apiErrorMapper()];
 
+  /// The wildcard origin: `--cors-origin '*'` means "any origin".
+  static const String anyOrigin = '*';
+
   /// The CORS middleware for the Hub's allowed origins, or `null` when none are
   /// configured (no browser client, nothing to allow).
   ///
@@ -120,12 +123,24 @@ class HttpApiServer {
   ///
   /// Credentials are *not* enabled: the dashboard authenticates with a bearer
   /// token in a header, not a cookie, so there is no reason to let the browser
-  /// attach ambient credentials to a cross-origin call.
+  /// attach ambient credentials to a cross-origin call. That is also what makes
+  /// [anyOrigin] tolerable — a wildcard lets any page *call* the API, but the
+  /// browser attaches no ambient credentials, so it still needs a token it was
+  /// given. It is a real widening all the same, and the Hub says so at startup.
+  ///
+  /// [anyOrigin] is dominant: `cors()` only emits a literal `*` when no specific
+  /// origin is named, so `'*'` cannot be combined with an allow-list — asking for
+  /// both means asking for everything.
   Middleware? corsMiddleware() {
     final origins = hub.config.corsOrigins;
     if (origins.isEmpty) return null;
+    if (origins.any(isAnyOrigin)) return cors(allowAnyOrigin: true);
     return cors(allowedOrigins: origins);
   }
+
+  /// Whether [origin] is the wildcard, tolerating the surrounding whitespace a
+  /// shell or an env-var passthrough can leave behind.
+  static bool isAnyOrigin(String origin) => origin.trim() == anyOrigin;
 
   /// The omnyhub services this API exposes: the authenticated `/api/v1` surface,
   /// the unauthenticated root endpoints, and the OpenAPI document.
@@ -179,19 +194,25 @@ class HttpApiServer {
     _server = null;
   }
 
-  /// The authenticator guarding `/api/v1`, or `null` when no token is set.
+  /// The authenticator guarding `/api/v1`. Never `null`: the Hub is controlled
+  /// only with the [apiToken] or a grant's `(principal, token)` pair, so an
+  /// unauthenticated caller is refused whether or not an [apiToken] is set.
+  ///
+  /// It used to return `null` when no [apiToken] was configured, which left the
+  /// API wide open — `--grant` alone gates the *node* channel, and is only
+  /// consulted from inside this authenticator, so without it nothing checked
+  /// anything. A Hub with neither an API token nor a grant now authenticates
+  /// nobody rather than everybody.
   ///
   /// A hub hosting [buildServices] itself must apply this to the service named
-  /// [apiServiceName] — that is the only one behind the token.
-  Authenticator? tokenAuthenticator() => _tokenAuth();
+  /// [apiServiceName] — that is the only one behind the token. `/healthz` and
+  /// `/metrics` are deliberately outside it.
+  Authenticator tokenAuthenticator() => _tokenAuth();
 
   /// The name of the token-gated `/api/v1` service.
   static const String apiServiceName = 'omnyserver-api';
 
-  Authenticator? _tokenAuth() {
-    final token = apiToken;
-    return token == null ? null : _ApiAuthenticator(hub: hub, apiToken: token);
-  }
+  Authenticator _tokenAuth() => _ApiAuthenticator(hub: hub, apiToken: apiToken);
 
   /// Counts every request that reaches the API, including rejected ones.
   Middleware _countRequests() =>
@@ -924,8 +945,10 @@ class _ApiAuthenticator implements Authenticator {
   /// The Hub whose authenticator and authorizer resolve grants.
   final OmnyServerHub hub;
 
-  /// The static bearer token gating `/api/v1`.
-  final String apiToken;
+  /// The static bearer token gating `/api/v1`, or `null` when the Hub was
+  /// started without one — in which case a grant's `(principal, token)` pair is
+  /// the only way in.
+  final String? apiToken;
 
   const _ApiAuthenticator({required this.hub, required this.apiToken});
 
@@ -938,7 +961,8 @@ class _ApiAuthenticator implements Authenticator {
     final token = header.substring(7);
     final claimed = request.header('x-omny-principal');
 
-    if (_constantTimeEquals(token, apiToken)) {
+    final master = apiToken;
+    if (master != null && _constantTimeEquals(token, master)) {
       return Principal(id: claimed ?? 'api', roles: const {'admin'});
     }
     // Not the master key, and no principal to look a grant up by: the token is
