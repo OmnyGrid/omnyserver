@@ -10,18 +10,11 @@ import '../../omnyserver_hub.dart';
 import '../../omnyserver_node.dart';
 import 'api_client.dart';
 import 'api_transport_io.dart';
+import 'cli_error.dart';
+import 'service_commands.dart';
+import 'start_options.dart';
 
-/// A user-facing CLI error (printed without a stack trace).
-class CliError implements Exception {
-  /// The message shown to the user.
-  final String message;
-
-  /// Creates a CLI error.
-  CliError(this.message);
-
-  @override
-  String toString() => message;
-}
+export 'cli_error.dart';
 
 /// Builds the OmnyServer [CommandRunner] with every command wired to the public
 /// runtimes and the Hub HTTP API.
@@ -39,6 +32,7 @@ CommandRunner<void> buildRunner() {
         )
         ..addCommand(HubCommand())
         ..addCommand(NodeCommand())
+        ..addCommand(ServiceCommand())
         ..addCommand(NodesCommand())
         ..addCommand(PresetCommand())
         ..addCommand(FormulaCommand())
@@ -309,67 +303,7 @@ class HubMetricsCommand extends Command<void> {
 class HubStartCommand extends Command<void> {
   /// Creates the hub-start command.
   HubStartCommand() {
-    argParser
-      ..addOption('host', defaultsTo: '0.0.0.0', help: 'TLS bind host.')
-      ..addOption('port', defaultsTo: '8443', help: 'TLS bind port.')
-      ..addOption(
-        'cert',
-        help: 'TLS certificate chain (PEM). Required unless --tls-dir is set.',
-      )
-      ..addOption(
-        'key',
-        help: 'TLS private key (PEM). Required unless --tls-dir is set.',
-      )
-      ..addOption(
-        'tls-dir',
-        help:
-            'Directory holding the listener certificate (fullchain.pem + '
-            'privkey.pem, LetsEncrypt layout), as an alternative to '
-            '--cert/--key. Re-checked periodically and reloaded automatically '
-            'when the files change (e.g. on renewal).',
-      )
-      ..addOption(
-        'node-path',
-        defaultsTo: '/node',
-        help: 'Path the node control channel is mounted at.',
-      )
-      ..addFlag(
-        'shell',
-        negatable: false,
-        help: 'Also serve OmnyShell nodes (same port, same certificate).',
-      )
-      ..addOption(
-        'shell-path',
-        defaultsTo: '/shell',
-        help: 'Path the OmnyShell broker is mounted at.',
-      )
-      ..addOption('api-token', help: 'Bearer token required by the HTTP API.')
-      ..addMultiOption(
-        'grant',
-        help: 'Token grant "principal:token:role1,role2" (repeatable).',
-      )
-      ..addMultiOption(
-        'alert',
-        help:
-            'A condition worth being told about (repeatable): "disk>90", '
-            '"cpu>95 for 5m", "offline for 2m". None by default — a tool that '
-            'invents its own thresholds is a tool that pages you at 3am.',
-      )
-      ..addOption(
-        'data-dir',
-        help:
-            'Directory to persist the Hub in (nodes, audit, metrics, desired '
-            'state, issued credentials). Without it everything is in memory and '
-            'a restart forgets the fleet — including any credential issued with '
-            '`grant add`.',
-      )
-      ..addMultiOption(
-        'cors-origin',
-        help:
-            'Browser origin allowed to call the HTTP API, e.g. '
-            'https://dashboard.example.com (repeatable). Required for a web '
-            'dashboard — a browser is always a different origin than the Hub.',
-      );
+    addHubStartOptions(argParser);
   }
 
   @override
@@ -384,7 +318,7 @@ class HubStartCommand extends Command<void> {
   Future<void> run() async {
     final args = argResults!;
     // Either a directory the Hub reloads on renewal, or a static cert/key pair.
-    final tlsDir = _validateTls(args);
+    final tlsDir = validateHubTls(args);
     final context = tlsDir != null
         ? null
         : (SecurityContext()
@@ -396,10 +330,12 @@ class HubStartCommand extends Command<void> {
     final shellPath = args['shell-path'] as String;
     final withShell = args['shell'] as bool;
 
-    // Without a data directory the Hub is a cache: it forgets the fleet, the
-    // audit trail and every credential it issued the moment it stops.
-    final dataDir = (args['data-dir'] as String?)?.trim();
-    final persistent = dataDir != null && dataDir.isNotEmpty;
+    // The Hub persists by default, in <OMNYSERVER_HOME>/hub. Only --ephemeral
+    // opts out — and it says so out loud, because a Hub that keeps nothing
+    // forgets the fleet, the audit trail and every credential it issued, on
+    // every restart. An explicit --data-dir is used as given.
+    final dataDir = resolveHubDataDir(args);
+    final persistent = dataDir != null;
     final grantStore = persistent
         ? JsonGrantRepository(dataDir)
         : MemoryGrantRepository();
@@ -487,41 +423,24 @@ class HubStartCommand extends Command<void> {
       stdout.writeln('Hub shell: wss://$host:${hub.port}$shellPath');
     }
     stdout.writeln('Hub API:   https://$host:${hub.port}/api/v1');
+    stdout.writeln(
+      persistent
+          ? 'Hub data:  $dataDir'
+          : 'Hub data:  in memory (--ephemeral) — a restart forgets the fleet.',
+    );
+    // Installing no CORS at all is the correct behaviour for a Hub with no
+    // browser client, and indistinguishable — from the browser's side — from a
+    // Hub that rejected the origin. Say which it is, or the next person debugs
+    // it from a browser console.
+    if ((args['cors-origin'] as List<String>).isEmpty) {
+      stdout.writeln(
+        'Hub CORS:  no origins configured — a browser dashboard will be '
+        'blocked (pass --cors-origin).',
+      );
+    }
     stdout.writeln('Press Ctrl-C to stop.');
     await _awaitSignal();
     await hub.close();
-  }
-
-  /// Validates the Hub's TLS source — exactly one of `--tls-dir` or
-  /// (`--cert` + `--key`), never neither (the Hub has no insecure mode).
-  /// Returns the trimmed `--tls-dir` in directory mode, otherwise `null`.
-  String? _validateTls(ArgResults args) {
-    final tlsDir = (args['tls-dir'] as String?)?.trim();
-    final cert = args['cert'] as String?;
-    final key = args['key'] as String?;
-    final hasCertOrKey =
-        (cert != null && cert.isNotEmpty) || (key != null && key.isNotEmpty);
-
-    if (tlsDir != null && tlsDir.isNotEmpty) {
-      if (hasCertOrKey) {
-        throw CliError('use either --tls-dir or --cert/--key, not both');
-      }
-      if (!File('$tlsDir/fullchain.pem').existsSync() ||
-          !File('$tlsDir/privkey.pem').existsSync()) {
-        throw CliError(
-          '--tls-dir "$tlsDir" must contain fullchain.pem and privkey.pem',
-        );
-      }
-      return tlsDir;
-    }
-
-    if (cert == null || cert.isEmpty || key == null || key.isEmpty) {
-      throw CliError(
-        '--cert and --key are required unless --tls-dir is set '
-        '(try: omnyserver cert gen)',
-      );
-    }
-    return null;
   }
 
   Map<String, TokenGrant> _parseGrants(List<String> raw) {
@@ -573,47 +492,7 @@ class NodeCommand extends Command<void> {
 class NodeStartCommand extends Command<void> {
   /// Creates the node-start command.
   NodeStartCommand() {
-    argParser
-      ..addOption('hub', help: 'Hub WSS URL, e.g. wss://hub:8443.')
-      ..addOption('id', help: 'Node id.')
-      ..addOption('principal', defaultsTo: 'node-account', help: 'Principal.')
-      ..addOption('token', help: 'Bearer token.')
-      ..addOption('ca', help: 'Trusted CA certificate (PEM).')
-      ..addFlag(
-        'insecure',
-        negatable: false,
-        help: 'Accept any TLS certificate (dev only).',
-      )
-      ..addFlag(
-        'with-shell',
-        negatable: false,
-        help: 'Also run an OmnyShell node, so the Hub can open shell sessions.',
-      )
-      ..addOption(
-        'shell-path',
-        defaultsTo: '/shell',
-        help: "Path of the Hub's OmnyShell broker (with --with-shell).",
-      )
-      ..addFlag(
-        'ship-logs',
-        defaultsTo: true,
-        help:
-            "Send the agent's own log lines to the Hub, so `node logs` can read "
-            'them without logging into the machine.',
-      )
-      ..addMultiOption(
-        'label',
-        help:
-            'Node label "key=value" (repeatable), e.g. env=prod. Labels are how '
-            'a fleet is addressed: they filter `nodes list` and select the '
-            'targets of `formula run` and `preset apply`.',
-      )
-      ..addMultiOption(
-        'shell-label',
-        help:
-            'OmnyShell node label "key=value" (repeatable), e.g. '
-            'allow-roles=admin.',
-      );
+    addNodeStartOptions(argParser);
   }
 
   @override
@@ -625,12 +504,10 @@ class NodeStartCommand extends Command<void> {
   @override
   Future<void> run() async {
     final args = argResults!;
-    final hub = args['hub'] as String?;
-    final id = args['id'] as String?;
-    final token = args['token'] as String?;
-    if (hub == null || id == null || token == null) {
-      throw CliError('--hub, --id and --token are required');
-    }
+    validateNodeStartArgs(args);
+    final hub = args['hub'] as String;
+    final id = args['id'] as String;
+    final token = args['token'] as String;
     final ca = args['ca'] as String?;
     final context = ca == null
         ? null

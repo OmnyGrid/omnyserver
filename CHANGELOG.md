@@ -1,3 +1,76 @@
+## 0.15.0
+
+A Hub you have to babysit is not a Hub you can run.
+
+```sh
+omnyserver service install hub  --tls-dir /etc/letsencrypt/live/hub.example.com
+omnyserver service install node --hub wss://hub:8443 --id worker-01 --token …
+omnyserver service status hub
+```
+
+### Added
+
+- **`omnyserver service install | reinstall | reconfigure | uninstall | start |
+  stop | restart | status | info <hub|node>`** — install the Hub or a Node agent
+  as a native OS service: a systemd unit, a launchd job, or a Windows scheduled
+  task.
+
+  `hub start` runs in the foreground and dies with your terminal, which is fine
+  until it is the thing your fleet talks to. Rather than hand you a unit file to
+  adapt, the CLI installs **itself**: `service install` takes the same flags as
+  `hub start`, reconstructs the command line, and bakes this executable plus
+  those flags into the service definition. What the service runs at boot is what
+  you would have typed. Paths are absolutized on the way in, so the unit does not
+  depend on the directory you installed from.
+
+  `--dry-run` prints the generated definition without touching the system.
+  `--system` installs machine-wide instead of for your user. `service info` shows
+  the parameters *and* the actual command the OS runs it with — the two are
+  usually the same, and the day they are not is the day you need to see both.
+
+  `reconfigure` re-applies changed flags to a running service; `reinstall`
+  refreshes the binary while keeping the config it was installed with, which is
+  how a fleet picks up a new release.
+
+  On Windows this goes through the Task Scheduler, not the Service Control
+  Manager: a plain Dart console app cannot answer the SCM's start handshake, and
+  the SCM kills it for not answering (error 1053).
+
+- **`--ephemeral` on `hub start`** — the escape hatch for the change below.
+
+### Changed
+
+- **`omnyserver hub start` now persists by default**, to `<OMNYSERVER_HOME>/hub`
+  (i.e. `~/.omnyserver/hub`). It used to keep everything in memory unless you
+  passed `--data-dir`.
+
+  A Hub with optional persistence is a Hub that silently forgets the fleet, the
+  audit trail, and every credential `grant add` ever issued — on every restart —
+  and says nothing about it. That was survivable when you were watching it in a
+  terminal. Supervised by an init system, with `Restart=always`, it is a trap:
+  the Hub comes back up empty and healthy. Forgetting should be something you
+  ask for, so now you do: **`--ephemeral`**.
+
+  An explicit `--data-dir` still means exactly what it meant. Only the default
+  moved. `HubConfig(dataDir: null)` is untouched, so the Dart API still defaults
+  to in-memory — this is a CLI default, not a library one.
+
+- **A Hub started with no `--cors-origin` now says so.** It was already the case
+  that no origins meant no CORS middleware at all, and therefore a `200` with no
+  `Access-Control-Allow-Origin` — indistinguishable, from the browser's side,
+  from a Hub that had rejected the origin. Correct, and invisible: it took a
+  browser console to find. It is now a line in the startup output, next to the
+  data directory.
+
+- `run-hub.sh` grows an `OMNYSERVER_CORS_ORIGIN` passthrough. Every other setting
+  had one; the one that a web dashboard cannot work without did not.
+
+- The dashboard's injected CSP drops `frame-ancestors`. It is only honoured in a
+  real HTTP header, never in a `<meta>` tag, so it bought no protection and cost
+  a console error on every page load.
+
+---
+
 ## 0.14.0
 
 Work that takes longer than a caller should be made to wait.

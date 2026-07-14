@@ -91,8 +91,9 @@ See the [API Documentation][api_doc] for the full list of classes and APIs.
   SSH, CUDA, Metal, OpenCL — detected dynamically.
 - **Formulas & presets** — idempotent, cross-platform install/manage procedures,
   composed into presets, with desired-state reconciliation.
-- **Service management** — install Hub/agent as systemd / launchd / Windows
-  services via `dart_service_manager`.
+- **Runs as an OS service** — `omnyserver service install hub|node` installs the
+  Hub or an agent as a systemd unit, a launchd job or a Windows scheduled task,
+  so it survives a reboot. See [Run as an OS service](#run-as-an-os-service).
 - **Security** — token & Ed25519 public-key auth, role-based authorization,
   content-derived identity, audit log; RBAC/multi-tenant ready.
 - **Persistence** — repository abstractions with in-memory, JSON-directory and
@@ -217,6 +218,68 @@ dart run bin/omnyserver.dart node start \
   --hub wss://hub:8443 --id worker-01 \
   --principal node-account --token node-token --ca certs/ca.crt
 ```
+
+### Run as an OS service
+
+`hub start` and `node start` run in the foreground and die with your terminal.
+To keep one running, install it as a native service — a systemd unit on Linux, a
+launchd job on macOS, a scheduled task on Windows:
+
+```sh
+omnyserver service install hub  --tls-dir /etc/letsencrypt/live/hub.example.com \
+                                --api-token api-secret \
+                                --grant node-account:node-token:node
+omnyserver service install node --hub wss://hub:8443 --id worker-01 \
+                                --token node-token --ca certs/ca.crt
+```
+
+There is no separate daemon and no config file: `service install` takes the same
+flags as `hub start` / `node start`, and bakes *this* executable plus those flags
+into the service definition. Whatever `omnyserver hub start …` would have done in
+your terminal is what the service does at boot. Relative paths are resolved
+before they are baked in, so the unit does not depend on where you ran the
+install from.
+
+```sh
+omnyserver service status  hub        # running
+omnyserver service info    hub        # the parameters, and the command the OS runs
+omnyserver service restart hub
+omnyserver service stop    hub
+omnyserver service uninstall hub
+```
+
+Two more, for the day after: `service reconfigure hub --cors-origin …` re-applies
+changed flags to the installed service, and `service reinstall hub` refreshes the
+binary while keeping the config it was installed with — which is how a fleet
+picks up a new release.
+
+Use `--dry-run` to print the generated unit/plist without touching the system,
+and `--system` to install machine-wide (`sudo` on Linux/macOS, Administrator on
+Windows) rather than for your user alone.
+
+**Where it keeps its data.** A service is supervised forever, so it persists by
+default. `--data-dir` names one root holding everything — credentials and
+identity at the top, and the Hub's fleet data (nodes, audit, metrics, desired
+state, issued grants) under `hub/`:
+
+```
+/var/lib/omnyserver/          # --system default (~/.omnyserver otherwise)
+  hub/                        # the Hub's fleet data
+```
+
+Pass `--ephemeral` for a Hub that keeps nothing. Note that `omnyserver hub start`
+persists by default too, to `~/.omnyserver/hub` — a Hub that forgot the fleet,
+the audit trail and every credential `grant add` issued, on every restart, was a
+footgun with no upside.
+
+> **Linux, user scope.** A user service runs under `systemctl --user`, which
+> stops at logout unless lingering is enabled. `install` tries to enable it for
+> you and tells you the exact command (`sudo loginctl enable-linger <user>`) if
+> it cannot.
+
+> Flags become part of the service definition, which means `--token`,
+> `--api-token` and `--grant` are written into a file readable by the user who
+> installed it. Restrict it accordingly.
 
 ### Discover and operate (via the REST API)
 
