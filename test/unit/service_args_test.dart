@@ -72,14 +72,22 @@ void main() {
       expect(_valueOf(argv, 'port'), '8443');
     });
 
-    test('absolutizes the filesystem paths', () {
+    // Normalized as well as absolutized: the baked-in command must carry a
+    // native path, so a `certs/a.crt` typed on Windows lands in the unit as
+    // `…\certs\a.crt`, not the half-converted `…\certs/a.crt`.
+    test('absolutizes and normalizes the filesystem paths', () {
       final argv = serviceStartArgs(
         'hub',
         _parse(['--cert', 'certs/a.crt', '--key', 'certs/a.key']),
       );
-      expect(_valueOf(argv, 'cert'), p.absolute('certs/a.crt'));
-      expect(_valueOf(argv, 'key'), p.absolute('certs/a.key'));
+      expect(_valueOf(argv, 'cert'), p.normalize(p.absolute('certs/a.crt')));
+      expect(_valueOf(argv, 'key'), p.normalize(p.absolute('certs/a.key')));
       expect(p.isAbsolute(_valueOf(argv, 'cert')!), isTrue);
+      expect(
+        _valueOf(argv, 'cert'),
+        isNot(contains('/')),
+        skip: !Platform.isWindows,
+      );
     });
 
     // --node-path and --shell-path look like paths but are HTTP mount points.
@@ -192,9 +200,9 @@ void main() {
       expect(_valueOf(argv, 'principal'), 'node-account');
     });
 
-    test('absolutizes --ca', () {
+    test('absolutizes and normalizes --ca', () {
       final argv = serviceStartArgs('node', nodeArgs(['--ca', 'certs/ca.crt']));
-      expect(_valueOf(argv, 'ca'), p.absolute('certs/ca.crt'));
+      expect(_valueOf(argv, 'ca'), p.normalize(p.absolute('certs/ca.crt')));
     });
 
     test('repeats labels', () {
