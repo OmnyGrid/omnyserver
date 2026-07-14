@@ -5,6 +5,7 @@ import 'package:web/web.dart' as web;
 
 import '../../app/app_context.dart';
 import '../../state/auth_controller.dart';
+import '../../version.dart';
 
 /// Sign in to a Hub.
 ///
@@ -99,6 +100,8 @@ class LoginScreen implements Screen {
             el('div', classes: 'muted', text: 'Fleet dashboard'),
             el('hr'),
             form,
+            el('hr'),
+            _versions(),
           ],
         ),
       ],
@@ -107,6 +110,19 @@ class LoginScreen implements Screen {
     _sub = ctx.auth.state.stream.listen((_) => _render());
     _render();
   }
+
+  /// The version line — see [versionLabel]. The tooltip is the one bit local to
+  /// the login screen, where "not the Hub you connect to" is worth saying.
+  web.HTMLElement _versions() => el(
+    'div',
+    classes: 'muted',
+    attrs: {
+      'title':
+          'This dashboard build, and the OmnyServer version it was built '
+          'against — not the version of the Hub you connect to.',
+    },
+    text: versionLabel,
+  );
 
   void _render() {
     final snapshot = ctx.auth.state.value;
