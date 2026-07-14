@@ -3,3 +3,10 @@
 # `meta` provides `@immutable`/`@protected` annotations the validator can miss,
 # so it is allow-listed here.
 allow_pinned_deps: true
+
+# `omnyserver_web/` is a package of its own — its own pubspec, its own
+# dependencies, its own CI job. Scanned as part of this one it sits outside
+# `lib/`, so its imports of `package:omnyserver_web` and `package:omnyshell_web`
+# are reported as dependencies the server declares nowhere.
+exclude:
+  - 'omnyserver_web/**'

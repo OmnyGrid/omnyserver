@@ -13,10 +13,15 @@ jobs:
       - uses: dart-lang/setup-dart@v1
       - name: Install dependencies
         run: dart pub get
+      # Scoped to this package's own sources. `omnyserver_web/` is a package of
+      # its own and is formatted, analyzed and tested by the `web` job below —
+      # where its dependencies are actually resolved. (`analysis_options.yaml`
+      # and `dart_dependency_validator.yaml` exclude it from the two steps that
+      # would otherwise descend into it.)
       - name: Verify formatting
-        run: dart format --output=none --set-exit-if-changed .
+        run: dart format --output=none --set-exit-if-changed bin example lib test tool
       - name: Analyze
-        run: dart analyze --fatal-infos --fatal-warnings
+        run: dart analyze --fatal-infos --fatal-warnings .
       - name: Validate dependencies
         run: dart run dependency_validator
       - name: Doc dry-run
@@ -35,3 +40,39 @@ jobs:
         run: dart pub get
       - name: Run tests
         run: dart test
+
+  # The dashboard ships from this repo, so it is built and tested here — and
+  # against the Hub client in this checkout, never the last one published.
+  web:
+    name: omnyserver_web
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: omnyserver_web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dart-lang/setup-dart@v1
+      - name: Resolve omnyserver from this checkout
+        run: |
+          printf 'dependency_overrides:\n  omnyserver:\n    path: ..\n' \
+            > pubspec_overrides.yaml
+      - name: Install dependencies
+        run: dart pub get
+      - name: Verify formatting
+        run: dart format --output=none --set-exit-if-changed .
+      - name: Analyze
+        run: dart analyze --fatal-infos --fatal-warnings
+      - name: Run tests
+        run: dart test
+      - name: Build (dart2js, release)
+        run: dart run build_runner build --release --output build
+      # dart2js silently skips an entrypoint whose transitive graph imports an
+      # unsupported SDK library, emitting no JS at all — a deploy would then
+      # serve a blank page. Fail here instead.
+      - name: Verify the dart2js bundle was produced
+        run: |
+          f=build/web/main.dart.js
+          test -f "$f" || { echo "::error::dart2js produced no $f — the entrypoint was silently skipped"; exit 1; }
+          size=$(wc -c < "$f")
+          echo "main.dart.js: $size bytes"
+          [ "$size" -gt 100000 ] || { echo "::error::$f is only $size bytes — suspiciously small for a release build"; exit 1; }
