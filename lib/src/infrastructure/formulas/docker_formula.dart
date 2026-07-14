@@ -1,6 +1,6 @@
 import '../../domain/entities/formula_spec.dart';
+import '../../domain/formula/standard_formulas.dart';
 import '../../domain/formula/formula_action.dart';
-import '../../domain/value_objects/formula_id.dart';
 import 'command_formula.dart';
 
 /// The built-in Docker formula: installs and manages the Docker engine.
@@ -13,20 +13,9 @@ class DockerFormula extends CommandFormula {
   DockerFormula({super.executor});
 
   @override
-  FormulaSpec get spec => FormulaSpec(
-    id: FormulaId('docker'),
-    name: 'Docker',
-    description: 'Docker container engine.',
-    actions: const {
-      FormulaAction.install,
-      FormulaAction.update,
-      FormulaAction.start,
-      FormulaAction.stop,
-      FormulaAction.restart,
-      FormulaAction.uninstall,
-      FormulaAction.verify,
-    },
-  );
+  // Defined in the domain, so the Hub can serve a catalogue of what nodes can
+  // do without importing the code that does it.
+  FormulaSpec get spec => dockerSpec;
 
   @override
   CommandStep get verifyStep => const CommandStep('docker', ['--version']);

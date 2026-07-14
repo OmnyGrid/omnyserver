@@ -8,6 +8,8 @@ import '../../domain/entities/metric_point.dart';
 import '../../domain/entities/node_descriptor.dart';
 import '../../infrastructure/auth/grant_authenticator.dart';
 import '../../domain/entities/grant.dart';
+import '../../domain/formula/standard_formulas.dart';
+import '../../domain/entities/formula_spec.dart';
 import '../../domain/entities/node_status.dart';
 import '../../domain/entities/preset.dart';
 import '../../domain/events/omny_event.dart';
@@ -522,6 +524,47 @@ class OmnyServerHub {
   Future<void> _recordMetric(NodeId id, NodeStatus status) => config
       .metricRepository
       .record(MetricSample(nodeId: id, at: status.capturedAt, status: status));
+
+  // ---------------------------------------------------------------------------
+  // The catalogue: what can be asked of a node, and what has been saved to ask.
+  // ---------------------------------------------------------------------------
+
+  /// The formulas a node can run.
+  ///
+  /// The built-ins, plus anything registered in the Hub's [FormulaRepository].
+  /// A client that has to be *told* what to type into a free-text box is a client
+  /// that gets it wrong; this is what it reads instead.
+  Future<List<FormulaSpec>> listFormulas() async {
+    final custom = await config.formulaRepository.all();
+    final byId = {
+      for (final spec in standardFormulaSpecs) spec.id.value: spec,
+      // A site's own registration wins over a built-in of the same name.
+      for (final spec in custom) spec.id.value: spec,
+    };
+    return byId.values.toList()
+      ..sort((a, b) => a.id.value.compareTo(b.id.value));
+  }
+
+  /// Saves a preset on the Hub, so every operator applies the same one.
+  Future<void> savePreset(Preset preset, {String principal = 'system'}) async {
+    await config.presetRepository.save(preset);
+    await audit.record(
+      principal: principal,
+      action: 'preset.save',
+      target: preset.id.value,
+      outcome: AuditOutcome.success,
+      detail: '${preset.steps.length} steps',
+    );
+  }
+
+  /// Every saved preset.
+  Future<List<Preset>> listPresets() => config.presetRepository.all();
+
+  /// The saved preset with [id], or `null`.
+  Future<Preset?> presetFor(PresetId id) => config.presetRepository.find(id);
+
+  /// Deletes a saved preset.
+  Future<bool> deletePreset(PresetId id) => config.presetRepository.delete(id);
 
   // ---------------------------------------------------------------------------
   // Grants: credentials the Hub hands out, and takes back.

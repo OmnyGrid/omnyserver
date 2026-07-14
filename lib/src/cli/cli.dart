@@ -361,6 +361,8 @@ class HubStartCommand extends Command<void> {
         ]),
         grantRepository: grantStore,
         nodeRepository: persistent ? JsonNodeRepository(dataDir) : null,
+        presetRepository: persistent ? JsonPresetRepository(dataDir) : null,
+        formulaRepository: persistent ? JsonFormulaRepository(dataDir) : null,
         auditRepository: persistent ? JsonAuditRepository(dataDir) : null,
         metricRepository: persistent ? JsonMetricRepository(dataDir) : null,
         desiredStateRepository: persistent
@@ -1025,6 +1027,10 @@ class PresetCommand extends Command<void> {
   /// Creates the preset command group.
   PresetCommand() {
     addSubcommand(PresetApplyCommand());
+    addSubcommand(PresetSaveCommand());
+    addSubcommand(PresetListCommand());
+    addSubcommand(PresetShowCommand());
+    addSubcommand(PresetDeleteCommand());
   }
 
   @override
@@ -1047,7 +1053,8 @@ class PresetApplyCommand extends Command<void> {
 
   @override
   String get description =>
-      'Apply a preset (JSON file) to one node, or across a selected fleet.';
+      'Apply a preset — a saved one by id, or a JSON file — to one node or a '
+      'selected fleet.';
 
   @override
   Future<void> run() async {
@@ -1055,14 +1062,22 @@ class PresetApplyCommand extends Command<void> {
     final rest = args.rest;
     if (rest.isEmpty) {
       throw CliError(
-        'usage: preset apply <preset.json> [<node>] [--label env=prod | --all]',
+        'usage: preset apply <preset.json|preset-id> [<node>] '
+        '[--label env=prod | --all]',
       );
     }
-    final file = File(rest.first);
-    if (!file.existsSync()) {
-      throw CliError('preset file not found: ${rest.first}');
-    }
-    final preset = jsonDecode(file.readAsStringSync());
+
+    // A path if it exists on disk, otherwise the id of a preset saved on the Hub.
+    // The saved form is the one worth using: a file is whatever copy *this*
+    // caller happens to have, while an id is the one everybody agrees on.
+    final source = rest.first;
+    final file = File(source);
+    final body = <String, Object?>{
+      if (file.existsSync())
+        'preset': jsonDecode(file.readAsStringSync())
+      else
+        'presetId': source,
+    };
 
     final client = _apiClientFrom(args);
     try {
@@ -1073,10 +1088,7 @@ class PresetApplyCommand extends Command<void> {
       );
       await _fanOut(nodes, (node) async {
         final reply =
-            await client.post('/presets/apply', {
-                  'nodeId': node,
-                  'preset': preset,
-                })
+            await client.post('/presets/apply', {'nodeId': node, ...body})
                 as Map;
         final results = (reply['results'] as List).cast<Map>();
         final failed = results.where((r) => r['success'] != true).length;
@@ -1091,6 +1103,122 @@ class PresetApplyCommand extends Command<void> {
   }
 }
 
+/// `omnyserver preset save <preset.json>`
+class PresetSaveCommand extends Command<void> {
+  /// Creates the preset-save command.
+  PresetSaveCommand() {
+    _addApiOptions(argParser);
+  }
+
+  @override
+  String get name => 'save';
+
+  @override
+  String get description =>
+      'Save a preset on the Hub, so everyone applies the same one.';
+
+  @override
+  Future<void> run() async {
+    final rest = argResults!.rest;
+    if (rest.isEmpty) throw CliError('usage: preset save <preset.json>');
+    final file = File(rest.first);
+    if (!file.existsSync()) {
+      throw CliError('preset file not found: ${rest.first}');
+    }
+    final preset = jsonDecode(file.readAsStringSync());
+
+    final client = _apiClientFrom(argResults!);
+    try {
+      final saved = await client.post('/presets', preset) as Map;
+      stdout.writeln(
+        'saved "${saved['id']}" (${saved['steps']} steps) — apply it anywhere '
+        'with: preset apply ${saved['id']} --label …',
+      );
+    } finally {
+      client.close();
+    }
+  }
+}
+
+/// `omnyserver preset list`
+class PresetListCommand extends Command<void> {
+  /// Creates the preset-list command.
+  PresetListCommand() {
+    _addApiOptions(argParser);
+  }
+
+  @override
+  String get name => 'list';
+
+  @override
+  String get description => 'List the presets saved on the Hub.';
+
+  @override
+  Future<void> run() async {
+    final client = _apiClientFrom(argResults!);
+    try {
+      final presets = (await client.get('/presets') as List).cast<Map>();
+      if (presets.isEmpty) {
+        stdout.writeln('no presets are saved (try: preset save <file>)');
+        return;
+      }
+      stdout.writeln('ID              STEPS  NAME');
+      for (final p in presets) {
+        final id = '${p['id']}'.padRight(15);
+        final steps = '${(p['steps'] as List).length}'.padLeft(5);
+        stdout.writeln('$id $steps  ${p['name']}');
+      }
+    } finally {
+      client.close();
+    }
+  }
+}
+
+/// `omnyserver preset show <id>`
+class PresetShowCommand extends Command<void> {
+  /// Creates the preset-show command.
+  PresetShowCommand() {
+    _addApiOptions(argParser);
+  }
+
+  @override
+  String get name => 'show';
+
+  @override
+  String get description => 'Show a saved preset.';
+
+  @override
+  Future<void> run() =>
+      _getAndPrint(argResults!, 'show', (id) => '/presets/$id');
+}
+
+/// `omnyserver preset delete <id>`
+class PresetDeleteCommand extends Command<void> {
+  /// Creates the preset-delete command.
+  PresetDeleteCommand() {
+    _addApiOptions(argParser);
+  }
+
+  @override
+  String get name => 'delete';
+
+  @override
+  String get description => 'Delete a saved preset.';
+
+  @override
+  Future<void> run() async {
+    final rest = argResults!.rest;
+    if (rest.isEmpty) throw CliError('usage: preset delete <id>');
+    final client = _apiClientFrom(argResults!);
+    try {
+      await client.delete('/presets/${rest.first}');
+      stdout.writeln('deleted ${rest.first}');
+    } finally {
+      client.close();
+    }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // formula
 // ---------------------------------------------------------------------------
@@ -1099,6 +1227,7 @@ class PresetApplyCommand extends Command<void> {
 class FormulaCommand extends Command<void> {
   /// Creates the formula command group.
   FormulaCommand() {
+    addSubcommand(FormulaListCommand());
     addSubcommand(FormulaRunCommand());
   }
 
@@ -1107,6 +1236,38 @@ class FormulaCommand extends Command<void> {
 
   @override
   String get description => 'Run formulas on nodes.';
+}
+
+/// `omnyserver formula list`
+class FormulaListCommand extends Command<void> {
+  /// Creates the formula-list command.
+  FormulaListCommand() {
+    _addApiOptions(argParser);
+  }
+
+  @override
+  String get name => 'list';
+
+  @override
+  String get description =>
+      'List the formulas a node can run, and the actions each implements.';
+
+  @override
+  Future<void> run() async {
+    final client = _apiClientFrom(argResults!);
+    try {
+      final formulas = (await client.get('/formulas') as List).cast<Map>();
+      stdout.writeln('FORMULA     NAME              ACTIONS');
+      for (final f in formulas) {
+        final id = '${f['id']}'.padRight(11);
+        final name = '${f['name']}'.padRight(17);
+        final actions = (f['actions'] as List).join(', ');
+        stdout.writeln('$id $name $actions');
+      }
+    } finally {
+      client.close();
+    }
+  }
 }
 
 /// `omnyserver formula run <formula> <node>`

@@ -97,6 +97,20 @@ class HubConfig {
   /// Persists historical metric samples.
   final MetricRepository metricRepository;
 
+  /// Persists formulas a site has registered beyond the built-ins.
+  ///
+  /// Read by the catalogue the Hub serves, so a client can be *told* what a node
+  /// can do rather than made to guess it into a free-text box.
+  final FormulaRepository formulaRepository;
+
+  /// Persists the presets an operator has saved on the Hub.
+  ///
+  /// A preset is a reusable declaration ("this is what a docker host is"), so
+  /// keeping it on the Hub means every operator and every script applies the
+  /// *same* one, rather than each shipping their own copy of a JSON file that
+  /// has quietly diverged.
+  final PresetRepository presetRepository;
+
   /// Persists the credentials the Hub has issued at runtime.
   ///
   /// Separate from [authenticator], which is how a credential is *checked*: this
@@ -140,6 +154,8 @@ class HubConfig {
     NodeRepository? nodeRepository,
     AuditRepository? auditRepository,
     MetricRepository? metricRepository,
+    FormulaRepository? formulaRepository,
+    PresetRepository? presetRepository,
     GrantRepository? grantRepository,
     DesiredStateRepository? desiredStateRepository,
     StateReconciler? reconciler,
@@ -153,6 +169,8 @@ class HubConfig {
        nodeRepository = nodeRepository ?? MemoryNodeRepository(),
        auditRepository = auditRepository ?? MemoryAuditRepository(),
        metricRepository = metricRepository ?? MemoryMetricRepository(),
+       formulaRepository = formulaRepository ?? MemoryFormulaRepository(),
+       presetRepository = presetRepository ?? MemoryPresetRepository(),
        grantRepository = grantRepository ?? MemoryGrantRepository(),
        desiredStateRepository =
            desiredStateRepository ?? MemoryDesiredStateRepository(),

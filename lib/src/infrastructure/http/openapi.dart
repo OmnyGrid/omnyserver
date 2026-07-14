@@ -90,11 +90,56 @@ Map<String, dynamic> openApiDocument() => {
         },
       },
     },
+    '/formulas': {
+      'get': {
+        'summary':
+            'The formulas a node can run, and the actions each implements',
+        'responses': {'200': _ok('Array of formula specs')},
+      },
+    },
+    '/presets': {
+      'get': {
+        'summary': 'The presets saved on the Hub',
+        'responses': {'200': _ok('Array of presets')},
+      },
+      'post': {
+        'summary': 'Save a preset on the Hub',
+        'requestBody': _jsonBody({
+          'id': 'string',
+          'name': 'string',
+          'steps': 'array',
+        }),
+        'responses': {'200': _ok('Saved'), '400': _err, '403': _err},
+      },
+    },
+    '/presets/{id}': {
+      'get': {
+        'summary': 'A saved preset',
+        'parameters': [_pathId],
+        'responses': {'200': _ok('Preset'), '404': _err},
+      },
+      'delete': {
+        'summary': 'Delete a saved preset',
+        'parameters': [_pathId],
+        'responses': {'200': _ok('Deleted'), '403': _err, '404': _err},
+      },
+    },
     '/presets/apply': {
       'post': {
-        'summary': 'Apply a preset to a node',
-        'requestBody': _jsonBody({'nodeId': 'string', 'preset': 'object'}),
-        'responses': {'200': _ok('Apply result'), '404': _err, '502': _err},
+        'summary':
+            'Apply a preset to a node — one sent inline, or a saved one by '
+            'presetId',
+        'requestBody': _jsonBody({
+          'nodeId': 'string',
+          'preset': 'object',
+          'presetId': 'string',
+        }),
+        'responses': {
+          '200': _ok('Apply result'),
+          '400': _err,
+          '404': _err,
+          '502': _err,
+        },
       },
     },
     '/nodes/{id}/metrics': {

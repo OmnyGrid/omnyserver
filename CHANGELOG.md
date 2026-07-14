@@ -1,3 +1,41 @@
+## 0.11.0
+
+A catalogue of what a node can be asked to do, and a library of what has been
+saved to ask.
+
+```sh
+omnyserver formula list                        # what nodes can actually do
+omnyserver preset save docker-host.json        # once, on the Hub
+omnyserver preset apply docker-host --label env=prod   # by id, not by file
+```
+
+### Added
+
+- **`GET /formulas` and `omnyserver formula list`.** A client had no way to
+  *discover* what a node implements — it had to be told, out of band, what to
+  type into a free-text box, which is a client that gets it wrong. The catalogue
+  lists each formula and the actions it supports.
+
+  The specs moved into the domain (`standard_formulas.dart`) and the `Formula`
+  implementations now read them from there, so there is one definition rather
+  than two: a catalogue served by the Hub cannot promise a formula the nodes have
+  never heard of. The Hub does not — and should not — import the code that runs
+  them to find out what they are.
+
+- **A preset library: `GET/POST /presets`, `GET/DELETE /presets/{id}`, and
+  `preset save | list | show | delete`.** `PresetRepository` existed, with all
+  three of its implementations, wired to nothing. Every operator shipped their own
+  copy of a preset file, and the copies quietly diverged.
+
+  `preset apply` now takes a saved preset's **id** as well as a file, and
+  `POST /presets/apply` accepts `presetId`. The saved form is the one worth using:
+  a file is whatever copy *that* caller happens to have; an id is the one
+  everybody agrees on.
+
+- `--data-dir` persists saved presets and site-registered formulas too.
+
+---
+
 ## 0.10.0
 
 Credentials the Hub hands out — and takes back — without a restart. And a Hub

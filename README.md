@@ -247,6 +247,28 @@ A grant's roles are checked against the Hub's `Authorizer` before it may touch
 the API at all, and the fail-closed default reserves it for `admin` — so
 `node-account`'s token connects nodes and nothing more, even if it leaks.
 
+### Formulas and presets
+
+Ask the Hub what nodes can actually do, rather than guessing into a free-text
+box:
+
+```sh
+omnyserver formula list
+# FORMULA     NAME              ACTIONS
+# dart        Dart SDK          install, update, uninstall, verify
+# docker      Docker            install, update, start, stop, restart, uninstall, verify
+```
+
+Save a preset on the Hub once, and apply it by id everywhere:
+
+```sh
+omnyserver preset save docker-host.json
+omnyserver preset apply docker-host --label env=prod
+```
+
+A preset file is whatever copy *you* happen to have; a saved preset is the one
+everybody agrees on. `preset apply` still accepts a file, for a one-off.
+
 ### Addressing the fleet
 
 Label a node when it starts, then select on the label:

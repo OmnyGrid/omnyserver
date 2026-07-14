@@ -32,6 +32,7 @@ import '../../domain/events/omny_event.dart';
 import '../../domain/formula/formula_action.dart';
 import '../../domain/state/desired_state.dart';
 import '../../domain/value_objects/node_id.dart';
+import '../../domain/value_objects/preset_id.dart';
 import '../../domain/value_objects/principal_id.dart';
 import '../../shared/errors/omnyserver_exception.dart';
 import 'api_errors.dart';
@@ -221,7 +222,14 @@ class HttpApiServer {
         ..post('/api/v1/nodes/<id>/shutdown', (r, p) => _shutdown(r, p))
         ..post('/api/v1/nodes/<id>/update', (r, p) => _update(r, p))
         ..post('/api/v1/nodes/<id>/formula', (r, p) => _formula(r, p))
+        ..get('/api/v1/formulas', (r, p) => _listFormulas())
+        // Before `/presets/<id>`: the router takes the first match, and `apply`
+        // is not a preset id.
         ..post('/api/v1/presets/apply', (r, p) => _applyPreset(r))
+        ..get('/api/v1/presets', (r, p) => _listPresets())
+        ..post('/api/v1/presets', (r, p) => _savePreset(r))
+        ..get('/api/v1/presets/<id>', (r, p) => _getPreset(p))
+        ..delete('/api/v1/presets/<id>', (r, p) => _deletePreset(r, p))
         ..get('/api/v1/grants', (r, p) => _listGrants(r))
         ..post('/api/v1/grants', (r, p) => _issueGrant(r))
         ..delete('/api/v1/grants/<id>', (r, p) => _revokeGrant(r, p))
@@ -387,21 +395,86 @@ class HttpApiServer {
     return jsonOk(reply.toJson());
   }
 
+  /// Applies a preset: either one sent inline, or one saved on the Hub by id.
+  ///
+  /// The saved form is the one worth using. A preset shipped inline is whatever
+  /// copy of the file that caller happens to have; a preset applied by id is the
+  /// one everybody agrees on.
   Future<HubResponse> _applyPreset(HubRequest request) async {
     _authorize(request, 'preset.apply');
     final body = await _readJson(request);
     final nodeId = body['nodeId'];
-    final presetJson = body['preset'];
-    if (nodeId is! String || presetJson is! Map) {
-      return ApiErrors.badRequest('nodeId and preset are required');
+    if (nodeId is! String) {
+      return ApiErrors.badRequest('nodeId is required');
     }
-    final preset = Preset.fromJson(presetJson.cast<String, dynamic>());
+
+    final Preset preset;
+    if (body['preset'] case final Map inline) {
+      preset = Preset.fromJson(inline.cast<String, dynamic>());
+    } else if (body['presetId'] case final String id) {
+      final saved = await hub.presetFor(PresetId(id));
+      if (saved == null) throw NotFoundException('unknown preset $id');
+      preset = saved;
+    } else {
+      return ApiErrors.badRequest(
+        'send a preset inline, or name a saved one with presetId',
+      );
+    }
+
     final result = await hub.applyPreset(
       _parseNodeId(nodeId),
       preset,
       principal: _principal(request),
     );
     return jsonOk(result.toJson());
+  }
+
+  /// What a node can be asked to do.
+  ///
+  /// A client that has to be *told* what to type into a free-text box is a client
+  /// that gets it wrong; this is what it reads instead.
+  Future<HubResponse> _listFormulas() async {
+    final formulas = await hub.listFormulas();
+    return jsonOk([for (final spec in formulas) spec.toJson()]);
+  }
+
+  /// The presets saved on the Hub.
+  Future<HubResponse> _listPresets() async {
+    final presets = await hub.listPresets();
+    return jsonOk([for (final preset in presets) preset.toJson()]);
+  }
+
+  Future<HubResponse> _getPreset(Map<String, String> params) async {
+    final id = PresetId(params['id']!);
+    final preset = await hub.presetFor(id);
+    if (preset == null) throw NotFoundException('unknown preset ${id.value}');
+    return jsonOk(preset.toJson());
+  }
+
+  /// Saves a preset on the Hub, so every operator applies the same one rather
+  /// than each shipping a copy of a JSON file that has quietly diverged.
+  Future<HubResponse> _savePreset(HubRequest request) async {
+    _authorize(request, 'preset.save');
+    final body = await _readJson(request);
+    final preset = Preset.fromJson(body);
+    await hub.savePreset(preset, principal: _principal(request));
+    return jsonOk({
+      'status': 'saved',
+      'id': preset.id.value,
+      'steps': preset.steps.length,
+    });
+  }
+
+  Future<HubResponse> _deletePreset(
+    HubRequest request,
+    Map<String, String> params,
+  ) async {
+    _authorize(request, 'preset.save');
+    final id = PresetId(params['id']!);
+    if (!await hub.deletePreset(id)) {
+      throw NotFoundException('unknown preset ${id.value}');
+    }
+    return jsonOk({'status': 'deleted', 'id': id.value});
   }
 
   /// Every credential the Hub has issued.
