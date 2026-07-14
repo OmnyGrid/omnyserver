@@ -28,7 +28,6 @@ import '../../application/hub/omny_server_hub.dart';
 import '../../domain/auth/credential.dart';
 import '../../domain/auth/principal.dart' as domain;
 import '../../domain/entities/preset.dart';
-import '../../domain/events/omny_event.dart';
 import '../../domain/formula/formula_action.dart';
 import '../../domain/state/desired_state.dart';
 import '../../domain/state/drift.dart';
@@ -81,13 +80,14 @@ class HttpApiServer {
 
   OmnyHub? _server;
 
-  /// The live event streams currently attached to clients.
+  /// Every live SSE stream currently attached to a client (events, and node
+  /// logs).
   ///
   /// Tracked so [close] can hang them up. An SSE response never ends on its own,
   /// so without this a shutdown would block until each idle client's next
-  /// keep-alive ping failed to write — a Hub taking 15 seconds to stop because
-  /// somebody left a dashboard open.
-  final Set<StreamController<OmnyEvent>> _eventStreams = {};
+  /// keep-alive ping failed to write — a Hub taking fifteen seconds to stop
+  /// because somebody left a dashboard open.
+  final Set<StreamController<Object?>> _openStreams = {};
 
   /// Creates an API server.
   HttpApiServer({
@@ -169,12 +169,12 @@ class HttpApiServer {
     _server = server;
   }
 
-  /// Stops the server, hanging up any live event streams first.
+  /// Stops the server, hanging up any live streams first.
   Future<void> close() async {
-    for (final stream in [..._eventStreams]) {
+    for (final stream in [..._openStreams]) {
       await stream.close();
     }
-    _eventStreams.clear();
+    _openStreams.clear();
     await _server?.stop();
     _server = null;
   }
@@ -211,6 +211,9 @@ class HttpApiServer {
           (r, p) async => _getCapabilities(p),
         )
         ..get('/api/v1/nodes/<id>/metrics', (r, p) => _getMetrics(r, p))
+        // Before `/logs`: the router takes the first match.
+        ..get('/api/v1/nodes/<id>/logs/stream', (r, p) async => _logStream(p))
+        ..get('/api/v1/nodes/<id>/logs', (r, p) => _getLogs(r, p))
         ..get('/api/v1/nodes/<id>/desired-state', (r, p) => _getDesired(p))
         ..put('/api/v1/nodes/<id>/desired-state', (r, p) => _putDesired(r, p))
         ..delete(
@@ -630,6 +633,36 @@ class HttpApiServer {
     return jsonOk(result.toJson());
   }
 
+  /// The tail of what a node has reported.
+  ///
+  /// A bounded, in-memory tail — see `LogBuffer`. A node that has reported
+  /// nothing has an empty tail, which is not an error: most nodes are quiet, and
+  /// a 404 here would say something untrue about the node.
+  Future<HubResponse> _getLogs(
+    HubRequest request,
+    Map<String, String> params,
+  ) async {
+    final id = _nodeId(params);
+    if (hub.getNode(id) == null) {
+      throw NotFoundException('unknown node ${id.value}');
+    }
+    final tail = int.tryParse(request.uri.queryParameters['tail'] ?? '') ?? 200;
+    if (tail <= 0) return ApiErrors.badRequest('tail must be positive');
+
+    final lines = hub.logs.recentFor(id.value, tail: tail);
+    return jsonOk([for (final line in lines) line.toJson()]);
+  }
+
+  /// A node's log, as it happens.
+  HubResponse _logStream(Map<String, String> params) {
+    final id = _nodeId(params);
+    return _sse(
+      // One node's lines out of the fleet's: a tail is about *this* machine.
+      hub.logs.stream.where((line) => line.nodeId == id.value),
+      (line) => SseEvent.json(line.toJson(), event: 'log'),
+    );
+  }
+
   /// A node's resource history, for charting.
   ///
   /// `?since=` takes an ISO-8601 instant or a duration shorthand (`1h`, `30m`,
@@ -689,36 +722,40 @@ class HttpApiServer {
   /// Each event carries its own type as the SSE `event:` name, so a browser can
   /// `addEventListener('node.connected', …)` rather than switching on a payload
   /// field.
-  HubResponse _eventStream() {
-    final events = _trackedEvents();
-    return sseResponse(
-      events.stream.map(
-        (event) => SseEvent.json(event.toJson(), event: event.type),
-      ),
-      keepAlive: eventKeepAlive,
-      // The client went away: stop feeding this one.
-      onCancel: () => _eventStreams.remove(events),
-    );
-  }
+  HubResponse _eventStream() => _sse(
+    hub.config.eventBus.events,
+    (event) => SseEvent.json(event.toJson(), event: event.type),
+  );
 
-  /// The Hub's event bus, per client, behind a controller [close] can hang up.
-  StreamController<OmnyEvent> _trackedEvents() {
-    late final StreamController<OmnyEvent> controller;
-    StreamSubscription<OmnyEvent>? subscription;
+  /// An SSE response over [source], tracked so [close] can hang it up.
+  ///
+  /// The subscription is per client, and cancelling it — which is what happens
+  /// when the browser goes away — releases it. Without the tracking, a shutdown
+  /// would block on a response that never ends.
+  HubResponse _sse<T>(Stream<T> source, SseEvent Function(T value) encode) {
+    late final StreamController<Object?> controller;
+    StreamSubscription<T>? subscription;
 
-    controller = StreamController<OmnyEvent>(
+    controller = StreamController<Object?>(
       onListen: () {
-        subscription = hub.config.eventBus.events.listen((event) {
-          if (!controller.isClosed) controller.add(event);
+        subscription = source.listen((value) {
+          if (!controller.isClosed) controller.add(value);
         }, onError: controller.addError);
       },
       onCancel: () async {
-        _eventStreams.remove(controller);
+        _openStreams.remove(controller);
         await subscription?.cancel();
       },
     );
-    _eventStreams.add(controller);
-    return controller;
+    _openStreams.add(controller);
+
+    return sseResponse(
+      controller.stream.map((value) => encode(value as T)),
+      // Long enough not to be chatter, short enough that a proxy's idle timeout
+      // does not close the connection — and it is what eventually surfaces a
+      // client that vanished, a failed write being the only way we find out.
+      keepAlive: eventKeepAlive,
+    );
   }
 
   Future<HubResponse> _audit() async {

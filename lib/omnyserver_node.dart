@@ -11,6 +11,7 @@ export 'omnyserver.dart';
 // Agent runtime.
 export 'src/application/node/agent_state.dart';
 export 'src/application/node/formula_registry.dart';
+export 'src/application/node/log_shipper.dart';
 export 'src/application/node/node_agent.dart';
 export 'src/application/node/node_agent_config.dart';
 export 'src/application/node/node_formula_service.dart';

@@ -263,6 +263,25 @@ class OmnyServerService {
         .toList();
   });
 
+  /// The tail of what a node has reported — oldest first.
+  Future<List<LogLine>> logs(String id, {int tail = 200}) => _guard(
+    () async => ((await client.get('/nodes/$id/logs?tail=$tail')) as List)
+        .map((l) => LogLine.fromJson((l as Map).cast<String, dynamic>()))
+        .toList(),
+  );
+
+  /// A node's log, as it happens.
+  Stream<LogLine> logStream(String id) {
+    final uri = client.baseUrl.replace(path: '/api/v1/nodes/$id/logs/stream');
+    return sseStream(
+      uri,
+      headers: {
+        if (_client?.token != null) 'authorization': 'Bearer ${_client!.token}',
+        if (_client?.principal != null) 'x-omny-principal': _client!.principal!,
+      },
+    ).map((data) => LogLine.fromJson(jsonDecode(data) as Map<String, dynamic>));
+  }
+
   // --- Desired state -------------------------------------------------------
 
   /// What a node is declared to be, or `null` if nothing was ever declared.

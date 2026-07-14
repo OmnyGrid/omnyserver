@@ -8,6 +8,7 @@ import '../../domain/entities/metric_point.dart';
 import '../../domain/entities/node_descriptor.dart';
 import '../../infrastructure/auth/grant_authenticator.dart';
 import '../../domain/entities/grant.dart';
+import '../../domain/entities/log_line.dart';
 import '../../domain/formula/standard_formulas.dart';
 import '../../domain/entities/formula_spec.dart';
 import '../../domain/entities/node_status.dart';
@@ -28,6 +29,7 @@ import '../../shared/errors/omnyserver_exception.dart';
 import '../../shared/utils/clock.dart';
 import '../../shared/utils/id_generator.dart';
 import 'audit_log.dart';
+import 'log_buffer.dart';
 import 'hub_config.dart';
 
 /// The key OmnyServer's last status snapshot is cached under, in the omnyhub
@@ -48,6 +50,14 @@ const String _statusState = 'status';
 class OmnyServerHub {
   /// The hub configuration.
   final HubConfig config;
+
+  /// The tail of what nodes have reported.
+  ///
+  /// Bounded and in memory — see [LogBuffer]. Nodes have been pushing log batches
+  /// from the start; until now the Hub decoded them and threw them away.
+  late final LogBuffer logs = LogBuffer(
+    capacityPerNode: config.logCapacityPerNode,
+  );
 
   /// The audit log.
   late final AuditLog audit = AuditLog(
@@ -203,6 +213,7 @@ class OmnyServerHub {
 
   /// Stops the Hub and releases resources.
   Future<void> close() async {
+    await logs.close();
     await _server?.stop();
     _server = null;
     await config.eventBus.close();
@@ -513,9 +524,20 @@ class OmnyServerHub {
         from.state[_statusState] = report.status;
         unawaited(_recordMetric(NodeId(from.id.value), report.status));
       case Operations.logs:
-        // Accepted and dropped: OmnyServer has no log sink yet. Decoding it here
-        // still validates the frame, so a malformed batch is caught at the edge.
-        LogBatch.fromJson(payload);
+        final batch = LogBatch.fromJson(payload);
+        final now = config.clock.now().toUtc();
+        logs.record([
+          for (final line in batch.lines)
+            LogLine(
+              nodeId: from.id.value,
+              source: batch.source,
+              message: line,
+              // The Hub's clock, not the node's: a fleet's clocks disagree, and a
+              // tail interleaving several nodes is unreadable if each is telling
+              // a different time.
+              at: now,
+            ),
+        ]);
       default:
         _log('node ${from.id} sent an unknown notify: $action');
     }

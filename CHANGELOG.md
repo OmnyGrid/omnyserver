@@ -1,3 +1,42 @@
+## 0.12.0
+
+A node's log, readable without logging into the node.
+
+```sh
+omnyserver node logs worker-01          # the tail the Hub keeps
+omnyserver node logs worker-01 -f       # keep printing as it happens
+```
+
+### Added
+
+- **`GET /nodes/{id}/logs`, `/logs/stream` (SSE), and `omnyserver node logs [-f]`.**
+  Nodes have been able to push log batches since the first commit, and the Hub
+  decoded each one and **threw it away** — the code said so: *"Accepted and
+  dropped: OmnyServer has no log sink yet."* So a node's log stayed on the node,
+  where the only way to read it is to log into the machine, which is the thing a
+  fleet tool exists to avoid.
+
+  What the Hub keeps is a bounded, in-memory **tail** — the last 500 lines per
+  node (`HubConfig.logCapacityPerNode`). Deliberately not persisted: logs are the
+  highest-volume thing a fleet produces, and a Hub that wrote every line of every
+  node to disk would quietly become a log server nobody asked for, filling the
+  disk the audit trail and metric history actually need. This is for looking at a
+  machine that is misbehaving *now*. It is not the audit trail, and it is not a
+  substitute for shipping logs somewhere that keeps them.
+
+- **`node start --ship-logs`** (on by default), and `LogShipper`. The other half
+  of the same gap: `NodeAgent.sendLogs` existed and *nothing ever called it*. The
+  agent's own log now goes to its terminal and to the Hub. Batched rather than
+  sent line by line, because a control-frame round trip costs more than the line
+  it carries; and best-effort rather than queued, because an agent that queues
+  forever is an agent that eventually eats the machine.
+
+- The dashboard grows a live log pane, which follows the bottom unless you have
+  scrolled up — being yanked back to the tail while reading something is how a log
+  pane becomes useless.
+
+---
+
 ## 0.11.0
 
 A catalogue of what a node can be asked to do, and a library of what has been

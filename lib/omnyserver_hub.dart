@@ -11,6 +11,7 @@ export 'omnyserver.dart';
 export 'src/application/hub/audit_log.dart';
 export 'src/application/hub/event_aggregator.dart';
 export 'src/application/hub/hub_config.dart';
+export 'src/application/hub/log_buffer.dart';
 export 'src/application/hub/hub_metrics.dart';
 export 'src/application/hub/omny_server_hub.dart';
 

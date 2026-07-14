@@ -9,6 +9,7 @@ import '../../app/app_context.dart';
 import '../../state/nodes_controller.dart';
 import '../format.dart';
 import '../sparkline.dart';
+import 'node_logs.dart';
 import 'node_operations.dart';
 
 /// One node: what it is, what it is doing, and what you can do to it.
@@ -34,6 +35,9 @@ class NodeDetailScreen implements Screen {
   StreamSubscription<void>? _sub;
   Timer? _historyTimer;
   bool _disposed = false;
+
+  /// The node's live log tail.
+  late final NodeLogs _logs = NodeLogs(ctx, nodeId);
 
   /// Builds the screen.
   NodeDetailScreen(this.ctx, this.nodeId) {
@@ -87,6 +91,7 @@ class NodeDetailScreen implements Screen {
         // Declared state, drift, and what can be run here — everything the CLI
         // grew that the dashboard could not reach.
         NodeOperations(ctx, nodeId).element,
+        _logs.element,
       ],
     );
 
@@ -394,6 +399,7 @@ class NodeDetailScreen implements Screen {
   @override
   void dispose() {
     _disposed = true;
+    _logs.dispose();
     _historyTimer?.cancel();
     _status.dispose();
     unawaited(_sub?.cancel());

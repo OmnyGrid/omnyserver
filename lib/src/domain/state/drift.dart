@@ -45,7 +45,10 @@ class Drift {
   static Drift fromJson(Map<String, dynamic> json) => Drift(
     nodeId: Json.requireString(json, 'nodeId'),
     converged: Json.optBool(json, 'converged'),
-    actions: Json.optObjectList(json, 'actions').map(PresetStep.fromJson).toList(),
+    actions: Json.optObjectList(
+      json,
+      'actions',
+    ).map(PresetStep.fromJson).toList(),
     notes: Json.optStringList(json, 'notes'),
   );
 }

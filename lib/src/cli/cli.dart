@@ -206,6 +206,58 @@ Future<void> _fanOut(
   if (failed > 0) exitCode = 1;
 }
 
+/// Reads a Server-Sent Events response, calling [onEvent] with each payload.
+///
+/// The response never ends, so this drives the socket directly rather than going
+/// through [HubApiClient], which buffers a body to completion — it would wait
+/// forever for a stream designed never to finish.
+Future<void> _streamSse(
+  ArgResults args,
+  String path, {
+  required void Function(Map<dynamic, dynamic> payload) onEvent,
+  String? banner,
+}) async {
+  final base = Uri.parse(args['api'] as String);
+  final ca = args['ca'] as String?;
+  final http = HttpClient(
+    context: ca == null
+        ? null
+        : (SecurityContext(withTrustedRoots: true)..setTrustedCertificates(ca)),
+  );
+  if (args['insecure'] as bool) {
+    http.badCertificateCallback = (_, _, _) => true;
+  }
+
+  try {
+    final request = await http.getUrl(base.replace(path: path));
+    final token = args['token'] as String?;
+    final principal = args['principal'] as String?;
+    if (token != null) request.headers.set('authorization', 'Bearer $token');
+    if (principal != null) {
+      request.headers.set('x-omny-principal', principal);
+    }
+    final response = await request.close();
+    if (response.statusCode >= 400) {
+      final body = await response.transform(utf8.decoder).join();
+      throw CliError(
+        'stream failed (HTTP ${response.statusCode}): ${body.trim()}',
+      );
+    }
+
+    if (banner != null) stdout.writeln(banner);
+    // SSE frames a `data:` line per event and dispatches on a blank line;
+    // comment lines (`: ping`) are keep-alives and carry nothing.
+    await for (final line
+        in response.transform(utf8.decoder).transform(const LineSplitter())) {
+      if (!line.startsWith('data: ')) continue;
+      final payload = jsonDecode(line.substring(6));
+      if (payload is Map) onEvent(payload);
+    }
+  } finally {
+    http.close(force: true);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // hub
 // ---------------------------------------------------------------------------
@@ -491,6 +543,7 @@ class NodeCommand extends Command<void> {
     addSubcommand(NodeShowCommand());
     addSubcommand(NodeStatusCommand());
     addSubcommand(NodeMetricsCommand());
+    addSubcommand(NodeLogsCommand());
     addSubcommand(NodeCapabilitiesCommand());
     addSubcommand(NodeRestartCommand());
     addSubcommand(NodeShutdownCommand());
@@ -528,6 +581,13 @@ class NodeStartCommand extends Command<void> {
         'shell-path',
         defaultsTo: '/shell',
         help: "Path of the Hub's OmnyShell broker (with --with-shell).",
+      )
+      ..addFlag(
+        'ship-logs',
+        defaultsTo: true,
+        help:
+            "Send the agent's own log lines to the Hub, so `node logs` can read "
+            'them without logging into the machine.',
       )
       ..addMultiOption(
         'label',
@@ -571,6 +631,16 @@ class NodeStartCommand extends Command<void> {
     const monitor = SystemMonitor();
     final scanner = CapabilityScanner.standard();
 
+    // The agent's log goes to this terminal *and*, unless asked not to, to the
+    // Hub — so an operator can read what a node is doing without logging into
+    // it. The shipper is late-bound because it needs the agent, and the agent's
+    // config needs the logger.
+    LogShipper? shipper;
+    void log(String message) {
+      stdout.writeln(message);
+      shipper?.add(message);
+    }
+
     final agent = NodeAgent(
       NodeAgentConfig(
         hubUri: Uri.parse(hub),
@@ -589,11 +659,14 @@ class NodeStartCommand extends Command<void> {
         formulaHandler: formulaService.runFormula,
         presetHandler: formulaService.applyPreset,
         nodeControlHandler: updateService.handle,
-        logger: stdout.writeln,
+        logger: log,
       ),
     );
+    if (args['ship-logs'] as bool) {
+      shipper = LogShipper(send: agent.sendLogs);
+    }
     await agent.start();
-    stdout.writeln('Node "$id" connected to $hub.');
+    log('Node "$id" connected to $hub.');
 
     // The same machine, also serving shell sessions — one process, one service
     // unit, one supervision target. It is an independent runtime speaking
@@ -614,6 +687,7 @@ class NodeStartCommand extends Command<void> {
 
     stdout.writeln('Press Ctrl-C to stop.');
     await _awaitSignal();
+    shipper?.close();
     await shellNode?.shutdown();
     await agent.stop();
   }
@@ -822,6 +896,72 @@ class NodeMetricsCommand extends Command<void> {
     final t = (total as num?)?.toDouble() ?? 0;
     if (t <= 0) return '—';
     return '${(u / t * 100).toStringAsFixed(0)}%';
+  }
+}
+
+/// `omnyserver node logs <id>`
+class NodeLogsCommand extends Command<void> {
+  /// Creates the node-logs command.
+  NodeLogsCommand() {
+    _addApiOptions(argParser);
+    argParser
+      ..addOption('tail', defaultsTo: '200', help: 'How many lines to show.')
+      ..addFlag(
+        'follow',
+        abbr: 'f',
+        negatable: false,
+        help: 'Keep printing lines as the node reports them.',
+      );
+  }
+
+  @override
+  String get name => 'logs';
+
+  @override
+  String get description =>
+      "Show a node's log — the tail the Hub keeps, without logging into the "
+      'machine.';
+
+  @override
+  Future<void> run() async {
+    final args = argResults!;
+    final rest = args.rest;
+    if (rest.isEmpty) throw CliError('usage: node logs <id> [-f]');
+    final node = rest.first;
+
+    final client = _apiClientFrom(args);
+    try {
+      final tail = Uri.encodeQueryComponent(args['tail'] as String);
+      final lines = (await client.get('/nodes/$node/logs?tail=$tail') as List)
+          .cast<Map>();
+      if (lines.isEmpty && !(args['follow'] as bool)) {
+        stdout.writeln(
+          'no logs from $node yet '
+          '(the node must run with --ship-logs, which is the default)',
+        );
+        return;
+      }
+      for (final line in lines) {
+        stdout.writeln(_format(line));
+      }
+    } finally {
+      client.close();
+    }
+
+    if (args['follow'] as bool) {
+      await _streamSse(
+        args,
+        '/api/v1/nodes/$node/logs/stream',
+        onEvent: (payload) => stdout.writeln(_format(payload)),
+      );
+    }
+  }
+
+  static String _format(Map<dynamic, dynamic> line) {
+    final at = DateTime.parse(
+      line['at'] as String,
+    ).toLocal().toString().split('.');
+    return '${at.first}  ${line['source']}  ${line['message']}';
   }
 }
 
@@ -1730,56 +1870,13 @@ class EventsCommand extends Command<void> {
     }
   }
 
-  /// `tail -f` for the fleet, over Server-Sent Events.
-  ///
-  /// The response never ends, so this reads the socket directly rather than
-  /// going through [HubApiClient], which buffers a body to completion.
-  Future<void> _follow(ArgResults args) async {
-    final base = Uri.parse(args['api'] as String);
-    final ca = args['ca'] as String?;
-    final http = HttpClient(
-      context: ca == null
-          ? null
-          : (SecurityContext(withTrustedRoots: true)
-              ..setTrustedCertificates(ca)),
-    );
-    if (args['insecure'] as bool) {
-      http.badCertificateCallback = (_, _, _) => true;
-    }
-
-    try {
-      final request = await http.getUrl(
-        base.replace(path: '/api/v1/events/stream'),
-      );
-      final token = args['token'] as String?;
-      final principal = args['principal'] as String?;
-      if (token != null) request.headers.set('authorization', 'Bearer $token');
-      if (principal != null) {
-        request.headers.set('x-omny-principal', principal);
-      }
-      final response = await request.close();
-      if (response.statusCode >= 400) {
-        final body = await response.transform(utf8.decoder).join();
-        throw CliError(
-          'stream failed (HTTP ${response.statusCode}): ${body.trim()}',
-        );
-      }
-
-      stdout.writeln('streaming events — Ctrl-C to stop');
-      // SSE frames a `data:` line per event and dispatches on a blank line;
-      // comment lines (`: ping`) are keep-alives and carry nothing.
-      await for (final line
-          in response.transform(utf8.decoder).transform(const LineSplitter())) {
-        if (!line.startsWith('data: ')) continue;
-        final payload = jsonDecode(line.substring(6));
-        if (payload is Map) {
-          stdout.writeln(_format(payload));
-        }
-      }
-    } finally {
-      http.close(force: true);
-    }
-  }
+  /// `tail -f` for the fleet.
+  Future<void> _follow(ArgResults args) => _streamSse(
+    args,
+    '/api/v1/events/stream',
+    banner: 'streaming events — Ctrl-C to stop',
+    onEvent: (payload) => stdout.writeln(_format(payload)),
+  );
 
   static String _format(Map<dynamic, dynamic> event) {
     final at = event['at'];

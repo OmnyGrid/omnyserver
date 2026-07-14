@@ -63,3 +63,24 @@
   background: var(--bg-sunken);
   padding: 4px 0;
 }
+
+/* The log tail. A fixed height that scrolls, rather than a pane that grows the
+   page: a log is something you look *into*, not something the rest of the screen
+   should be pushed off the bottom by. */
+.log-lines {
+  max-height: 320px;
+  overflow-y: auto;
+  background: var(--bg-sunken);
+  border-radius: var(--radius-sm);
+  padding: 8px;
+}
+.log-line {
+  gap: 10px;
+  align-items: baseline;
+  padding: 1px 0;
+}
+.log-line .mono {
+  font-size: 0.8rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+}

@@ -342,6 +342,17 @@ non-zero when anything has drifted, so it works as a check in a pipeline.
 So a read-only dashboard link is a `--grant bob:view-token:viewer`, and a leaked
 node credential still cannot operate the fleet.
 
+Read a node's log without logging into it:
+
+```sh
+omnyserver node logs worker-01 -f
+```
+
+The Hub keeps a bounded tail (the last 500 lines per node, in memory) — for
+looking at a machine that is misbehaving now. It is not the audit trail, and not
+a substitute for shipping logs somewhere that keeps them. Nodes ship their log by
+default (`node start --no-ship-logs` opts out).
+
 Watch the fleet, and read a node's history:
 
 ```sh

@@ -59,6 +59,7 @@ export 'src/domain/entities/audit_entry.dart';
 export 'src/domain/entities/formula_spec.dart';
 export 'src/domain/entities/grant.dart';
 export 'src/domain/entities/heartbeat.dart';
+export 'src/domain/entities/log_line.dart';
 export 'src/domain/entities/metric_point.dart';
 export 'src/domain/entities/node_capabilities.dart';
 export 'src/domain/entities/node_descriptor.dart';

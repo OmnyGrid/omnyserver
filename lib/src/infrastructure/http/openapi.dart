@@ -169,6 +169,30 @@ Map<String, dynamic> openApiDocument() => {
         },
       },
     },
+    '/nodes/{id}/logs': {
+      'get': {
+        'summary':
+            "The tail of what a node has reported (bounded, in memory — not a "
+            'log server)',
+        'parameters': [
+          _pathId,
+          {
+            'name': 'tail',
+            'in': 'query',
+            'description': 'How many lines (default 200)',
+            'schema': {'type': 'integer'},
+          },
+        ],
+        'responses': {'200': _ok('Array of log lines'), '404': _err},
+      },
+    },
+    '/nodes/{id}/logs/stream': {
+      'get': {
+        'summary': "A node's log as it happens (text/event-stream)",
+        'parameters': [_pathId],
+        'responses': {'200': _ok('A Server-Sent Events stream')},
+      },
+    },
     '/nodes/{id}/desired-state': {
       'get': {
         'summary': 'What a node is declared to be',

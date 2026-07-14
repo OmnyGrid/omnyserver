@@ -127,6 +127,12 @@ class HubConfig {
   /// Plans how to move a node from what it is to what it should be.
   final StateReconciler reconciler;
 
+  /// How many log lines the Hub retains per node.
+  ///
+  /// A tail for looking at a misbehaving node, not a log server: see `LogBuffer`
+  /// for why this is bounded and in memory.
+  final int logCapacityPerNode;
+
   /// Optional log sink.
   final void Function(String message)? logger;
 
@@ -159,6 +165,7 @@ class HubConfig {
     GrantRepository? grantRepository,
     DesiredStateRepository? desiredStateRepository,
     StateReconciler? reconciler,
+    this.logCapacityPerNode = 500,
     this.logger,
   }) : assert(
          (securityContext == null) != (tlsDirectory == null),
