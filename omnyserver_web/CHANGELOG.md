@@ -1,3 +1,22 @@
+## 0.3.0
+
+- **Terminal `:` commands, at parity with the OmnyShell dashboard.** A node shell
+  now understands the same colon commands you type at the prompt: the built-ins
+  `:info :whoami :os :arch :host :node :capabilities :session :latency :ping
+  :tunnel :tree :detach :clear :exit :help`, plus **`:ai`** (an agent in the
+  terminal, its provider calls proxied through the Hub) and **`:ide`** (a terminal
+  IDE on the node). None of it is reimplemented — the command registry is
+  OmnyShell's, wired into the terminal this dashboard already embeds.
+
+- **Settings dialog.** A gear in the header opens Settings: the theme, and the AI
+  agent configuration (provider, model, your key or the Hub's default, agent mode,
+  reply language) that `:ai` and `:ide` use. The AI controls are the shared
+  `aiSettingsSection` from `omnyshell_web`, so this dashboard and OmnyShell's
+  configure the agent identically.
+
+  Requires `omnyshell_web ^1.16.0` (which makes those pieces public API) and adds
+  `command_shield` (the tool-safety gate `:ide` uses).
+
 ## 0.2.3
 
 - Rebuilt against **OmnyServer 0.15.1** — the login footer now reads

@@ -1,7 +1,13 @@
 import 'dart:js_interop';
 
 import 'package:omnyshell_web/client.dart'
-    show LocalStorageStore, Router, SettingsStore, ThemeController;
+    show
+        AiSettingsController,
+        LocalStorageStore,
+        OmnyShellService,
+        Router,
+        SettingsStore,
+        ThemeController;
 import 'package:omnyshell_web/ui_kit.dart' show Toasts;
 import 'package:web/web.dart' as web;
 
@@ -23,6 +29,10 @@ Future<App> bootstrap(web.HTMLElement root) async {
   final kv = LocalStorageStore();
   final settings = SettingsStore(kv, prefix: storagePrefix);
   final service = OmnyServerService();
+  // One OmnyShell client for the whole app: a node shell connects it (the Hub
+  // brokers OmnyShell on the same port), and the AI settings read the Hub's
+  // default provider through it.
+  final shellService = OmnyShellService();
 
   final theme = ThemeController(
     settings,
@@ -49,9 +59,13 @@ Future<App> bootstrap(web.HTMLElement root) async {
 
   final ctx = AppContext(
     service: service,
+    shellService: shellService,
     auth: AuthController(service, settings),
     nodes: NodesController(service, kv, prefix: storagePrefix),
     settings: settings,
+    kv: kv,
+    theme: theme,
+    ai: AiSettingsController(settings, shellService),
     router: Router(Routes.all),
     toasts: Toasts(web.document.getElementById('toasts')!),
   );

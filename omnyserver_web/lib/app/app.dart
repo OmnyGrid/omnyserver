@@ -11,6 +11,7 @@ import '../ui/screens/login_screen.dart';
 import '../ui/screens/node_detail_screen.dart';
 import '../ui/screens/nodes_screen.dart';
 import '../ui/screens/shell_screen.dart';
+import '../ui/settings_dialog.dart';
 import 'app_context.dart';
 
 /// The app shell: a header, and whichever screen the route names.
@@ -54,6 +55,12 @@ class App {
         _nav,
         el('div', classes: 'spacer grow'),
         _identity,
+        button(
+          '⚙',
+          className: 'icon ghost settings-icon',
+          ariaLabel: 'Settings',
+          onClick: () => showOmnyServerSettings(ctx),
+        ),
       ],
     );
 

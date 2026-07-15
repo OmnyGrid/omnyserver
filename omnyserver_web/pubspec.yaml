@@ -3,7 +3,7 @@ description: >-
   Browser dashboard for an OmnyServer Hub — see the fleet, watch live node
   status, run formulas and presets, and open a shell on any node. Installable
   PWA, no custom backend.
-version: 0.2.3
+version: 0.3.0
 repository: https://github.com/OmnyGrid/omnyserver
 publish_to: none
 
@@ -19,7 +19,9 @@ dependencies:
   omnyserver: ^0.15.0
   # The shared web foundation: state primitives, storage, router, UI kit — and
   # the terminal, so a node's shell opens here instead of being rebuilt.
-  omnyshell_web: ^1.15.0
+  omnyshell_web: ^1.16.0
+  # The AI-tool safety gate the terminal :ide command uses, same as omnyshell_web.
+  command_shield: ^1.4.0
   # The OmnyShell client the terminal drives. The Hub hosts a broker on the same
   # port (`hub start --shell`), so one login serves both fleets.
   omnyshell: ^1.56.1
