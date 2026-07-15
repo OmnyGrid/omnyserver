@@ -37,6 +37,12 @@ class ShellHub {
   /// Authorization stays OmnyShell's: its default `RoleBasedAuthorizer` lets the
   /// `admin` role open a session on any node, and other roles only on nodes
   /// whose `allow-roles` label names them.
+  ///
+  /// [aiConfig] enables the Hub's AI proxy: when set, the broker answers a web
+  /// client's `fetchHubAiConfig` and forwards `:ai` / `:ide` provider calls with
+  /// the Hub's key injected — the key never leaves the Hub. Without it, the
+  /// broker reports no AI provider and the browser agent falls back to a
+  /// user-supplied key. Load one with `AiConfigIo.load(...)`.
   factory ShellHub.fromGrants(
     Map<String, TokenGrant> grants, {
     String mount = '/shell',
@@ -44,6 +50,7 @@ class ShellHub {
     Duration heartbeatTimeout = const Duration(seconds: 30),
     void Function(String message)? logger,
     omnyshell.Authorizer? authorizer,
+    omnyshell.AiConfig? aiConfig,
   }) {
     return ShellHub._(
       omnyshell.HubBroker(
@@ -52,6 +59,9 @@ class ShellHub {
         clock: _ShellClock(clock),
         heartbeatTimeout: heartbeatTimeout,
         logger: logger,
+        aiProxy: aiConfig == null
+            ? null
+            : omnyshell.HttpProxyService(defaultConfig: aiConfig),
       ),
       mount,
     );

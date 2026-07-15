@@ -1,3 +1,35 @@
+## 0.16.0
+
+Configure the Hub's AI once, and every browser gets `:ai` — no key in the client.
+
+```sh
+omnyserver ai config --provider anthropic --key -   # prompts, writes ~/.omnyserver/ai.yaml
+omnyserver hub start --shell …                      # proxies :ai for web clients
+```
+
+### Added
+
+- **`omnyserver ai config | show | test`** — configure the AI provider the Hub
+  uses to proxy the dashboard's `:ai` (and `:ide`) requests. `config` writes
+  provider/model/key/mode/language to `<OMNYSERVER_HOME>/ai.yaml` (mode 600;
+  `--key -` reads it from a hidden prompt); `show` prints the resolved config
+  with the key masked; `test` validates the key and models with a live provider
+  request. The key may also come from `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` /
+  `GEMINI_API_KEY`.
+
+- **`hub start --ai-config`** — the AI config the Hub's shell broker proxies from
+  (default `<OMNYSERVER_HOME>/ai.yaml`). In effect with `--shell`: the browser
+  agent asks the Hub for its default provider and forwards provider calls through
+  the Hub, which injects the key — **so the key never leaves the Hub** and no
+  browser holds one. Startup reports whether it is configured. Without it, the
+  dashboard's `:ai` falls back to a user-supplied key.
+
+  The engine is OmnyShell's (`AiConfig` / `AiConfigIo` / `HttpProxyService`,
+  already a dependency); this wires it into OmnyServer's own shell broker, which
+  previously served no AI at all.
+
+---
+
 ## 0.15.1
 
 A node that cannot start should say why, not go dark.
