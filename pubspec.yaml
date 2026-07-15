@@ -19,7 +19,7 @@ dependencies:
   cryptography: ^2.9.0
   dart_service_manager: ^1.3.1
   meta: ^1.19.0
-  omnyhub: ^1.6.0
+  omnyhub: ^1.7.0
   omnyshell: ^1.56.1
   path: ^1.9.1
   sqlite3: ^2.9.4
