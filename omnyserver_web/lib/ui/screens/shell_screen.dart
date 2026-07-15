@@ -1,6 +1,7 @@
 import 'dart:async';
 
-import 'package:omnyshell/omnyshell_client_web.dart' show ShellSessionPort;
+import 'package:omnyshell/omnyshell_client_web.dart'
+    show LocalCommandRegistry, NodeDescriptor, RemoteSession, ShellSessionPort;
 import 'package:omnyshell_web/client.dart'
     show AppError, AppErrorKind, OmnyShellService;
 import 'package:omnyshell_web/terminal.dart';
@@ -8,6 +9,7 @@ import 'package:omnyshell_web/ui_kit.dart';
 import 'package:web/web.dart' as web;
 
 import '../../app/app_context.dart';
+import '../settings_dialog.dart';
 
 /// A live shell on a node, in the browser.
 ///
@@ -43,7 +45,24 @@ class ShellScreen implements Screen {
   TerminalView? _term;
   WebShellHost? _shell;
   TerminalFitter? _fitter;
+  NodeDescriptor? _node;
   bool _disposed = false;
+
+  /// Loads the shell node's descriptor in the background so `:info`, `:tree`,
+  /// `:node` and friends have metadata. Best-effort — they report it as
+  /// unavailable if this fails.
+  Future<void> _loadNode() async {
+    try {
+      for (final n in await _shellService.listNodes()) {
+        if (n.id.value == nodeId) {
+          _node = n;
+          break;
+        }
+      }
+    } on Object {
+      // Local commands needing node metadata will say it is unavailable.
+    }
+  }
 
   /// Builds the screen.
   ShellScreen(
@@ -140,15 +159,46 @@ class ShellScreen implements Screen {
       );
       if (_disposed) return;
 
-      // `commands: null` — a plain remote shell. The `:ai` and `:ide` stacks are
-      // OmnyShell's own, and a fleet dashboard has no business in them.
+      // The same local `:` commands the OmnyShell dashboard offers: the
+      // omnyshell built-ins (:info, :whoami, :os, :tree, :tunnel, :ping,
+      // :latency, :clear, :exit, …) plus :ai (the agent, proxied through the
+      // Hub) and :ide (a terminal IDE on the node). Best-effort — :ai falls back
+      // to a setup stub that points at Settings when no provider is configured.
+      final commands = LocalCommandRegistry.withDefaults();
+      await registerAiCommand(
+        registry: commands,
+        settings: ctx.settings,
+        service: _shellService,
+        openSettings: () => showOmnyServerSettings(ctx),
+      );
+      if (_disposed) return;
+      unawaited(_loadNode());
       final shell = WebShellHost(
         term: term,
         session: session,
         principal: identity.principal,
         nodeId: nodeId,
-        commands: null,
+        commands: commands,
+        client: _shellService.client,
+        nodeInfo: () => _node,
+        principalInfo: _shellService.principal,
+        remoteSession: session is RemoteSession ? session : null,
+        // Per principal+node command history (Up/Down), persisted to
+        // localStorage.
+        history: CommandHistory.load(
+          kv: ctx.kv,
+          key: '${identity.principal}@$nodeId',
+        ),
         onSessionExit: () => ctx.toasts.show('Session ended.'),
+      );
+      // Registered once the host exists — it supplies the resize stream the IDE
+      // driver reflows on.
+      registerIdeCommand(
+        registry: commands,
+        term: term,
+        resizeEvents: shell.resizeEvents,
+        service: _shellService,
+        settings: ctx.settings,
       );
       _shell = shell;
 
