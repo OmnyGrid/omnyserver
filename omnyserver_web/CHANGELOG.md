@@ -1,3 +1,10 @@
+## 0.2.3
+
+- Rebuilt against **OmnyServer 0.15.1** — the login footer now reads
+  `Dashboard v0.2.3 · OmnyServer v0.15.1`. The dependency floor moves to
+  `^0.15.0` (the deploy path-overrides it to the server in this repo, so the
+  dashboard ships beside the API it was built with).
+
 ## 0.2.2
 
 - **The login screen now shows its versions** — the dashboard build and the
