@@ -42,6 +42,7 @@ const Set<String> _hubOnlyOptions = {
   'alert',
   'cors-origin',
   'ephemeral',
+  'ai-config',
 };
 
 /// The `node start` options — used to reject them on `service install hub`.
@@ -213,6 +214,7 @@ List<String> serviceStartArgs(String role, ArgResults args) {
     emitMultiOption(out, 'grant', args['grant'] as List<String>);
     emitMultiOption(out, 'alert', args['alert'] as List<String>);
     emitMultiOption(out, 'cors-origin', args['cors-origin'] as List<String>);
+    emitPathOption(out, 'ai-config', args['ai-config']);
     final root = resolveDataDir(args, systemScope: systemScope);
     if (root == null) {
       emitFlag(out, 'ephemeral', true);

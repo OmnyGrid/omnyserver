@@ -4,10 +4,12 @@ import 'dart:io';
 
 import 'package:args/args.dart';
 import 'package:args/command_runner.dart';
+import 'package:omnyshell/omnyshell_hub.dart' as omnyshell;
 import 'package:omnyshell/omnyshell_node.dart' as omnyshell;
 
 import '../../omnyserver_hub.dart';
 import '../../omnyserver_node.dart';
+import 'ai_command.dart';
 import 'api_client.dart';
 import 'api_transport_io.dart';
 import 'cli_error.dart';
@@ -33,6 +35,7 @@ CommandRunner<void> buildRunner() {
         ..addCommand(HubCommand())
         ..addCommand(NodeCommand())
         ..addCommand(ServiceCommand())
+        ..addCommand(AiCliCommand())
         ..addCommand(NodesCommand())
         ..addCommand(PresetCommand())
         ..addCommand(FormulaCommand())
@@ -383,11 +386,18 @@ class HubStartCommand extends Command<void> {
     // so one Hub serves both fleets and `omnyshell node start --hub …/shell`
     // just works. It authenticates in band, so it takes no connection
     // authenticator; OmnyServer's own handshake stays on the node route.
+    omnyshell.AiConfig? aiConfig;
     if (withShell) {
+      // The AI provider the broker proxies for the web dashboard's :ai — key
+      // injected on the Hub so no browser holds it. Null when unconfigured.
+      aiConfig = omnyshell.AiConfigIo.load(
+        path: omnyServerAiConfigPath(args['ai-config'] as String?),
+      );
       final shell = ShellHub.fromGrants(
         grants,
         mount: shellPath,
         logger: stdout.writeln,
+        aiConfig: aiConfig,
       );
       hub.registerService(shell.service());
     }
@@ -434,6 +444,15 @@ class HubStartCommand extends Command<void> {
           ? 'Hub data:  $dataDir'
           : 'Hub data:  in memory (--ephemeral) — a restart forgets the fleet.',
     );
+    if (withShell) {
+      stdout.writeln(
+        aiConfig == null
+            ? 'Hub AI:    not configured — the dashboard\'s :ai has no default '
+                  '(run: omnyserver ai config).'
+            : 'Hub AI:    ${aiConfig.provider.wireName} — proxying :ai for web '
+                  'clients (the key stays on the Hub).',
+      );
+    }
     // Installing no CORS at all is the correct behaviour for a Hub with no
     // browser client, and indistinguishable — from the browser's side — from a
     // Hub that rejected the origin. Say which it is, or the next person debugs

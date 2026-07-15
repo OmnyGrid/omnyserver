@@ -87,8 +87,17 @@ void addHubStartOptions(
           'dashboard — a browser is always a different origin than the Hub. '
           'Pass "*" to allow any origin: callers still need a token (the Hub '
           'sends no allow-credentials), but any page may then ask.',
-    );
+    )
+    ..addOption('ai-config', help: aiConfigHelp);
 }
+
+/// The help text for `--ai-config`, shared with the `service` parser.
+const String aiConfigHelp =
+    'AI provider config (provider/model/key) the Hub uses to proxy AI requests '
+    'for web clients, so the dashboard\'s :ai works without each browser '
+    'holding a key. Defaults to <OMNYSERVER_HOME>/ai.yaml (written by '
+    '"omnyserver ai config"). In effect only with --shell; the key may also '
+    'come from ANTHROPIC_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY.';
 
 /// The help text for the Hub's `--data-dir`, shared with the `service` parser.
 const String hubDataDirHelp =

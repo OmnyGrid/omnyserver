@@ -36,6 +36,22 @@ shell mount.
 Use `--node-path` to mount the node channel somewhere other than `/node` (it
 must match the agents' `--hub` path).
 
+**AI for the web dashboard.** The dashboard's in-terminal `:ai` (and `:ide`)
+agent runs its provider calls *through the Hub*, so no browser needs an API key.
+Configure the Hub's provider once:
+
+```sh
+omnyserver ai config --provider anthropic --key -   # hidden prompt; writes ~/.omnyserver/ai.yaml (600)
+omnyserver ai show                                  # verify (key masked)
+omnyserver ai test                                  # live provider check
+```
+
+Then run the Hub with `--shell` (the broker that serves it). The key stays on
+the Hub — the browser only learns the provider/model and forwards requests for
+the Hub to sign. It can also come from `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` /
+`GEMINI_API_KEY`. Without a config, `:ai` falls back to a key the operator types
+into the dashboard's own Settings.
+
 ## 3. Start a Node agent (on each managed server)
 
 ```sh
