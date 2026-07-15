@@ -1,7 +1,6 @@
-import 'dart:io';
-
 import '../../domain/capabilities/capability.dart';
 import '../../domain/capabilities/capability_detector.dart';
+import 'probe_runner.dart';
 
 /// Detects a capability by running a probe command (typically
 /// `tool --version`) and, if it exits successfully, extracting a version
@@ -37,16 +36,10 @@ class CommandDetector implements CapabilityDetector {
 
   @override
   Future<Capability?> detect() async {
-    try {
-      final result = await Process.run(executable, args);
-      if (result.exitCode != 0) return null;
-      final output = '${result.stdout}\n${result.stderr}';
-      final match = versionPattern.firstMatch(output);
-      return Capability(kind: kind, name: name, version: match?.group(1));
-    } on ProcessException {
-      return null;
-    } on Object {
-      return null;
-    }
+    final result = await runProbe(executable, args);
+    if (result == null || result.exitCode != 0) return null;
+    final output = '${result.stdout}\n${result.stderr}';
+    final match = versionPattern.firstMatch(output);
+    return Capability(kind: kind, name: name, version: match?.group(1));
   }
 }

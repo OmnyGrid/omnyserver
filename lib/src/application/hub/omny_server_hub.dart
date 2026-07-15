@@ -499,6 +499,12 @@ class OmnyServerHub {
         target: descriptor.id.value,
         detail: 'not permitted to register this node',
       );
+      // Also to the Hub's own log: the audit trail is for later, but an operator
+      // watching a node fail to come up wants to see the refusal here and now.
+      _log(
+        'refused registration: ${principal.id} may not register node '
+        '${descriptor.id} (the node.register action needs the "node" role)',
+      );
       throw omnyhub.ForbiddenException(
         'principal ${principal.id} may not register node ${descriptor.id}',
       );

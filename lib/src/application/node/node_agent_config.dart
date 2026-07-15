@@ -97,6 +97,11 @@ class NodeAgentConfig {
   /// Optional log sink.
   final void Function(String message)? logger;
 
+  /// Whether to surface the runtime's own lifecycle logging (connection
+  /// attempts, handshakes) and not just its warnings/failures. Off by default:
+  /// a healthy node is quiet, and a failing one still reports the failure.
+  final bool verbose;
+
   /// Creates a node-agent configuration.
   NodeAgentConfig({
     required this.hubUri,
@@ -118,6 +123,7 @@ class NodeAgentConfig {
     this.serviceHandler,
     this.nodeControlHandler,
     this.logger,
+    this.verbose = false,
   });
 
   /// The control-channel URL the agent actually dials: [hubUri] with

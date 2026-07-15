@@ -10,6 +10,7 @@ export 'omnyserver.dart';
 
 // Agent runtime.
 export 'src/application/node/agent_state.dart';
+export 'src/application/node/console_node_logger.dart';
 export 'src/application/node/formula_registry.dart';
 export 'src/application/node/log_shipper.dart';
 export 'src/application/node/node_agent.dart';
@@ -39,6 +40,7 @@ export 'src/infrastructure/monitors/system_monitor.dart';
 export 'src/infrastructure/capabilities/capability_scanner.dart';
 export 'src/infrastructure/capabilities/command_detector.dart';
 export 'src/infrastructure/capabilities/gpu_detectors.dart';
+export 'src/infrastructure/capabilities/probe_runner.dart';
 
 // Transport (client connection adapter).
 export 'src/application/node/node_handshake.dart';

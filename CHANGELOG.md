@@ -1,3 +1,51 @@
+## 0.15.1
+
+A node that cannot start should say why, not go dark.
+
+```sh
+omnyserver node start --hub wss://hub:8081 --id web-01 --principal p --token t
+Connecting to wss://hub:8081/node …
+hub rejected the connection (forbidden): principal p may not register node
+  web-01 (the node.register action needs the "node" role)
+```
+
+### Fixed
+
+- **`node start` was silent when a connection failed.** The runtime already
+  reported everything worth knowing — a rejected registration and the Hub's
+  reason (`principal … may not register node …`), a connection refused, a bad
+  certificate — but its logger defaulted to a no-op that OmnyServer never
+  replaced, so a node that authenticated and was then refused registration (a
+  grant with the wrong role) retried forever without a word. It took a live
+  packet trace to find a one-line misconfiguration.
+
+  The node runtime now logs through the CLI. A failure and its cause are printed
+  once (repeats within a short window are collapsed, so a node that keeps
+  retrying a rejection it cannot fix says why once, not once per backoff), and a
+  terminal auth failure exits with `error: <reason>` instead of an unhandled
+  exception and a stack trace. `--verbose` shows the full lifecycle — every
+  attempt, handshake and heartbeat.
+
+- **A wedged capability probe could freeze registration.** Capability detection
+  shells out to `docker`, `nvidia-smi`, `clinfo` and the like, and the scanner
+  waits for every probe before a node can register — with no timeout on any of
+  them. A single stuck command (a hung GPU driver, a wedged Docker daemon) would
+  hang the whole node, silently. Each probe now has a deadline; a timed-out probe
+  is killed and the capability treated as absent.
+
+### Added
+
+- **`node start --verbose` (`-v`)** — surface the connection lifecycle, not just
+  failures.
+
+### Changed
+
+- The Hub logs a refused node registration on its own side too (`refused
+  registration: … needs the "node" role`), so `journalctl` shows it, not only the
+  audit trail.
+
+---
+
 ## 0.15.0
 
 A Hub you have to babysit is not a Hub you can run. And a Hub that answers

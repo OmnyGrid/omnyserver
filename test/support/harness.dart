@@ -74,6 +74,7 @@ class TestCluster {
     AuditRepository? auditRepository,
     MetricRepository? metricRepository,
     List<String> corsOrigins = const [],
+    void Function(String message)? logger,
   }) async {
     final grants =
         tokens ??
@@ -108,6 +109,7 @@ class TestCluster {
         nodeRepository: nodeRepository,
         auditRepository: auditRepository,
         metricRepository: metricRepository,
+        logger: logger,
       ),
     );
     await hub.start();

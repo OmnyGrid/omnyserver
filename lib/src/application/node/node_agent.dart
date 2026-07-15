@@ -13,6 +13,7 @@ import '../../domain/value_objects/node_id.dart';
 import '../../infrastructure/node/node_mapping.dart';
 import '../../protocol/operations.dart';
 import '../../shared/errors/omnyserver_exception.dart';
+import 'console_node_logger.dart';
 import 'agent_state.dart';
 import 'node_agent_config.dart';
 import 'node_handshake.dart';
@@ -67,7 +68,10 @@ class NodeAgent {
     }
     _running = true;
 
-    final runtime = omnyhub.NodeRuntime(_buildConfig());
+    final runtime = omnyhub.NodeRuntime(
+      _buildConfig(),
+      logger: _runtimeLogger(),
+    );
     _runtime = runtime;
 
     final ready = Completer<void>();
@@ -135,6 +139,20 @@ class NodeAgent {
         nodeId: config.nodeId,
         status: await _status(),
       ).toJson(),
+    );
+  }
+
+  /// The runtime's logger: a real one, so what the Hub reports — a rejected
+  /// registration and its reason, a connection failure and its cause — reaches
+  /// the operator instead of a [omnyhub.NoopLogger]. Silent when [config.logger]
+  /// is null (an embedder that wants none), problems-only otherwise, everything
+  /// under `--verbose`.
+  omnyhub.Logger _runtimeLogger() {
+    final sink = config.logger;
+    if (sink == null) return const omnyhub.NoopLogger();
+    return ConsoleNodeLogger(
+      sink,
+      minLevel: config.verbose ? omnyhub.LogLevel.debug : omnyhub.LogLevel.warn,
     );
   }
 
