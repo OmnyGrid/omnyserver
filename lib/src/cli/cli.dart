@@ -66,6 +66,12 @@ Future<void> runOmnyServerCli(List<String> args) async {
   } on HubApiException catch (e) {
     stderr.writeln('error: ${e.message}');
     exitCode = 1;
+  } on OmnyServerException catch (e) {
+    // A classified runtime failure that reached the top — e.g. a node whose
+    // credential the Hub rejected outright (terminal auth). Print the message,
+    // not a stack trace.
+    stderr.writeln('error: ${e.message}');
+    exitCode = 1;
   }
 }
 
@@ -509,6 +515,14 @@ class NodeStartCommand extends Command<void> {
   /// Creates the node-start command.
   NodeStartCommand() {
     addNodeStartOptions(argParser);
+    argParser.addFlag(
+      'verbose',
+      abbr: 'v',
+      negatable: false,
+      help:
+          "Show the connection lifecycle, not just failures — every attempt, "
+          'handshake and heartbeat.',
+    );
   }
 
   @override
@@ -546,30 +560,35 @@ class NodeStartCommand extends Command<void> {
       shipper?.add(message);
     }
 
-    final agent = NodeAgent(
-      NodeAgentConfig(
-        hubUri: Uri.parse(hub),
-        nodeId: id,
-        credentials: TokenCredentialProvider(
-          principal: args['principal'] as String,
-          token: token,
-        ),
-        securityContext: context,
-        onBadCertificate: (args['insecure'] as bool)
-            ? (cert, host, port) => true
-            : null,
-        labels: _parseLabels(args['label'] as List<String>),
-        statusProvider: monitor.snapshot,
-        capabilityProvider: scanner.scan,
-        formulaHandler: formulaService.runFormula,
-        presetHandler: formulaService.applyPreset,
-        nodeControlHandler: updateService.handle,
-        logger: log,
+    final agentConfig = NodeAgentConfig(
+      hubUri: Uri.parse(hub),
+      nodeId: id,
+      credentials: TokenCredentialProvider(
+        principal: args['principal'] as String,
+        token: token,
       ),
+      securityContext: context,
+      onBadCertificate: (args['insecure'] as bool)
+          ? (cert, host, port) => true
+          : null,
+      labels: _parseLabels(args['label'] as List<String>),
+      statusProvider: monitor.snapshot,
+      capabilityProvider: scanner.scan,
+      formulaHandler: formulaService.runFormula,
+      presetHandler: formulaService.applyPreset,
+      nodeControlHandler: updateService.handle,
+      logger: log,
+      verbose: args['verbose'] as bool,
     );
+    final agent = NodeAgent(agentConfig);
     if (args['ship-logs'] as bool) {
       shipper = LogShipper(send: agent.sendLogs);
     }
+    // Say what it is doing before it blocks: start() only returns once the node
+    // has registered, so without this a slow — or rejected — connection is a
+    // silent hang. The runtime's logger (wired in NodeAgent) then reports any
+    // failure and its reason.
+    log('Connecting to ${agentConfig.controlUri} …');
     await agent.start();
     log('Node "$id" connected to $hub.');
 
