@@ -4,7 +4,7 @@ import 'package:omnyserver/omnyserver_client_web.dart' show omnyServerVersion;
 ///
 /// The Pages deploy builds against the server in this repo, so this and
 /// [omnyServerVersion] always move together.
-const String omnyServerWebVersion = '0.3.0';
+const String omnyServerWebVersion = '0.3.1';
 
 /// The one version line shown in the UI: this dashboard build, and the
 /// OmnyServer version it was built against.

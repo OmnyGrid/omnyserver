@@ -1,3 +1,11 @@
+## 0.3.1
+
+- Rebuilt against **OmnyServer 0.16.0** — the login footer reads
+  `Dashboard v0.3.1 · OmnyServer v0.16.0`. That server release lets the Hub proxy
+  the terminal `:ai` / `:ide` agent (`omnyserver ai config` + `hub start --shell`),
+  so the dashboard's AI works with no key in the browser. The dependency floor
+  moves to `^0.16.0`.
+
 ## 0.3.0
 
 - **Terminal `:` commands, at parity with the OmnyShell dashboard.** A node shell
