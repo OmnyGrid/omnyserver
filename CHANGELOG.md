@@ -44,6 +44,11 @@ hub rejected the connection (forbidden): principal p may not register node
   registration: … needs the "node" role`), so `journalctl` shows it, not only the
   audit trail.
 
+- Requires `omnyhub ^1.7.0`, which delivers a registration rejection to the node
+  as a typed error the moment it arrives. Before it, a refused node waited out
+  the register timeout (10s) on every attempt; now it fails — and logs why — at
+  once.
+
 ---
 
 ## 0.15.0
