@@ -79,7 +79,9 @@ class SystemMonitor {
           File('/proc/meminfo').readAsStringSync(),
         );
       } else if (Platform.isMacOS) {
-        return _macMemory();
+        // Awaited inside the try so a failing probe falls through to the zeroed
+        // reading below, rather than escaping this method.
+        return await _macMemory();
       }
     } on Object {
       // Fall through.

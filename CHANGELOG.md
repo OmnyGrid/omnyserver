@@ -1,7 +1,20 @@
 ## 0.16.1
 
-A maintenance release: dependency constraints only. No API change, no behaviour
-change; the suite passes unmodified against these versions.
+A maintenance release: dependency constraints, and a memory reading on macOS
+that could take a node's monitor down with it. No API change.
+
+### Fixed
+
+- **A failing memory probe on macOS escaped its own fallback.** `_memory()`
+  wraps its platform probes in a `try` that falls through to a zeroed
+  `MemoryInfo`, but the macOS branch returned the probe's future *without*
+  awaiting it — so the `catch` was already out of scope by the time the future
+  completed. Anything `_macMemory()` threw asynchronously (a `sysctl` or
+  `vm_stat` that is missing or fails, an unparseable `vm_stat` page count) went
+  straight past the fallback and out of the method, where it surfaced as a
+  failed monitor sample rather than a reading of zero. Linux, which reads
+  `/proc/meminfo` synchronously, was never affected. The branch is now awaited
+  inside the `try`.
 
 ### Changed
 
@@ -17,6 +30,8 @@ change; the suite passes unmodified against these versions.
 
 - Dev-only: `test: ^1.32.0` (from `^1.31.1`), `dependency_validator: ^5.0.6`
   (from `^5.0.5`).
+
+  The suite passes unmodified against all of these.
 
 ---
 
