@@ -93,6 +93,45 @@ void _conformance(RepoBundle Function() make) {
     expect((await repos.nodes.all()), hasLength(1));
   });
 
+  // The repository interface is asynchronous, and the Hub calls it from
+  // request handlers that overlap. Issuing writes without awaiting between them
+  // is therefore the normal case, not an exotic one — a backend that lets two
+  // of them interleave can leave a half-written record behind.
+  test('overlapping saves each land whole', () async {
+    await Future.wait([
+      for (var i = 0; i < 20; i++) repos.nodes.save(_node('n$i')),
+    ]);
+    expect(await repos.nodes.all(), hasLength(20));
+
+    // Ten writes to one id, in flight together. Any of them may win, but the
+    // survivor has to be a readable node rather than a mix of two.
+    await Future.wait([
+      for (var i = 0; i < 10; i++)
+        repos.nodes.save(_node('n1', online: i.isEven)),
+    ]);
+    expect(await repos.nodes.find(NodeId('n1')), isNotNull);
+    expect(await repos.nodes.all(), hasLength(20));
+  });
+
+  test('overlapping audit appends all land, in the order issued', () async {
+    await Future.wait([
+      for (var i = 0; i < 25; i++)
+        repos.audit.append(
+          AuditEntry(
+            id: 'a$i',
+            at: DateTime.utc(2026, 6, 18, 12, 0, i),
+            principal: 'alice',
+            action: 'node.restart',
+            outcome: AuditOutcome.success,
+          ),
+        ),
+    ]);
+    final recent = await repos.audit.recent(limit: 100);
+    expect(recent, hasLength(25));
+    expect(recent.first.id, 'a24', reason: 'newest first, nothing reordered');
+    expect(recent.last.id, 'a0');
+  });
+
   test('preset save/find/all', () async {
     final preset = Preset(
       id: PresetId('docker-host'),

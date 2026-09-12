@@ -1,7 +1,8 @@
 ## 0.16.1
 
-A maintenance release: dependency constraints, and a memory reading on macOS
-that could take a node's monitor down with it. No API change.
+A Hub that stops to read a file is a Hub that stops answering. Dependency
+constraints, a memory probe that escaped its own fallback, and the file I/O
+behind both taken off the isolate's back. No API change.
 
 ### Fixed
 
@@ -12,11 +13,37 @@ that could take a node's monitor down with it. No API change.
   completed. Anything `_macMemory()` threw asynchronously (a `sysctl` or
   `vm_stat` that is missing or fails, an unparseable `vm_stat` page count) went
   straight past the fallback and out of the method, where it surfaced as a
-  failed monitor sample rather than a reading of zero. Linux, which reads
+  failed monitor sample rather than a reading of zero. Linux, which read
   `/proc/meminfo` synchronously, was never affected. The branch is now awaited
   inside the `try`.
 
 ### Changed
+
+- **The JSON-directory repositories no longer block the isolate they serve
+  from.** Every method implements a `Future`-returning repository interface, and
+  every one of them did its I/O with a `…Sync` call — so on a Hub, which serves
+  its whole fleet and every API client from one isolate, each repository call
+  froze all of them for its duration: `all()` over the node directory is one
+  blocking read per node, and each save, append and metric sample another. The
+  file I/O is now asynchronous throughout, and `all()` reads the directory's
+  files concurrently rather than one after another.
+
+  Sync I/O was also, incidentally, providing atomicity: nothing could run
+  between a write's open and its close. Async writes have no such guarantee, and
+  25 overlapping appends to an audit log leave **one** entry behind if they are
+  merely started rather than queued, so writes to a directory — and appends to
+  each log — are now chained (`_WriteQueue`). New conformance tests cover
+  overlapping writes, and run against all three backends (memory, JSON, SQLite).
+
+- Same treatment where a `Future`-returning method was doing sync file work:
+  the node monitor's `/proc` reads (so the four probes behind one `Future.wait`
+  actually overlap), `MachineId.resolve`, `CertGenerator.generate`, and the
+  CLI's preset-file reads.
+
+  Left as they are: `OmnyServerHome` and `validateHubTls`, which are synchronous
+  functions rather than `Future`-returning ones; the hidden-input prompt's
+  `stdin.readLineSync`, which is a deliberate blocking read of a terminal; and
+  `Sha256().toSync()`, which is the cryptography package's sync API, not I/O.
 
 - **[omnyshell](https://pub.dev/packages/omnyshell) `^1.57.0`** (from `^1.56.1`),
   which adds the standalone `omnyshell ide [path]` command and routes both IDE

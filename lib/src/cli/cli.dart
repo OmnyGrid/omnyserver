@@ -1161,8 +1161,8 @@ class PresetApplyCommand extends Command<void> {
     final source = rest.first;
     final file = File(source);
     final body = <String, Object?>{
-      if (file.existsSync())
-        'preset': jsonDecode(file.readAsStringSync())
+      if (await file.exists())
+        'preset': jsonDecode(await file.readAsString())
       else
         'presetId': source,
     };
@@ -1216,10 +1216,10 @@ class PresetSaveCommand extends Command<void> {
     final rest = argResults!.rest;
     if (rest.isEmpty) throw CliError('usage: preset save <preset.json>');
     final file = File(rest.first);
-    if (!file.existsSync()) {
+    if (!await file.exists()) {
       throw CliError('preset file not found: ${rest.first}');
     }
-    final preset = jsonDecode(file.readAsStringSync());
+    final preset = jsonDecode(await file.readAsString());
 
     final client = _apiClientFrom(argResults!);
     try {
@@ -1635,10 +1635,10 @@ class StateSetCommand extends Command<void> {
       throw CliError('usage: state set <preset.json> [<node>] [--label …]');
     }
     final file = File(rest.first);
-    if (!file.existsSync()) {
+    if (!await file.exists()) {
       throw CliError('preset file not found: ${rest.first}');
     }
-    final preset = jsonDecode(file.readAsStringSync());
+    final preset = jsonDecode(await file.readAsString());
 
     final client = _apiClientFrom(args);
     try {
