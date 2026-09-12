@@ -3,8 +3,6 @@
 @Timeout(Duration(minutes: 10))
 library;
 
-import 'dart:io';
-
 import 'package:test/test.dart';
 
 import 'fleet.dart';
@@ -16,23 +14,20 @@ import 'fleet.dart';
 /// repositories directly and never loses the isolate that holds them.
 void main() {
   late OmnyFleet fleet;
-  late Directory data;
 
   setUp(() async {
     if (await OmnyFleet.unavailableReason() != null) return;
     fleet = await OmnyFleet.start();
-    data = Directory.systemTemp.createTempSync('omnyserver-fleet-data');
   });
 
   tearDown(() async {
     if (await OmnyFleet.unavailableReason() != null) return;
     await fleet.dispose();
-    if (data.existsSync()) data.deleteSync(recursive: true);
   });
 
   test('a restarted Hub remembers the fleet and its credentials', () async {
     if (await skipWithoutDocker()) return;
-    final hub = await fleet.startHub(dataDir: data);
+    final hub = await fleet.startHub(persistent: true);
     await fleet.startNode(id: 'worker-a', labels: const {'env': 'prod'});
 
     String? issuedToken;
@@ -65,7 +60,7 @@ void main() {
 
     // The Hub goes away entirely — not a reconnect, a new process.
     await fleet.stop(hub);
-    await fleet.startHub(dataDir: data);
+    await fleet.startHub(persistent: true);
 
     final after = fleet.apiClient();
     try {
@@ -131,7 +126,7 @@ void main() {
     if (await skipWithoutDocker()) return;
     // The node container is never touched here: only the Hub restarts. The
     // agent has to notice, back off, and come back on its own.
-    final hub = await fleet.startHub(dataDir: data);
+    final hub = await fleet.startHub(persistent: true);
     await fleet.startNode(id: 'worker-a');
 
     final admin = fleet.apiClient();
@@ -146,7 +141,7 @@ void main() {
     }
 
     await fleet.stop(hub);
-    await fleet.startHub(dataDir: data);
+    await fleet.startHub(persistent: true);
 
     final after = fleet.apiClient();
     try {

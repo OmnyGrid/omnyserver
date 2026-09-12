@@ -151,23 +151,32 @@ class OmnyFleet {
     return port;
   }
 
+  /// The Docker volume a persistent Hub keeps its data in.
+  ///
+  /// A named volume rather than a host directory: the Hub runs as root inside
+  /// the container, and on Linux the files it writes into a bind mount are
+  /// owned by root on the host too — which the test process then cannot delete.
+  /// A volume is removed by Docker, which has no such problem.
+  String get dataVolume => '$network-data';
+
+  bool _usedDataVolume = false;
+
   /// Starts the Hub container and waits until it is serving.
   ///
-  /// [dataDir] names a host directory to persist into; without one the Hub is
-  /// `--ephemeral`, which is what most cases want.
+  /// With [persistent], the Hub keeps its state in [dataVolume], so a restart
+  /// finds what the last one left; otherwise it is `--ephemeral`, which is what
+  /// most cases want.
   Future<DockerContainer> startHub({
     List<String> extraArgs = const [],
-    Directory? dataDir,
+    bool persistent = false,
   }) async {
+    if (persistent) _usedDataVolume = true;
     final hub = await _run(
       runtimeImage,
       name: hubHost,
       hostname: hubHost,
       ports: ['$publishedPort:$hubPort'],
-      volumes: {
-        certs.path: '/certs',
-        if (dataDir != null) dataDir.path: '/data',
-      },
+      volumes: {certs.path: '/certs', if (persistent) dataVolume: '/data'},
       args: [
         'hub', 'start', //
         '--host', '0.0.0.0',
@@ -177,7 +186,7 @@ class OmnyFleet {
         '--api-token', apiToken,
         '--grant', 'node-account:$nodeToken:node',
         '--grant', 'alice:$operatorToken:admin',
-        if (dataDir != null) ...['--data-dir', '/data'] else '--ephemeral',
+        if (persistent) ...['--data-dir', '/data'] else '--ephemeral',
         ...extraArgs,
       ],
     );
@@ -357,6 +366,18 @@ class OmnyFleet {
       }
     }
     _containers.clear();
+    if (_usedDataVolume) {
+      // After the containers, which hold it open.
+      try {
+        await (await docker.command('volume', [
+          'rm',
+          '-f',
+          dataVolume,
+        ]))?.waitExit();
+      } on Object {
+        // Best effort; the volume is named after this run.
+      }
+    }
     try {
       await docker.removeNetwork(network);
     } on Object {
