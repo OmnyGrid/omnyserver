@@ -1,3 +1,25 @@
+## 0.16.1
+
+A maintenance release: dependency constraints only. No API change, no behaviour
+change; the suite passes unmodified against these versions.
+
+### Changed
+
+- **[omnyshell](https://pub.dev/packages/omnyshell) `^1.57.0`** (from `^1.56.1`),
+  which adds the standalone `omnyshell ide [path]` command and routes both IDE
+  entry points through one launcher. OmnyServer embeds OmnyShell for its shell
+  broker (`AiConfig` / `AiConfigIo` / `HttpProxyService`) and never launches the
+  IDE itself, so nothing here changes what the Hub serves — the constraint moves
+  so a dependent resolving both packages is not pinned back.
+
+- `http: ^1.6.0` (from `^1.0.0`), `uuid: ^4.6.0` (from `^4.5.3`) — the latter
+  matching what omnyshell 1.57.0 already requires.
+
+- Dev-only: `test: ^1.32.0` (from `^1.31.1`), `dependency_validator: ^5.0.6`
+  (from `^5.0.5`).
+
+---
+
 ## 0.16.0
 
 Configure the Hub's AI once, and every browser gets `:ai` — no key in the client.
