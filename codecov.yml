@@ -1,0 +1,45 @@
+# Codecov configuration.
+#
+# Two packages live in this repo and are measured separately, each under its own
+# flag: `server` (the root package, uploaded from the Linux leg of the test
+# matrix) and `web` (`omnyserver_web/`, from its own job).
+
+coverage:
+  status:
+    # Informational for now: a coverage drop annotates the PR, it does not block
+    # merging it. Turn `informational` off once the numbers have settled.
+    project:
+      default:
+        informational: true
+        threshold: 1%
+      server:
+        informational: true
+        flags: [server]
+      web:
+        informational: true
+        flags: [web]
+    # Coverage of the lines the PR itself touched — the number worth reading on
+    # a diff, since a project percentage barely moves on a small change.
+    patch:
+      default:
+        informational: true
+
+flag_management:
+  individual_flags:
+    - name: server
+      paths: [lib/]
+    - name: web
+      paths: [omnyserver_web/lib/]
+
+comment:
+  layout: 'reach, diff, flags, files'
+  # Nothing changed worth reporting, no comment.
+  require_changes: true
+
+ignore:
+  # Generated, vendored or not shipped.
+  - 'omnyserver_web/build/**'
+  - 'doc/**'
+  - 'example/**'
+  - 'tool/**'
+  - '**/*.g.dart'

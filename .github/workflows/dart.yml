@@ -38,8 +38,30 @@ jobs:
       - uses: dart-lang/setup-dart@v1
       - name: Install dependencies
         run: dart pub get
+      # Coverage is collected on one platform only: the VM collector reports the
+      # same `lib/` either way, and three uploads of the same sources would just
+      # race each other in Codecov. The other two run the suite plainly.
       - name: Run tests
+        if: matrix.os != 'ubuntu-latest'
         run: dart test
+      - name: Run tests with coverage
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          dart test --coverage=coverage
+          # `--base-directory=.` makes the lcov paths repo-relative
+          # (`lib/src/…`); absolute runner paths match nothing in Codecov.
+          dart run coverage:format_coverage \
+            --lcov --in=coverage --out=coverage/lcov.info \
+            --report-on=lib --base-directory=.
+      - name: Upload coverage to Codecov
+        if: matrix.os == 'ubuntu-latest'
+        uses: codecov/codecov-action@v5
+        with:
+          files: coverage/lcov.info
+          flags: server
+          token: ${{ secrets.CODECOV_TOKEN }}
+          # A Codecov outage should not turn a green suite red.
+          fail_ci_if_error: false
 
   # The dashboard ships from this repo, so it is built and tested here — and
   # against the Hub client in this checkout, never the last one published.
@@ -62,8 +84,24 @@ jobs:
         run: dart format --output=none --set-exit-if-changed .
       - name: Analyze
         run: dart analyze --fatal-infos --fatal-warnings
-      - name: Run tests
-        run: dart test
+      - name: Run tests with coverage
+        run: |
+          dart test --coverage=coverage
+          # `--base-directory=..` is the repo root, so the lcov paths read
+          # `omnyserver_web/lib/…` — relative to this package they would be a
+          # bare `lib/…`, indistinguishable from the server's own sources.
+          dart run coverage:format_coverage \
+            --lcov --in=coverage --out=coverage/lcov.info \
+            --report-on=lib --base-directory=..
+      # Its own flag: the dashboard is a separate package with a separate suite,
+      # and folding it into the server's number would hide both.
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          files: omnyserver_web/coverage/lcov.info
+          flags: web
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false
       - name: Build (dart2js, release)
         run: dart run build_runner build --release --output build
       # dart2js silently skips an entrypoint whose transitive graph imports an

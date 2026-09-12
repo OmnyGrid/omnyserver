@@ -9,6 +9,9 @@ pubspec.lock
 # Generated API documentation.
 doc/api/
 
+# Coverage output (`dart test --coverage`, `format_coverage`).
+coverage/
+
 # Generated dev TLS certificates (see tool/gen-dev-certs.sh).
 /certs/
 *.srl
