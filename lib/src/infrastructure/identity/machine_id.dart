@@ -15,8 +15,8 @@ class MachineId {
           '/var/lib/dbus/machine-id',
         ]) {
           final file = File(path);
-          if (file.existsSync()) {
-            final value = file.readAsStringSync().trim();
+          if (await file.exists()) {
+            final value = (await file.readAsString()).trim();
             if (value.isNotEmpty) return value;
           }
         }

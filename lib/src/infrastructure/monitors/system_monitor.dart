@@ -12,7 +12,13 @@ import 'monitor_parsers.dart';
 ///
 /// Every probe is best-effort and failure-tolerant: if a command is missing or
 /// errors, that section degrades to zeros/empties rather than throwing, so a
-/// heartbeat always carries a usable snapshot.
+/// heartbeat always carries a usable snapshot. That depends on each probe being
+/// **awaited inside** its own `try` — a future merely returned from the block
+/// completes after the `catch` is out of scope, and its failure escapes.
+///
+/// The probes are async throughout (no `…Sync` file reads) so that the four
+/// [Future.wait] branches in [snapshot] overlap rather than serialising on a
+/// blocked isolate.
 class SystemMonitor {
   /// The agent version reported in the OS section.
   final String agentVersion;
@@ -54,7 +60,7 @@ class SystemMonitor {
     try {
       if (Platform.isLinux) {
         load = MonitorParsers.parseLoadAvg(
-          File('/proc/loadavg').readAsStringSync(),
+          await File('/proc/loadavg').readAsString(),
         );
       } else if (Platform.isMacOS) {
         final out = await Process.run('sysctl', ['-n', 'vm.loadavg']);
@@ -76,10 +82,10 @@ class SystemMonitor {
     try {
       if (Platform.isLinux) {
         return MonitorParsers.parseLinuxMemInfo(
-          File('/proc/meminfo').readAsStringSync(),
+          await File('/proc/meminfo').readAsString(),
         );
       } else if (Platform.isMacOS) {
-        return _macMemory();
+        return await _macMemory();
       }
     } on Object {
       // Fall through.

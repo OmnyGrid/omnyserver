@@ -30,5 +30,7 @@ dependencies:
 dev_dependencies:
   build_runner: ^2.15.1
   build_web_compilers: ^4.8.0
+  # Run as an executable by CI (`coverage:format_coverage`), never imported.
+  coverage: ^1.15.1
   lints: ^6.1.0
   test: ^1.31.2

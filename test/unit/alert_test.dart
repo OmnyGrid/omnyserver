@@ -193,5 +193,150 @@ void main() {
         throwsA(isA<ProtocolException>()),
       );
     });
+
+    test('seconds and hours, not only minutes', () {
+      expect(
+        AlertRule.parse('cpu>90 for 30s').duration,
+        const Duration(seconds: 30),
+      );
+      expect(
+        AlertRule.parse('cpu>90 for 2h').duration,
+        const Duration(hours: 2),
+      );
+    });
+
+    test('a rule survives the wire', () {
+      final rule = AlertRule.parse('cpu>95 for 5m');
+      final back = AlertRule.fromJson(rule.toJson());
+      expect(back.id, rule.id);
+      expect(back.metric, AlertMetric.cpu);
+      expect(back.threshold, 95);
+      expect(back.duration, const Duration(minutes: 5));
+
+      expect(
+        () => AlertMetric.parse('humidity'),
+        throwsA(isA<ProtocolException>()),
+        reason: 'an unknown metric on the wire is not silently dropped',
+      );
+    });
+  });
+
+  group('what a rule counts as a breach', () {
+    MetricPoint point({
+      double cpu = 0,
+      int memUsed = 0,
+      int memTotal = 0,
+      int diskUsed = 0,
+      int diskTotal = 0,
+    }) => MetricPoint(
+      at: DateTime.utc(2026, 1, 1),
+      cpuPercent: cpu,
+      memoryUsedBytes: memUsed,
+      memoryTotalBytes: memTotal,
+      storageUsedBytes: diskUsed,
+      storageCapacityBytes: diskTotal,
+    );
+
+    test('each metric reads its own number', () {
+      expect(AlertRule.parse('cpu>90').breachedBy(point(cpu: 95)), isTrue);
+      expect(
+        AlertRule.parse('cpu>90').breachedBy(point(cpu: 90)),
+        isFalse,
+        reason: 'the threshold is a floor to exceed, not to reach',
+      );
+
+      final memory = AlertRule.parse('memory>50');
+      expect(memory.breachedBy(point(memUsed: 900, memTotal: 1000)), isTrue);
+      expect(memory.breachedBy(point(memUsed: 100, memTotal: 1000)), isFalse);
+
+      final disk = AlertRule.parse('disk>80');
+      expect(disk.breachedBy(point(diskUsed: 900, diskTotal: 1000)), isTrue);
+      expect(disk.breachedBy(point(diskUsed: 100, diskTotal: 1000)), isFalse);
+    });
+
+    test('a metric the host did not report is not a breach', () {
+      // memoryPercent and storagePercent are null on a host that reports no
+      // totals; treating null as 0 keeps a missing reading quiet rather than
+      // alerting on an absence.
+      expect(AlertRule.parse('memory>50').breachedBy(point()), isFalse);
+      expect(AlertRule.parse('disk>50').breachedBy(point()), isFalse);
+    });
+
+    test('offline is never decided by a sample', () {
+      // It is decided by the absence of samples, so no MetricPoint can breach
+      // it — including one that looks alarming.
+      expect(
+        AlertRule.parse('offline for 2m').breachedBy(point(cpu: 100)),
+        isFalse,
+      );
+    });
+  });
+
+  group('an alert says what is wrong, in words', () {
+    final rule = AlertRule.parse('disk>90');
+
+    test('a threshold breach names the metric, value and limit', () {
+      final alert = Alert(
+        rule: rule,
+        nodeId: 'worker-01',
+        since: DateTime.utc(2026, 1, 1, 9),
+        value: 94.6,
+      );
+      expect(alert.message, 'worker-01 disk is 95% (over 90%)');
+      expect(alert.toString(), alert.message);
+    });
+
+    test('a value nobody reported is not invented', () {
+      final alert = Alert(
+        rule: rule,
+        nodeId: 'worker-01',
+        since: DateTime.utc(2026, 1, 1, 9),
+      );
+      expect(alert.message, contains('?%'));
+    });
+
+    test('offline reads as a duration, not a percentage', () {
+      expect(
+        Alert(
+          rule: AlertRule.parse('offline for 2m'),
+          nodeId: 'worker-01',
+          since: DateTime.utc(2026, 1, 1, 9),
+        ).message,
+        'worker-01 has been offline for 2m',
+      );
+      expect(
+        Alert(
+          rule: AlertRule.parse('offline for 90s'),
+          nodeId: 'worker-01',
+          since: DateTime.utc(2026, 1, 1, 9),
+        ).message,
+        contains('1m'),
+      );
+      expect(
+        Alert(
+          rule: AlertRule.parse('offline for 3h'),
+          nodeId: 'worker-01',
+          since: DateTime.utc(2026, 1, 1, 9),
+        ).message,
+        contains('3h'),
+      );
+    });
+
+    test('round-trips, message included, so a client need not rebuild it', () {
+      final alert = Alert(
+        rule: rule,
+        nodeId: 'worker-01',
+        since: DateTime.utc(2026, 1, 1, 9),
+        value: 94.6,
+      );
+      final json = alert.toJson();
+      expect(json['message'], alert.message);
+
+      final back = Alert.fromJson(json);
+      expect(back.nodeId, 'worker-01');
+      expect(back.value, 94.6);
+      expect(back.rule.metric, AlertMetric.disk);
+      expect(back.since, alert.since);
+    });
   });
 }

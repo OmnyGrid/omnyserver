@@ -57,7 +57,7 @@ class CertGenerator {
     final serverLeaf = '$outputDir/server-leaf.crt';
     final caSerial = '$outputDir/ca.srl';
 
-    if (!force && File(serverCert).existsSync()) {
+    if (!force && await File(serverCert).exists()) {
       throw const CertGeneratorException(
         'certificates already exist in the output directory — '
         'pass --force to regenerate',
@@ -65,7 +65,7 @@ class CertGenerator {
     }
 
     await _requireOpenssl();
-    Directory(outputDir).createSync(recursive: true);
+    await Directory(outputDir).create(recursive: true);
 
     // Subject Alternative Names the server certificate is valid for.
     final san = StringBuffer('DNS:localhost,IP:127.0.0.1');
@@ -112,10 +112,10 @@ class CertGenerator {
     //    file (bash process substitution has no Dart equivalent). A unique temp
     //    directory avoids collisions when generate() runs concurrently (e.g.
     //    parallel test isolates, which share a pid).
-    final extDir = Directory.systemTemp.createTempSync('omnyserver-cert-ext');
+    final extDir = await Directory.systemTemp.createTemp('omnyserver-cert-ext');
     final extFile = File('${extDir.path}/ext.cnf');
     try {
-      extFile.writeAsStringSync(
+      await extFile.writeAsString(
         'subjectAltName=$san\n'
         'basicConstraints=critical,CA:FALSE\n'
         'keyUsage=critical,digitalSignature,keyEncipherment\n'
@@ -139,19 +139,19 @@ class CertGenerator {
         extFile.path,
       ]);
     } finally {
-      if (extDir.existsSync()) extDir.deleteSync(recursive: true);
+      if (await extDir.exists()) await extDir.delete(recursive: true);
     }
 
     // 4. The Hub presents the full chain (leaf + CA) so clients can build the
     //    verification path.
-    File(serverCert).writeAsStringSync(
-      File(serverLeaf).readAsStringSync() + File(caCert).readAsStringSync(),
+    await File(serverCert).writeAsString(
+      await File(serverLeaf).readAsString() + await File(caCert).readAsString(),
     );
 
     // 5. Clean up intermediates.
     for (final path in [serverCsr, serverLeaf, caSerial]) {
       final f = File(path);
-      if (f.existsSync()) f.deleteSync();
+      if (await f.exists()) await f.delete();
     }
 
     return GeneratedCertificates(

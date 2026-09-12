@@ -22,16 +22,12 @@ void main() {
       );
     });
 
-    test(
-      'an explicit --data-dir wins over the system default too',
-      () {
-        expect(
-          resolveDataDir(_parse(['--data-dir', '/srv/hub']), systemScope: true),
-          '/srv/hub',
-        );
-      },
-      testOn: '!windows',
-    );
+    test('an explicit --data-dir wins over the system default too', () {
+      expect(
+        resolveDataDir(_parse(['--data-dir', '/srv/hub']), systemScope: true),
+        '/srv/hub',
+      );
+    }, testOn: '!windows');
 
     test('falls back to the home root', () {
       expect(resolveDataDir(_parse([])), OmnyServerHome.resolve());
@@ -111,18 +107,14 @@ void main() {
     // back. If `hub start` composed <root>/hub a second time the Hub would
     // persist into `<root>/hub/hub` — a directory nobody asked for, and one
     // that silently orphans the data of every prior run.
-    test(
-      'round-trips what service install bakes in, without re-appending',
-      () {
-        const root = '/var/lib/omnyserver';
-        final baked = hubDataDir(root); // what service install emits
-        expect(
-          resolveHubDataDir(_parse(['--data-dir', baked])),
-          baked,
-          reason: 'hub start must not append /hub to an explicit --data-dir',
-        );
-      },
-      testOn: '!windows',
-    );
+    test('round-trips what service install bakes in, without re-appending', () {
+      const root = '/var/lib/omnyserver';
+      final baked = hubDataDir(root); // what service install emits
+      expect(
+        resolveHubDataDir(_parse(['--data-dir', baked])),
+        baked,
+        reason: 'hub start must not append /hub to an explicit --data-dir',
+      );
+    }, testOn: '!windows');
   });
 }
