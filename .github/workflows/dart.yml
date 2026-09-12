@@ -41,13 +41,15 @@ jobs:
       # Coverage is collected on one platform only: the VM collector reports the
       # same `lib/` either way, and three uploads of the same sources would just
       # race each other in Codecov. The other two run the suite plainly.
+      # `-x docker`: the container fleet has a job of its own below, on the one
+      # runner with a Docker daemon.
       - name: Run tests
         if: matrix.os != 'ubuntu-latest'
-        run: dart test
+        run: dart test -x docker
       - name: Run tests with coverage
         if: matrix.os == 'ubuntu-latest'
         run: |
-          dart test --coverage=coverage
+          dart test -x docker --coverage=coverage
           # `--base-directory=.` makes the lcov paths repo-relative
           # (`lib/src/…`); absolute runner paths match nothing in Codecov.
           dart run coverage:format_coverage \
@@ -62,6 +64,23 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
           # A Codecov outage should not turn a green suite red.
           fail_ci_if_error: false
+
+  # The container fleet: a Hub and its nodes as real containers on a real
+  # network, driven by docker_commander. Only the Linux runner has a Docker
+  # daemon, and these take minutes rather than seconds, so they are their own
+  # job rather than part of the matrix.
+  docker:
+    name: container fleet
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dart-lang/setup-dart@v1
+      - name: Install dependencies
+        run: dart pub get
+      - name: Show the Docker daemon these tests will use
+        run: docker version
+      - name: Run the container fleet tests
+        run: dart test -t docker --reporter expanded
 
   # The dashboard ships from this repo, so it is built and tested here — and
   # against the Hub client in this checkout, never the last one published.

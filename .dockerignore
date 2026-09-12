@@ -1,0 +1,14 @@
+# Keeps the build context small for test/docker/Dockerfile. Everything the
+# image needs is pubspec.yaml, bin/ and lib/.
+.git
+.dart_tool
+.github
+build
+coverage
+certs
+doc/api
+omnyserver_web
+pubspec.lock
+pubspec_overrides.yaml
+*.srl
+.DS_Store

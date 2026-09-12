@@ -9,3 +9,10 @@ tags:
   linux:
   macos:
   windows:
+  # The `docker` tag marks the container fleet tests (test/docker/). They build
+  # an image and run a Hub and its nodes as real containers, so they need a
+  # Docker daemon and take minutes rather than seconds — run them with
+  # `dart test -t docker`, and exclude them elsewhere with `-x docker`. Without
+  # a daemon they skip themselves rather than fail.
+  docker:
+    timeout: 10x
