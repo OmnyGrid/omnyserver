@@ -53,6 +53,24 @@ void main() {
   Future<void> cli(List<String> args) =>
       buildRunner().run([...args, '--api', base, '--token', 'api-secret']);
 
+  /// Waits for [id]'s first heartbeat to land.
+  ///
+  /// A node registers before it reports, so `/nodes/<id>/status` is a 404 for
+  /// the first moments of its life — a race that has nothing to do with the
+  /// command under test.
+  Future<void> waitForStatus(String id) async {
+    final deadline = DateTime.now().add(const Duration(seconds: 5));
+    while (true) {
+      try {
+        await client.get('/nodes/$id/status');
+        return;
+      } on HubApiException catch (e) {
+        if (e.statusCode != 404 || DateTime.now().isAfter(deadline)) rethrow;
+        await Future<void>.delayed(const Duration(milliseconds: 25));
+      }
+    }
+  }
+
   /// A node that answers formula, preset and control requests.
   Future<void> startNode({String id = 'worker-01'}) async {
     final service = NodeFormulaService(
@@ -78,6 +96,7 @@ void main() {
 
     test('node show / status / capabilities / metrics', () async {
       await startNode();
+      await waitForStatus('worker-01');
       await cli(['node', 'show', 'worker-01']);
       await cli(['node', 'status', 'worker-01']);
       await cli(['node', 'capabilities', 'worker-01']);
@@ -265,6 +284,87 @@ void main() {
 
       await cli(['node', 'restart', 'worker-01']);
       expect(action, 'restart');
+    });
+  });
+
+  group('hub metrics', () {
+    test('prints the Prometheus text, without a token', () async {
+      await startNode();
+      // `/metrics` sits outside the versioned API and is not token-gated, so
+      // this has to work against a Hub the caller has no credential for.
+      await buildRunner().run(['hub', 'metrics', '--api', base]);
+    });
+  });
+
+  group('node logs and control', () {
+    test('logs reads what the node has shipped', () async {
+      await startNode();
+      await cli(['node', 'logs', 'worker-01']);
+      await cli(['node', 'logs', 'worker-01', '--tail', '10']);
+    });
+
+    test('shutdown and update reach the node as themselves', () async {
+      final actions = <String>[];
+      await cluster.startNode(
+        id: 'worker-01',
+        nodeControlHandler: (request) async {
+          actions.add(request.action);
+          return (true, 'ok');
+        },
+      );
+
+      await cli(['node', 'shutdown', 'worker-01']);
+      await cli(['node', 'update', 'worker-01']);
+      expect(actions, ['shutdown', 'update']);
+    });
+  });
+
+  group('cert gen', () {
+    late Directory out;
+
+    setUp(() => out = Directory.systemTemp.createTempSync('omnyserver-certs'));
+    tearDown(() => out.deleteSync(recursive: true));
+
+    test('writes a CA and a server certificate', () async {
+      await buildRunner().run([
+        'cert',
+        'gen',
+        '--out',
+        out.path,
+        '--host',
+        'hub.example.com',
+        '--force',
+      ]);
+
+      for (final name in ['ca.crt', 'ca.key', 'server.crt', 'server.key']) {
+        expect(File('${out.path}/$name').existsSync(), isTrue, reason: name);
+      }
+      // The Hub presents the full chain, so the leaf alone is not enough.
+      expect(
+        File('${out.path}/server.crt').readAsStringSync(),
+        stringContainsInOrder([
+          '-----BEGIN CERTIFICATE-----',
+          '-----END CERTIFICATE-----',
+          '-----BEGIN CERTIFICATE-----',
+        ]),
+      );
+      // The intermediates are cleaned up rather than left lying about.
+      expect(File('${out.path}/server.csr').existsSync(), isFalse);
+    });
+
+    test('refuses to overwrite without --force, and says why', () async {
+      await buildRunner().run(['cert', 'gen', '--out', out.path, '--force']);
+
+      await expectLater(
+        buildRunner().run(['cert', 'gen', '--out', out.path]),
+        throwsA(
+          isA<CliError>().having(
+            (e) => e.message,
+            'message',
+            contains('--force'),
+          ),
+        ),
+      );
     });
   });
 
