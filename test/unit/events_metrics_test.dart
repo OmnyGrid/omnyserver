@@ -19,7 +19,14 @@ void main() {
         FormulaFinished(NodeId('worker-01'), 'docker', 'install', true, at),
         PresetApplied(NodeId('worker-01'), 'docker-host', false, at),
         NodeUpdated(NodeId('worker-01'), 'agent', at),
+        AlertRaised(NodeId('worker-01'), 'disk>90', 'disk is 95%', at),
+        AlertResolved(NodeId('worker-01'), 'disk>90', at),
+        OperationStarted(NodeId('worker-01'), 'op-1', 'preset', 'docker', at),
+        OperationFinished(NodeId('worker-01'), 'op-1', 'preset', true, at),
       ];
+      // Every subclass of OmnyEvent is on that list; a new event type that
+      // forgets to decode is exactly the staleness the next test is about.
+      expect(events.map((e) => e.type).toSet(), hasLength(events.length));
 
       for (final event in events) {
         final decoded = OmnyEvent.fromJson(event.toJson());
