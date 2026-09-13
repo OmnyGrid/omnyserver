@@ -11,6 +11,21 @@
 
 name: omnyserver-fleet
 
+# Built once from the repository root, and used by every service below.
+x-image: &image
+  context: ../..
+  dockerfile: docker/Dockerfile
+  target: runtime
+
+# What every node has in common. The arguments do not belong here — an id and
+# a set of labels are the whole difference between one node and the next, and
+# an example that hides them behind an anchor is an example of nothing.
+x-node: &node
+  build: *image
+  depends_on: [hub]
+  volumes:
+    - certs:/certs:ro
+
 services:
   # Issues the dev CA and the Hub's certificate into a volume the others mount,
   # then exits. `hub` waits for it to complete, so `up` needs no preparation
@@ -19,10 +34,7 @@ services:
   # The certificate is issued for `hub`, which is the name the nodes dial: the
   # nodes verify it for real, and there is no --insecure anywhere below.
   certs:
-    build: &image
-      context: ../..
-      dockerfile: docker/Dockerfile
-      target: runtime
+    build: *image
     command: ["cert", "gen", "--out", "/certs", "--host", "hub", "--force"]
     volumes:
       - certs:/certs
@@ -60,10 +72,9 @@ services:
   # A bare host: nothing installed, so it advertises no capabilities. This is
   # what most of a real fleet looks like.
   worker-1:
-    build: *image
-    depends_on: [hub]
+    <<: *node
     hostname: worker-1
-    command: &node
+    command:
       - node
       - start
       - --hub=wss://hub:8443
@@ -73,12 +84,9 @@ services:
       - --ca=/certs/ca.crt
       - --label=env=prod
       - --label=region=eu
-    volumes:
-      - certs:/certs:ro
 
   worker-2:
-    build: *image
-    depends_on: [hub]
+    <<: *node
     hostname: worker-2
     command:
       - node
@@ -90,17 +98,17 @@ services:
       - --ca=/certs/ca.crt
       - --label=env=prod
       - --label=region=us
-    volumes:
-      - certs:/certs:ro
 
   # The same agent on a host that has the Dart SDK installed. It discovers that
   # for itself and advertises it, which is how `formula run dart` can succeed
   # here and fail on the two above.
   builder-1:
+    <<: *node
+    # The one thing this node does not share: it is built from the SDK target,
+    # so its host has something on it.
     build:
       <<: *image
       target: sdk
-    depends_on: [hub]
     hostname: builder-1
     command:
       - node
@@ -112,8 +120,6 @@ services:
       - --ca=/certs/ca.crt
       - --label=env=staging
       - --label=role=builder
-    volumes:
-      - certs:/certs:ro
 
 volumes:
   certs:
