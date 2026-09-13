@@ -56,7 +56,10 @@ behind both taken off the isolate's back. No API change.
   matching what omnyshell 1.57.0 already requires.
 
 - Dev-only: `test: ^1.32.0` (from `^1.31.1`), `dependency_validator: ^5.0.6`
-  (from `^5.0.5`).
+  (from `^5.0.5`), and two additions — `coverage` (CI reports to Codecov) and
+  [docker_commander](https://pub.dev/packages/docker_commander) (drives the
+  container fleet in `test/docker/`). Neither is imported by `lib/`, so nothing
+  reaches a dependent.
 
   The suite passes unmodified against all of these.
 

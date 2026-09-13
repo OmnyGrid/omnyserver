@@ -592,6 +592,43 @@ dart test
 dart run example/omnyserver_embedded_example.dart
 ```
 
+### A fleet of servers, in Docker
+
+[`example/docker_fleet/`](example/docker_fleet/) brings up one Hub and three
+nodes as separate containers — two bare hosts and one with the Dart SDK, so
+they advertise different capabilities because their machines differ:
+
+```sh
+docker compose -f example/docker_fleet/compose.yaml up --build -d
+dart run example/docker_fleet/fleet_tour.dart
+docker compose -f example/docker_fleet/compose.yaml down -v
+```
+
+The tour walks the REST API through the fleet, label selectors, a formula that
+succeeds on one host and fails on another, desired state and drift, issuing and
+revoking a credential, and the audit trail left behind. See its
+[README](example/docker_fleet/README.md).
+
+### The container fleet
+
+`test/docker/` runs a Hub and its nodes as **real containers on a real
+network**, driven by [docker_commander][docker_commander]: a TLS handshake
+against a certificate issued for the hostname the node dials, capability
+detection against two different host images, a Hub process that is killed and
+restarted, and the CLI run from a third container.
+
+They are tagged `docker`, build an image first, and take minutes rather than
+seconds, so they are kept out of the default run:
+
+```sh
+dart test -t docker     # just the container fleet
+dart test -x docker     # everything else (what CI's matrix runs)
+```
+
+Without a reachable Docker daemon they report as skipped, not failed.
+
+[docker_commander]: https://pub.dev/packages/docker_commander
+
 # Author
 
 Graciliano M. Passos: [gmpassos@GitHub][github].
