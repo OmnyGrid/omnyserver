@@ -1,5 +1,26 @@
 ## 0.3.1
 
+- **The service worker no longer caches the Hub when a proxy puts it on our
+  own origin.** Its exclusion rule was a single origin check, written when the
+  dashboard could only reach a Hub at its own address. Serve the app from a
+  proxy that also forwards the API — which is how `example/docker_fleet/` runs
+  it, so a browser never has to be talked into trusting a self-signed
+  certificate — and `/api/v1/…` arrives looking like one of ours.
+
+  Two things then went wrong, both of which the worker's own comment named as
+  the things that must never happen. Live fleet state was cached and served
+  back on any network hiccup, so the dashboard would show a node that had been
+  offline for an hour, confidently. And the event stream — which the web client
+  reads with `fetch`, not `EventSource` — was cloned into the cache, where the
+  Cache API reads a body that never ends, buffering events for the life of the
+  session.
+
+  The rule is now two tests, one per way the Hub can be reached: a different
+  origin, or one of its paths (`/api/`, `/shell`, `/healthz`, `/metrics`) on
+  ours. Matched so that an asset merely starting with those letters —
+  `/apidocs.html`, `/shellfish.js` — is still ours to cache. `CACHE_VERSION` is
+  bumped, so anything the old rule stored is dropped on activation.
+
 - **The control buttons say what they act on: Restart agent, Stop agent.**
   They were "Restart" and "Shut down" beside a node's name, which reads as the
   machine — and these have only ever meant the OmnyServer agent. The
