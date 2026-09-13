@@ -24,8 +24,7 @@ After that, bringing the fleet up takes seconds. Sign-in details are
 
 | Container   | Image     | Labels                    | What it is                  |
 | ----------- | --------- | ------------------------- | --------------------------- |
-| `certs`     | runtime   | —                         | Issues the CA and the Hub's certificate, then exits |
-| `hub`       | runtime   | —                         | The Hub: node channel, REST API and shell broker on one TLS port |
+| `hub`       | runtime   | —                         | The Hub: node channel, REST API and shell broker on one TLS port. Issues the fleet's certificate on the way up |
 | `dashboard` | dashboard | —                         | The browser dashboard, on <http://localhost:8080> |
 | `worker-1`  | runtime   | `env=prod`, `region=eu`   | A bare host — nothing installed |
 | `worker-2`  | runtime   | `env=prod`, `region=us`   | A bare host — nothing installed |
@@ -39,6 +38,13 @@ deploying OmnyServer.
 workers and the builder are the same agent, and they advertise different
 capabilities because their hosts differ. Nothing told them what they have; they
 looked.
+
+The Hub issues the fleet's certificate itself, on the way up, into a volume the
+others mount read-only — so there is nothing to prepare, nothing of the fleet's
+on your machine, and no one-shot container left behind afterwards. Everything
+else waits on the Hub's healthcheck, because a node and the proxy both read the
+CA at startup and neither can be told to wait for a file. It is issued once and
+kept: `down -v` is what starts over.
 
 ## The fleet in a browser
 

@@ -22,34 +22,45 @@ x-image: &image
 # an example that hides them behind an anchor is an example of nothing.
 x-node: &node
   build: *image
-  depends_on: [hub]
+  # A node reads the CA at startup, so it waits until the Hub has issued one.
+  depends_on:
+    hub:
+      condition: service_healthy
   volumes:
     - certs:/certs:ro
 
 services:
-  # Issues the dev CA and the Hub's certificate into a volume the others mount,
-  # then exits. `hub` waits for it to complete, so `up` needs no preparation
-  # step and no certificates on your machine.
-  #
-  # The certificate is issued for `hub`, which is the name the nodes dial: the
-  # nodes verify it for real, and there is no --insecure anywhere below.
-  #
-  # Issued once and kept. Regenerating on every `up` would hand out a new CA
-  # each time — breaking the exception your browser remembers for the Hub, and
-  # anything else holding the old one. `down -v` is what starts over.
-  certs:
-    build: *image
-    entrypoint: ["/bin/sh", "-c"]
-    command:
-      - test -f /certs/server.crt || omnyserver cert gen --out /certs --host hub
-    volumes:
-      - certs:/certs
-
   hub:
     build: *image
-    depends_on:
-      certs:
-        condition: service_completed_successfully
+    # The Hub issues its own certificate on the way up, so `up` needs no
+    # preparation step and no certificates on your machine — and no one-shot
+    # container is left sitting in `docker ps -a` afterwards. Compose has no
+    # per-service equivalent of `docker run --rm`; not creating the container is
+    # the way to not leave it behind.
+    #
+    # The certificate is issued for `hub`, the name the nodes dial: they verify
+    # it for real, and there is no --insecure anywhere below.
+    #
+    # Issued once and kept. Regenerating on every `up` would hand out a new CA
+    # each time — breaking the exception a browser remembers for the Hub, and
+    # anything else holding the old one. `down -v` is what starts over.
+    #
+    # The flags stay a readable list: the script takes them as "$@", so this
+    # wrapper adds a line of shell without swallowing the interesting part.
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        test -f /certs/server.crt || omnyserver cert gen --out /certs --host hub
+        exec omnyserver "$@"
+      - omnyserver-hub
+    # Nothing else may start until the certificate exists — the nodes and the
+    # proxy both read it at startup and cannot be told to wait for a file.
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /certs/ca.crt"]
+      interval: 1s
+      timeout: 2s
+      retries: 60
     command:
       - hub
       - start
@@ -82,7 +93,9 @@ services:
       # The API and the node channel share this one TLS port.
       - "8443:8443"
     volumes:
-      - certs:/certs:ro
+      # Writable here, because this is where they are issued; read-only
+      # everywhere else.
+      - certs:/certs
       - hub-data:/data
 
   # The fleet in a browser: http://localhost:8080
@@ -96,7 +109,10 @@ services:
     build:
       <<: *image
       target: dashboard
-    depends_on: [hub]
+    # nginx reads the CA at startup to verify the Hub, so it waits for one.
+    depends_on:
+      hub:
+        condition: service_healthy
     ports:
       - "8080:80"
     volumes:
