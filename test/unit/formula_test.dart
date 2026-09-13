@@ -4,6 +4,69 @@ library;
 import 'package:omnyserver/omnyserver_node.dart';
 import 'package:test/test.dart';
 
+/// A formula that does nothing but talk, so a test about *capturing* output
+/// does not depend on some real formula supporting the platform it runs on.
+///
+/// That dependency is easy to acquire by accident: `DockerFormula` has no
+/// Windows step, so a service test written against it captured nothing there
+/// and passed everywhere else.
+class TalkativeFormula implements Formula {
+  TalkativeFormula(this.id, this.lines);
+
+  final String id;
+  final List<String> lines;
+
+  @override
+  FormulaSpec get spec => FormulaSpec(
+    id: FormulaId(id),
+    name: id,
+    actions: const {FormulaAction.install, FormulaAction.verify},
+  );
+
+  @override
+  Future<FormulaResult> run(FormulaAction action, FormulaContext context) async {
+    for (final line in lines) {
+      context.log(line);
+    }
+    return FormulaResult(
+      formula: id,
+      action: action,
+      success: true,
+      changed: true,
+      message: '$id $action',
+      finishedAt: context.now(),
+    );
+  }
+
+  @override
+  Future<FormulaResult> install(FormulaContext context) =>
+      run(FormulaAction.install, context);
+
+  @override
+  Future<FormulaResult> update(FormulaContext context) =>
+      run(FormulaAction.update, context);
+
+  @override
+  Future<FormulaResult> start(FormulaContext context) =>
+      run(FormulaAction.start, context);
+
+  @override
+  Future<FormulaResult> stop(FormulaContext context) =>
+      run(FormulaAction.stop, context);
+
+  @override
+  Future<FormulaResult> restart(FormulaContext context) =>
+      run(FormulaAction.restart, context);
+
+  @override
+  Future<FormulaResult> uninstall(FormulaContext context) =>
+      run(FormulaAction.uninstall, context);
+
+  @override
+  Future<ValidationResult> validate(FormulaContext context) async =>
+      ValidationResult.fail('$id is never already present');
+}
+
 /// A fake executor that records invocations and returns scripted results.
 class FakeExecutor implements CommandExecutor {
   final List<String> calls = [];
@@ -438,22 +501,13 @@ void main() {
   // empty. An operator could watch a node install something for two minutes and
   // be told only whether it worked.
   group('NodeFormulaService run output', () {
-    /// A formula that is absent, so `install` actually runs its step.
-    FormulaRegistry absentDocker(List<String> stdout) =>
-        FormulaRegistry()..register(
-          DockerFormula(
-            executor: FakeExecutor(
-              scripted: {
-                'docker --version': const ExecResult(exitCode: 1, stderr: 'no'),
-              },
-              fallback: ExecResult(exitCode: 0, stdout: stdout.join('\n')),
-            ),
-          ),
-        );
+    /// A registry holding one formula that prints [lines] and nothing else.
+    FormulaRegistry talking(String id, List<String> lines) =>
+        FormulaRegistry()..register(TalkativeFormula(id, lines));
 
     test('the result carries what the run printed', () async {
       final service = NodeFormulaService(
-        registry: absentDocker(['fetching', 'unpacking', 'done']),
+        registry: talking('docker', ['fetching', 'unpacking', 'done']),
       );
       final result = await service.runFormula(
         FormulaRun(
@@ -463,13 +517,7 @@ void main() {
         ),
       );
 
-      expect(result.logs, contains('fetching'));
-      expect(result.logs, contains('done'));
-      expect(
-        result.logs.first,
-        contains('running'),
-        reason: 'the command itself is the first thing worth seeing',
-      );
+      expect(result.logs, ['fetching', 'unpacking', 'done']);
     });
 
     test('every line is tagged with the run, for the shared stream', () async {
@@ -477,7 +525,7 @@ void main() {
       // out of it by this tag, and the Hub names the operation the same way.
       final streamed = <String>[];
       final service = NodeFormulaService(
-        registry: absentDocker(['unpacking']),
+        registry: talking('docker', ['unpacking']),
         onLog: streamed.add,
       );
       await service.runFormula(
@@ -507,7 +555,7 @@ void main() {
       ];
       final streamed = <String>[];
       final service = NodeFormulaService(
-        registry: absentDocker(noisy),
+        registry: talking('docker', noisy),
         onLog: streamed.add,
       );
       final result = await service.runFormula(
@@ -530,16 +578,11 @@ void main() {
     });
 
     test('preset steps each carry their own output', () async {
-      final exec = FakeExecutor(
-        scripted: {
-          'docker --version': const ExecResult(exitCode: 1, stderr: 'no'),
-          'dart --version': const ExecResult(exitCode: 1, stderr: 'no'),
-        },
-        fallback: const ExecResult(exitCode: 0, stdout: 'working'),
-      );
       final streamed = <String>[];
       final service = NodeFormulaService(
-        registry: FormulaRegistry.standard(executor: exec),
+        registry: FormulaRegistry()
+          ..register(TalkativeFormula('docker', ['pulling']))
+          ..register(TalkativeFormula('dart', ['extracting'])),
         onLog: streamed.add,
       );
 
