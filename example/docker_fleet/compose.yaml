@@ -33,9 +33,15 @@ services:
   #
   # The certificate is issued for `hub`, which is the name the nodes dial: the
   # nodes verify it for real, and there is no --insecure anywhere below.
+  #
+  # Issued once and kept. Regenerating on every `up` would hand out a new CA
+  # each time — breaking the exception your browser remembers for the Hub, and
+  # anything else holding the old one. `down -v` is what starts over.
   certs:
     build: *image
-    command: ["cert", "gen", "--out", "/certs", "--host", "hub", "--force"]
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - test -f /certs/server.crt || omnyserver cert gen --out /certs --host hub
     volumes:
       - certs:/certs
 
@@ -62,12 +68,39 @@ services:
       # its own thresholds is a tool that pages you at 3am.
       - --alert=disk>90
       - --alert=offline for 30s
+      # Without this the dashboard gets network errors and nothing else: a
+      # browser will not hand a page a cross-origin response unless the server
+      # names the origin, and the dashboard is always a different origin than
+      # the Hub (:8080 against :8443).
+      - --cors-origin=http://localhost:8080
+      # An OmnyShell broker beside the REST API, on the same port and the same
+      # certificate, so "Open shell" in the dashboard reaches a real terminal
+      # on the node. The same grant authenticates against both.
+      - --shell
     ports:
       # The API and the node channel share this one TLS port.
       - "8443:8443"
     volumes:
       - certs:/certs:ro
       - hub-data:/data
+
+  # The fleet in a browser: http://localhost:8080
+  #
+  # `omnyserver_web` compiled to JavaScript and served as static files. It has
+  # no backend of its own — the page calls the Hub's API directly with the
+  # credentials you sign in with — which is why the Hub needs the
+  # --cors-origin above, and why this service is just nginx.
+  #
+  # The Hub's certificate is self-signed, and a browser owns its own TLS stack:
+  # there is no in-page --insecure to offer. Visit https://localhost:8443/healthz
+  # once and accept the warning before signing in. See the README.
+  dashboard:
+    build:
+      <<: *image
+      target: dashboard
+    depends_on: [hub]
+    ports:
+      - "8080:80"
 
   # A bare host: nothing installed, so it advertises no capabilities. This is
   # what most of a real fleet looks like.
@@ -82,6 +115,9 @@ services:
       - --principal=node-account
       - --token=node-token
       - --ca=/certs/ca.crt
+      # Serves a shell session too, from the same process and the same
+      # credentials — this is what the dashboard's terminal attaches to.
+      - --with-shell
       - --label=env=prod
       - --label=region=eu
 
@@ -96,6 +132,9 @@ services:
       - --principal=node-account
       - --token=node-token
       - --ca=/certs/ca.crt
+      # Serves a shell session too, from the same process and the same
+      # credentials — this is what the dashboard's terminal attaches to.
+      - --with-shell
       - --label=env=prod
       - --label=region=us
 
@@ -118,6 +157,9 @@ services:
       - --principal=node-account
       - --token=node-token
       - --ca=/certs/ca.crt
+      # Serves a shell session too, from the same process and the same
+      # credentials — this is what the dashboard's terminal attaches to.
+      - --with-shell
       - --label=env=staging
       - --label=role=builder
 

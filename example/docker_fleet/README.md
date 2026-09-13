@@ -1,29 +1,35 @@
 # A fleet of servers, in Docker
 
-One Hub and three nodes, each in its own container, on a private network. The
-nodes dial the Hub over `wss://` and verify its certificate for real — there is
-no `--insecure` anywhere here.
+One Hub and three nodes, each in its own container, on a private network — plus
+the browser dashboard, so you can watch the fleet rather than only read about
+it. The nodes dial the Hub over `wss://` and verify its certificate for real:
+there is no `--insecure` anywhere here.
 
 Run it from the **repository root**:
 
 ```sh
 docker compose -f example/docker_fleet/compose.yaml up --build -d
-dart run example/docker_fleet/fleet_tour.dart
+
+open http://localhost:8080                        # the dashboard
+dart run example/docker_fleet/fleet_tour.dart     # the same fleet, over the API
+
 docker compose -f example/docker_fleet/compose.yaml down -v
 ```
 
-The first build compiles the CLI, so it takes a couple of minutes. After that,
-bringing the fleet up takes seconds.
+The first build compiles the CLI and the dashboard, so it takes a few minutes.
+After that, bringing the fleet up takes seconds. Sign-in details and the
+one-time certificate step are [below](#the-fleet-in-a-browser).
 
 ## What is in it
 
-| Container   | Image   | Labels                    | What it is                  |
-| ----------- | ------- | ------------------------- | --------------------------- |
-| `certs`     | runtime | —                         | Issues the CA and the Hub's certificate, then exits |
-| `hub`       | runtime | —                         | The Hub: node channel and REST API on one TLS port  |
-| `worker-1`  | runtime | `env=prod`, `region=eu`   | A bare host — nothing installed |
-| `worker-2`  | runtime | `env=prod`, `region=us`   | A bare host — nothing installed |
-| `builder-1` | sdk     | `env=staging`, `role=builder` | A host that happens to have the Dart SDK |
+| Container   | Image     | Labels                    | What it is                  |
+| ----------- | --------- | ------------------------- | --------------------------- |
+| `certs`     | runtime   | —                         | Issues the CA and the Hub's certificate, then exits |
+| `hub`       | runtime   | —                         | The Hub: node channel, REST API and shell broker on one TLS port |
+| `dashboard` | dashboard | —                         | The browser dashboard, on <http://localhost:8080> |
+| `worker-1`  | runtime   | `env=prod`, `region=eu`   | A bare host — nothing installed |
+| `worker-2`  | runtime   | `env=prod`, `region=us`   | A bare host — nothing installed |
+| `builder-1` | sdk       | `env=staging`, `role=builder` | A host that happens to have the Dart SDK |
 
 Every container runs the **same binary**. Which role it plays is the first
 argument and nothing else, which is most of what there is to know about
@@ -33,6 +39,64 @@ deploying OmnyServer.
 workers and the builder are the same agent, and they advertise different
 capabilities because their hosts differ. Nothing told them what they have; they
 looked.
+
+## The fleet in a browser
+
+<http://localhost:8080> — the same fleet, in the dashboard.
+
+**Accept the Hub's certificate first.** The fleet issues its own, and a browser
+owns its own TLS stack: there is no in-page `--insecure` to offer, and a page
+cannot ask you about a certificate for a *different* origin. So open
+
+> <https://localhost:8443/healthz>
+
+click through the warning once, and you should see `{"status":"ok"}`. That
+exception is per-origin and sticks, and the certificate is reissued only when
+you `down -v` — so this is a one-time step, not a per-run one.
+
+Then sign in at <http://localhost:8080> with:
+
+| Field        | Value                     |
+| ------------ | ------------------------- |
+| Hub address  | `https://localhost:8443`  |
+| Principal    | `alice`                   |
+| Token        | `admin-token`             |
+
+`alice` is an **admin** grant (`--grant alice:admin-token:admin`), so the whole
+dashboard is enabled. The Hub's master token (`api-secret`, no principal) works
+too, and to see what a narrower credential looks like, issue one from the
+Credentials screen and sign in with that instead — a `viewer` gets the fleet
+read-only, with the control buttons gone rather than merely disabled.
+
+What is worth looking at:
+
+- **Fleet** — the three nodes, their labels, and the same filter the CLI's
+  `--label` does.
+- **A node** — its capabilities, and **live status**: CPU, memory, storage and
+  the process table, busiest first. A browser `top`, of a container.
+- **Run** — formulas come from the Hub's catalogue, so try `dart verify` on
+  `builder-1` and then on `worker-1`: the same request, two answers, because
+  the work happens on the node.
+- **Declared state** — what you set with the tour, and whether it still holds.
+- **Activity** — the events and the audit trail, filling in as you click.
+- **Shell** — a real terminal on any node. The Hub runs a shell broker
+  (`--shell`) and each node serves a session (`--with-shell`), and the grant you
+  signed in with authenticates both, so it opens with no second login.
+
+Two flags make this work at all, and both are in `compose.yaml`:
+`--cors-origin=http://localhost:8080` on the Hub (a browser will not hand a page
+a cross-origin response unless the server names the origin) and `--shell` for
+the terminal. Without the first you get network errors and nothing else.
+
+If you would rather not click through a warning, trust the CA at the OS level
+instead:
+
+```sh
+docker compose -f example/docker_fleet/compose.yaml cp hub:/certs/ca.crt ./fleet-ca.crt
+# macOS:
+sudo security add-trusted-cert -d -r trustRoot \
+  -k /Library/Keychains/System.keychain ./fleet-ca.crt
+```
 
 ## What the tour shows
 
