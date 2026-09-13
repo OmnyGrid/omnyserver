@@ -1,9 +1,15 @@
 ## 0.16.1
 
-A Hub that stops to read a file is a Hub that stops answering. Dependency
-constraints, a memory probe that escaped its own fallback, the file I/O behind
-both taken off the isolate's back — and a node that can install the tools its
-own monitor depends on.
+Most of this release came from putting a fleet in front of a browser and a
+fleet under systemd, and finding out what had never actually been tried. Two
+install steps that could not have worked and reported success anyway. Restart
+and shutdown that were acknowledged and dropped. A formula's output, created and
+discarded on every run. A Hub that could say what it had *dispatched* to a node
+but never what was *on* one.
+
+Also, from before that: a Hub that stops to read a file is a Hub that stops
+answering — dependency constraints, a memory probe that escaped its own
+fallback, and the file I/O behind both taken off the isolate's back.
 
 ### Added
 
@@ -108,7 +114,38 @@ own monitor depends on.
   There are no start/stop/restart actions, because two binaries are not a
   service.
 
+- **The Docker fleet example gains a dashboard, and a systemd variant.**
+  `docker compose -f example/docker_fleet/compose.yaml up --build -d` now brings
+  `omnyserver_web` with it at <http://localhost:8080>, behind an nginx proxy that
+  fronts the Hub on the dashboard's own origin — because a browser owns its TLS
+  stack and no certificate is valid for `localhost`, so the page speaks plain
+  HTTP to one origin and nginx speaks TLS to the Hub.
+
+  `compose.service.yaml` runs the same fleet under **systemd inside the
+  containers**, through the `omnyserver service install` an operator runs on a
+  real host: the unit files, the restart policy and the log destination are the
+  ones production uses rather than a `docker run` approximation. That is how the
+  `$HOME` and working-directory bugs below were found.
+
+  The Hub also issues its own certificate once and keeps it, instead of
+  `cert gen --force` on every `up` — which reissued the CA each start, breaking
+  the exception a browser had been asked to remember and anything else holding
+  the old one.
+
 ### Fixed
+
+- **The service worker cached the Hub's API, and served it back offline.** A
+  dashboard whose network had gone showed a fleet that no longer existed, with
+  node statuses from whenever the last successful request happened to be — and
+  the page could not tell the difference. Hub paths (`/api/`, `/shell`,
+  `/healthz`, `/metrics`) are now excluded by path prefix and never enter the
+  cache; the version is bumped so a worker cached by the old rules cannot outlive
+  the page it was serving.
+
+  The terminal's WebSocket URL was hardcoded to `wss://` for the same reason it
+  was never noticed: behind an HTTP proxy the browser refuses a secure socket
+  from an insecure page, and the terminal simply never connected. It now follows
+  the Hub's scheme.
 
 - **`formula run dart install` could never have worked.** The Linux step was
   `apt-get update && apt-get install -y dart`, and neither Debian nor Ubuntu
