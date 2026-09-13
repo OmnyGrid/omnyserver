@@ -1,0 +1,26 @@
+# Installs this container's OmnyServer role as a service, once, at boot.
+#
+# The chicken-and-egg here is deliberate: `omnyserver service install` writes a
+# unit and asks systemd to start it, so it needs systemd already running. A
+# oneshot unit at boot is the ordinary way to arrange that — after this has run,
+# the Hub or node is a real service, managed by systemd, exactly as it would be
+# on a server.
+[Unit]
+Description=Install the OmnyServer service for this host's role
+After=network.target dbus.service
+Wants=network.target
+ConditionPathExists=/etc/omnyserver/install.sh
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# A unit starts with no HOME, and the service registry needs one to know where
+# to keep its record of what is installed. Root's is the right answer for a
+# system-scoped service.
+Environment=HOME=/root
+ExecStart=/bin/sh /etc/omnyserver/install.sh
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=multi-user.target

@@ -564,8 +564,21 @@ class NodeStartCommand extends Command<void> {
             ..setTrustedCertificates(ca));
 
     final registry = FormulaRegistry.standard();
-    final formulaService = NodeFormulaService(registry: registry);
-    final updateService = const UpdateService();
+
+    // `node restart` and `node shutdown` act on *this agent*, not on the host,
+    // and only the command owning its lifecycle can end it. Completing this is
+    // what stops the agent: the exit code then tells a supervisor whether to
+    // bring it back — non-zero for a restart, zero for a shutdown, which is
+    // what `Restart=on-failure` and Docker's `restart: on-failure` honour.
+    final stopped = Completer<int>();
+    void stop(int code) {
+      if (!stopped.isCompleted) stopped.complete(code);
+    }
+
+    final updateService = UpdateService(
+      onRestartAgent: () async => stop(agentRestartExitCode),
+      onStopAgent: () async => stop(0),
+    );
     const monitor = SystemMonitor();
     final scanner = CapabilityScanner.standard();
 
@@ -578,6 +591,11 @@ class NodeStartCommand extends Command<void> {
       stdout.writeln(message);
       shipper?.add(message);
     }
+
+    // A formula's output goes the same way, so an operator can watch an install
+    // happen rather than wait to be told how it went. Until this was wired the
+    // lines were produced and dropped: nothing was listening.
+    final formulaService = NodeFormulaService(registry: registry, onLog: log);
 
     final agentConfig = NodeAgentConfig(
       hubUri: Uri.parse(hub),
@@ -594,6 +612,7 @@ class NodeStartCommand extends Command<void> {
       statusProvider: monitor.snapshot,
       capabilityProvider: scanner.scan,
       formulaHandler: formulaService.runFormula,
+      formulaStatusHandler: formulaService.reportStatus,
       presetHandler: formulaService.applyPreset,
       nodeControlHandler: updateService.handle,
       logger: log,
@@ -629,10 +648,21 @@ class NodeStartCommand extends Command<void> {
         : null;
 
     stdout.writeln('Press Ctrl-C to stop.');
-    await _awaitSignal();
+    // Ctrl-C, or the Hub asking this agent to restart or stop. Either way the
+    // same orderly shutdown runs; only the exit code differs.
+    final code = await Future.any([
+      _awaitSignal().then((_) => 0),
+      stopped.future,
+    ]);
+    if (code != 0) log('Stopping: the Hub asked this agent to restart.');
     shipper?.close();
     await shellNode?.shutdown();
     await agent.stop();
+    // Leave deliberately rather than waiting for the isolate to run dry. A
+    // long-running agent holds handles that outlive the work — the signal
+    // watcher above among them — and the exit code is the whole contract here:
+    // non-zero asks a supervisor for the agent back, zero leaves it stopped.
+    exit(code);
   }
 
   /// Starts an OmnyShell node alongside the OmnyServer agent.
@@ -919,7 +949,8 @@ class NodeRestartCommand extends Command<void> {
   String get name => 'restart';
 
   @override
-  String get description => 'Restart a node (via the Hub API).';
+  String get description =>
+      'Restart the OmnyServer agent on a node — not the machine.';
 
   @override
   Future<void> run() async {
@@ -928,7 +959,7 @@ class NodeRestartCommand extends Command<void> {
     final client = _apiClientFrom(argResults!);
     try {
       await client.post('/nodes/${rest.first}/restart');
-      stdout.writeln('restart requested for ${rest.first}');
+      stdout.writeln('agent restart requested on ${rest.first}');
     } finally {
       client.close();
     }
@@ -946,7 +977,9 @@ class NodeShutdownCommand extends Command<void> {
   String get name => 'shutdown';
 
   @override
-  String get description => 'Shut a node down (via the Hub API).';
+  String get description =>
+      'Stop the OmnyServer agent on a node — not the machine. The node goes '
+      'offline until something starts it again.';
 
   @override
   Future<void> run() async {
@@ -955,7 +988,7 @@ class NodeShutdownCommand extends Command<void> {
     final client = _apiClientFrom(argResults!);
     try {
       await client.post('/nodes/${rest.first}/shutdown');
-      stdout.writeln('shutdown requested for ${rest.first}');
+      stdout.writeln('agent shutdown requested on ${rest.first}');
     } finally {
       client.close();
     }

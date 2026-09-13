@@ -1,0 +1,104 @@
+# The same fleet, run the way a server runs it: as services, under systemd,
+# installed with `omnyserver service install`.
+#
+#   docker compose -f example/docker_fleet/compose.service.yaml up --build -d
+#   docker compose -f example/docker_fleet/compose.service.yaml exec hub \
+#     omnyserver service info hub
+#   docker compose -f example/docker_fleet/compose.service.yaml down -v
+#
+# `compose.yaml` beside this runs the same fleet as plain processes: faster,
+# smaller, and the flags are right there in the file. This one is slower and
+# heavier, and shows what actually happens on a server — a unit file, a service
+# manager that restarts a crash, and `systemctl` to ask about it.
+#
+# What each container costs to run an init: SYS_ADMIN, the host's cgroup fs, and
+# a tmpfs for /run. Not `--privileged` — systemd reports `running` without it.
+
+name: omnyserver-fleet-service
+
+x-image: &image
+  context: ../..
+  dockerfile: docker/Dockerfile
+  target: service
+
+# What a container needs to run systemd, and the script that installs its role.
+x-systemd: &systemd
+  build: *image
+  cap_add: [SYS_ADMIN]
+  cgroup: host
+  tmpfs:
+    - /run
+    - /run/lock
+  volumes:
+    - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    - ./install-service.sh:/etc/omnyserver/install.sh:ro
+
+services:
+  hub:
+    <<: *systemd
+    environment:
+      ROLE: hub
+    # The service has to be installed *and* running before a node tries to
+    # register — the bootstrap unit runs after boot, so "the container started"
+    # is not enough to go on.
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - test -f /certs/ca.crt && systemctl is-active --quiet dart_omnyserver_hub
+      interval: 2s
+      timeout: 3s
+      retries: 60
+    ports:
+      - "8443:8443"
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+      - ./install-service.sh:/etc/omnyserver/install.sh:ro
+      - certs:/certs
+      - hub-data:/data
+
+  dashboard:
+    build:
+      <<: *image
+      target: dashboard
+    depends_on:
+      hub:
+        condition: service_healthy
+    ports:
+      - "8080:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - certs:/certs:ro
+
+  worker-1:
+    <<: *systemd
+    hostname: worker-1
+    depends_on:
+      hub:
+        condition: service_healthy
+    environment:
+      ROLE: node
+      NODE_ID: worker-1
+      NODE_LABELS: --label=env=prod --label=region=eu
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+      - ./install-service.sh:/etc/omnyserver/install.sh:ro
+      - certs:/certs:ro
+
+  worker-2:
+    <<: *systemd
+    hostname: worker-2
+    depends_on:
+      hub:
+        condition: service_healthy
+    environment:
+      ROLE: node
+      NODE_ID: worker-2
+      NODE_LABELS: --label=env=prod --label=region=us
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+      - ./install-service.sh:/etc/omnyserver/install.sh:ro
+      - certs:/certs:ro
+
+volumes:
+  certs:
+  hub-data:

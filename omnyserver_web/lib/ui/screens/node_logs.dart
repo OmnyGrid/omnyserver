@@ -31,7 +31,15 @@ class NodeLogs {
   bool _disposed = false;
 
   /// Builds the panel.
-  NodeLogs(this.ctx, this.nodeId) {
+  /// Shows only the lines carrying this marker, when set.
+  ///
+  /// The node tags each line of a formula run with `[<formula> <action>]`
+  /// before shipping it, so one run can be read out of a stream that carries
+  /// everything the node says. Filtering happens here rather than at the Hub
+  /// because the stream is shared: another reader may want all of it.
+  final String? filter;
+
+  NodeLogs(this.ctx, this.nodeId, {this.filter, String title = 'Log'}) {
     _liveBadge = el('span', classes: 'badge', text: 'connecting…');
 
     element = el(
@@ -42,7 +50,7 @@ class NodeLogs {
           'div',
           classes: 'row',
           children: [
-            el('h3', classes: 'grow', text: 'Log'),
+            el('h3', classes: 'grow', text: title),
             _liveBadge,
           ],
         ),
@@ -53,19 +61,26 @@ class NodeLogs {
     unawaited(_load());
   }
 
+  /// Whether [line] belongs to what this view is showing.
+  bool _wanted(LogLine line) =>
+      filter == null || line.message.contains(filter!);
+
   Future<void> _load() async {
     clearChildren(_lines);
     _lines.appendChild(loadingRow('Loading the log…'));
     try {
-      final tail = await ctx.service.logs(nodeId);
+      final tail = (await ctx.service.logs(nodeId)).where(_wanted).toList();
       if (_disposed) return;
       clearChildren(_lines);
 
       if (tail.isEmpty) {
         _lines.appendChild(
           emptyState(
-            'This node has reported nothing. It ships its log only when run '
-            'with --ship-logs, which is the default.',
+            filter == null
+                ? 'This node has reported nothing. It ships its log only when '
+                      'run with --ship-logs, which is the default.'
+                : 'Nothing from this run yet. Output appears as the node '
+                      'reports it, in batches of a second or two.',
           ),
         );
       } else {
@@ -94,7 +109,7 @@ class NodeLogs {
   }
 
   void _append(LogLine line) {
-    if (_disposed) return;
+    if (_disposed || !_wanted(line)) return;
     // The first live line replaces the "nothing reported" placeholder.
     if (_lines.querySelector('.empty') != null) clearChildren(_lines);
 

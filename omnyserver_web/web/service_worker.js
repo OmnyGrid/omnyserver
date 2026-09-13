@@ -6,19 +6,34 @@
 //  - Same-origin GETs: network-first — fresh app code online, cached shell
 //    offline. Navigations fall back to the cached shell, so the hash router
 //    still resolves.
-//  - Cross-origin requests: not intercepted at all.
+//  - Anything belonging to the Hub: not intercepted at all.
 //
-// That last rule is the one that matters here, and it is where this worker
-// parts ways with OmnyShell's. The Hub is a *different origin* — its URL is
-// typed at login — so everything the dashboard actually reads is cross-origin:
-// node status, metrics, the event stream, the shell socket. A cache-first (or
-// any caching) policy there would answer a poll for live fleet state out of the
-// cache, and the dashboard would confidently show a node that has been offline
-// for an hour. It would also swallow the SSE stream, which must never be
-// buffered or replayed. So those requests are left to the browser untouched.
+// That last rule is the one that matters here. Nothing the dashboard reads from
+// the Hub may be cached: a poll for live fleet state answered out of the cache
+// would show a node that has been offline for an hour, confidently. The SSE
+// stream must not be touched either — cloning it into the cache reads a body
+// that never ends, buffering events for the life of the session.
+//
+// "Belonging to the Hub" needs two tests, because the dashboard reaches it two
+// different ways:
+//
+//   * A **different origin**, when you sign in with the Hub's own URL
+//     (`https://hub:8443`). Nothing cross-origin is intercepted.
+//   * The **same origin**, when a proxy serves this app and forwards the API —
+//     which is how `example/docker_fleet/` runs it, precisely so a browser never
+//     has to be talked into trusting a self-signed certificate. Then
+//     `/api/v1/...` arrives here looking like one of ours, and only the path
+//     tells them apart.
+//
+// The origin check alone used to be the whole rule, and it silently stopped
+// being enough the day the fleet grew a proxy.
 //
 // Bump CACHE_VERSION to invalidate old caches when the shell changes.
-const CACHE_VERSION = 'omnyserver-v2';
+const CACHE_VERSION = 'omnyserver-v3';
+
+// Paths the Hub answers, which are never ours to cache. Matched on this origin
+// only; a Hub on its own origin is already excluded by the origin check.
+const HUB_PATHS = ['/api/', '/shell', '/healthz', '/metrics'];
 
 const SHELL = [
   './',
@@ -56,6 +71,17 @@ self.addEventListener('activate', (event) => {
   );
 });
 
+// `/api/` matches as a prefix; the rest match exactly or as a path segment, so
+// an app asset that merely starts with those letters is still ours.
+function isHubPath(pathname) {
+  return HUB_PATHS.some(
+    (p) =>
+      p.endsWith('/')
+        ? pathname.startsWith(p)
+        : pathname === p || pathname.startsWith(`${p}/`)
+  );
+}
+
 async function networkFirst(request) {
   const cache = await caches.open(CACHE_VERSION);
   try {
@@ -78,7 +104,8 @@ self.addEventListener('fetch', (event) => {
   if (request.method !== 'GET') return;
 
   const url = new URL(request.url);
-  if (url.origin !== self.location.origin) return; // The Hub. Never ours to cache.
+  if (url.origin !== self.location.origin) return; // A Hub of its own.
+  if (isHubPath(url.pathname)) return; // A Hub behind our proxy.
 
   event.respondWith(networkFirst(request));
 });

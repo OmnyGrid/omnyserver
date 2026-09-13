@@ -247,6 +247,7 @@ class HttpApiServer {
         ..post('/api/v1/nodes/<id>/shutdown', (r, p) => _shutdown(r, p))
         ..post('/api/v1/nodes/<id>/update', (r, p) => _update(r, p))
         ..post('/api/v1/nodes/<id>/formula', (r, p) => _formula(r, p))
+        ..get('/api/v1/nodes/<id>/formulas', (r, p) => _formulaStatus(r, p))
         ..get('/api/v1/formulas', (r, p) => _listFormulas())
         // Before `/presets/<id>`: the router takes the first match, and `apply`
         // is not a preset id.
@@ -445,6 +446,31 @@ class HttpApiServer {
       principal: principal,
     );
     return jsonOk(reply.toJson());
+  }
+
+  /// What state each of the node's formulas is in, asked of the node.
+  ///
+  /// A GET, and unauthorized beyond the API token, because it changes nothing:
+  /// every probe behind it is a version flag or an `info`. `?formulas=a,b`
+  /// narrows it; the default is everything the node carries, which is the
+  /// question a dashboard asks.
+  Future<HubResponse> _formulaStatus(
+    HubRequest request,
+    Map<String, String> params,
+  ) async {
+    final id = _nodeId(params);
+    final asked = request.uri.queryParameters['formulas'];
+    final reports = await hub.formulaStatus(
+      id,
+      formulas: asked == null || asked.isEmpty
+          ? const []
+          : asked
+                .split(',')
+                .map((f) => f.trim())
+                .where((f) => f.isNotEmpty)
+                .toList(),
+    );
+    return jsonOk([for (final report in reports) report.toJson()]);
   }
 
   /// Applies a preset: either one sent inline, or one saved on the Hub by id.

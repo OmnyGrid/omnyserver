@@ -346,7 +346,9 @@ void main() {
       expect(d.packageName, 'omnyserver');
       expect(d.serviceName, 'hub');
       expect(d.qualifiedName, 'omnyserver:hub');
-      expect(d.restart.name, 'always');
+      // A crash is restarted; a clean exit is not, because that is how the
+      // agent reports having been told to stop (`node shutdown`).
+      expect(d.restart.name, 'onFailure');
       // Under the JIT, forCurrentExecutable prepends the script — so the
       // reconstructed argv is a suffix, not the whole vector.
       expect(d.arguments, containsAllInOrder(['hub', 'start']));

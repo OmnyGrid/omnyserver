@@ -265,7 +265,13 @@ svc.ServiceDescriptor serviceDescriptor(String role, ArgResults args) {
     arguments: serviceStartArgs(role, args),
     environment: env,
     scope: scope,
-    restart: svc.RestartPolicy.always,
+    // A crash brings the service back; a clean exit does not. That difference
+    // is the whole of `node shutdown`: the agent stops itself with exit 0 to
+    // mean "I was told to stop", and with a non-zero code to ask for a
+    // restart. Under `always` both were undone — the service manager restarted
+    // the agent either way, and an operator who shut a node down watched it
+    // come straight back.
+    restart: svc.RestartPolicy.onFailure,
   );
 }
 
@@ -427,7 +433,8 @@ class ServiceReinstallCommand extends Command<void> {
           arguments: info.entry.arguments,
           environment: info.entry.environment,
           scope: info.entry.scope,
-          restart: svc.RestartPolicy.always,
+          // Same policy a fresh install writes; see `serviceDescriptor`.
+          restart: svc.RestartPolicy.onFailure,
         );
       }
       if (args['dry-run'] as bool) {

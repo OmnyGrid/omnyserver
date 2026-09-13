@@ -208,6 +208,17 @@ void main() {
       expect(docker.actions, contains(FormulaAction.verify));
     });
 
+    test('asking an unreachable node for its software is an AppError', () async {
+      // The Software card's own failure mode. Nothing is connected here, so the
+      // Hub cannot dispatch — and the panel has to get something it can show in
+      // a banner rather than an exception it drops on the floor.
+      await signIn();
+      await expectLater(
+        service.formulaStatus('ghost'),
+        throwsA(isA<AppError>()),
+      );
+    });
+
     test('a preset saved on the Hub comes back', () async {
       await signIn();
       expect(await service.presets(), isEmpty);

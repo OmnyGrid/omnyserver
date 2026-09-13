@@ -3,6 +3,7 @@ import '../domain/entities/preset.dart';
 import '../domain/entities/service_descriptor.dart';
 import '../domain/formula/formula_action.dart';
 import '../domain/formula/formula_result.dart';
+import '../domain/formula/formula_status.dart';
 import '../shared/json/json_codec_helpers.dart';
 
 /// The operations the Hub invokes on a node, and the results it gets back.
@@ -25,6 +26,9 @@ class Operations {
 
   /// Hub → node: run a formula action.
   static const String formula = 'op.formula.run';
+
+  /// Hub → node: report the state of the formulas the node carries.
+  static const String formulaStatus = 'op.formula.status';
 
   /// Hub → node: apply a preset.
   static const String preset = 'op.preset.apply';
@@ -181,6 +185,71 @@ final class FormulaRunResult {
     requestId: Json.requireString(d, 'requestId'),
     result: FormulaResult.fromJson(Json.asObject(d['result'], 'result')),
   );
+}
+
+/// Hub → node: report the state of the formulas this node carries.
+///
+/// One request for the whole registry rather than one per formula. A dashboard
+/// showing a node's software asks about all of it at once, and a node with a
+/// dozen formulas would otherwise be a dozen round trips over a link that may
+/// be a continent away.
+final class FormulaStatusRequest {
+  /// Correlation id.
+  final String requestId;
+
+  /// The formula ids to report on; empty means everything the node has.
+  ///
+  /// Empty is the usual case, and the reason this is a node-side question at
+  /// all: the Hub's catalogue is what nodes *can* run, and a node may carry a
+  /// site-registered formula the Hub has never heard of.
+  final List<String> formulas;
+
+  /// Creates a formula-status request.
+  const FormulaStatusRequest({
+    required this.requestId,
+    this.formulas = const [],
+  });
+
+  /// Encodes to JSON.
+  Map<String, dynamic> toJson() => {
+    'requestId': requestId,
+    if (formulas.isNotEmpty) 'formulas': formulas,
+  };
+
+  /// Decodes from JSON.
+  static FormulaStatusRequest fromJson(Map<String, dynamic> d) =>
+      FormulaStatusRequest(
+        requestId: Json.requireString(d, 'requestId'),
+        formulas: Json.optStringList(d, 'formulas'),
+      );
+}
+
+/// Node → Hub: what each formula found when it looked at itself.
+final class FormulaStatusResult {
+  /// Correlation id.
+  final String requestId;
+
+  /// One report per formula asked about.
+  final List<FormulaStatusReport> reports;
+
+  /// Creates a formula-status result.
+  const FormulaStatusResult({required this.requestId, this.reports = const []});
+
+  /// Encodes to JSON.
+  Map<String, dynamic> toJson() => {
+    'requestId': requestId,
+    'reports': [for (final report in reports) report.toJson()],
+  };
+
+  /// Decodes from JSON.
+  static FormulaStatusResult fromJson(Map<String, dynamic> d) =>
+      FormulaStatusResult(
+        requestId: Json.requireString(d, 'requestId'),
+        reports: [
+          for (final report in Json.optObjectList(d, 'reports'))
+            FormulaStatusReport.fromJson(report),
+        ],
+      );
 }
 
 /// Hub → node: apply a preset (a bundle of formula steps).

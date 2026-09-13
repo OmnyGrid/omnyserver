@@ -1,5 +1,6 @@
-# Keeps the build context small for docker/Dockerfile. Everything the image
-# needs is pubspec.yaml, bin/ and lib/.
+# Keeps the build context small for docker/Dockerfile. The server images need
+# pubspec.yaml, bin/ and lib/; the dashboard image also needs omnyserver_web/,
+# so that is present — minus everything it generates.
 .git
 .dart_tool
 .github
@@ -7,7 +8,10 @@ build
 coverage
 certs
 doc/api
-omnyserver_web
+omnyserver_web/.dart_tool
+omnyserver_web/build
+omnyserver_web/pubspec.lock
+omnyserver_web/pubspec_overrides.yaml
 pubspec.lock
 pubspec_overrides.yaml
 *.srl

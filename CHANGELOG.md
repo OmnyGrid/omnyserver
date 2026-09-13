@@ -1,10 +1,166 @@
 ## 0.16.1
 
 A Hub that stops to read a file is a Hub that stops answering. Dependency
-constraints, a memory probe that escaped its own fallback, and the file I/O
-behind both taken off the isolate's back. No API change.
+constraints, a memory probe that escaped its own fallback, the file I/O behind
+both taken off the isolate's back — and a node that can install the tools its
+own monitor depends on.
+
+### Added
+
+- **A formula can say what state it is in, and the dashboard shows it.** The
+  Hub could say what it had *dispatched* to a node — installed Docker at
+  14:02, and it succeeded. It could not say whether Docker was still there at
+  15:00, or whether the daemon an operator stopped over SSH was running. An
+  operation history is a record of intentions, and a node is a machine other
+  people also touch.
+
+  A formula now answers for itself. `Formula.status()` reports `absent`,
+  `installed`, `running`, `stopped`, `failed` or `unknown`, defaulting to what
+  `validate` already knew — so a formula that installs a command keeps working
+  with nothing added. One that manages a *service* supplies a second probe:
+  `DockerFormula` asks `docker info`, which has to reach the daemon, because
+  `docker --version` answers from the client binary and reports a version
+  perfectly happily on a host whose daemon is dead.
+
+  Present is checked before running, deliberately. A stopped daemon and an
+  uninstalled one both fail the running probe, and calling the second one
+  "stopped" sends an operator to a start button for software that is not there.
+  A probe that could not *run* is `unknown` and never `absent`, for the same
+  reason in the other direction: "not installed" invites an install, and an
+  install over a working one is how a failed probe becomes an outage.
+
+  `GET /api/v1/nodes/<id>/formulas` asks the node and returns a row per
+  formula (`?formulas=a,b` narrows it). One round trip for the whole registry,
+  not one per formula, and it is the *node's* registry — a site-registered
+  formula the Hub's catalogue has never heard of still reports. The dashboard
+  gains a **Software** card on each node, refreshed when a run finishes, since
+  that is the panel an operator is watching to find out whether the install
+  worked.
+
+  This is distinct from `GET /api/v1/formulas`, which is unchanged: that is the
+  catalogue of what a node *can* run.
+
+- **A formula's output is reported while it runs, and kept afterwards.** The
+  node service has always accepted an `onLog` sink for formula output, and
+  nothing ever passed one — so every line a formula produced, including each
+  line of `apt-get`, was created and dropped. `FormulaResult.logs` existed and
+  was always empty. An operator could watch a node install something for two
+  minutes and be told only whether it worked.
+
+  The agent now wires that sink to its own logger, so output travels the path
+  the node's log already takes: shipped to the Hub (`--ship-logs`, on by
+  default) and readable at `GET /nodes/<id>/logs` and `/logs/stream`. Each line
+  is tagged with the run — `[dart install] …` — because the stream carries
+  everything the node says and a reader needs to pick one run out of it. The
+  Hub already names a dispatched operation with the same `<formula> <action>`
+  pair, so the operation *is* the filter.
+
+  The result keeps the tail too (200 lines), so a run nobody watched is still
+  readable, and says how many earlier lines it dropped rather than quietly
+  starting in the middle. The live stream is not capped.
+
+  Batching means "live" is a second or two granular, not instant — that is
+  `LogShipper`'s existing 2s/50-line cadence, unchanged.
+
+- **Four formulas for the commands a bare host turns out not to have.** A slim
+  image ships almost nothing, and the absence is discovered at the worst moment
+  — reaching for `netstat` on a server that is not answering, or watching a
+  build fail deep inside someone else's output.
+
+  | Formula | Commands | Why it is worth a formula |
+  | --- | --- | --- |
+  | `net-tools` | `netstat`, `route` | The first two questions asked of a silent server. Debian dropped both from the default install. |
+  | `dns-utils` | `nslookup` | Whether a node can resolve the Hub's name separates a DNS problem from a network one — and only the node's own resolver can answer. |
+  | `build-tools` | `gcc`, `make` | Anything that builds rather than downloads. |
+  | `nmap` | `nmap` | The view of the network from inside the fleet. |
+
+  `nmap` is deliberately not installed by default: a port scanner is a tool an
+  intruder is glad to find, and on some networks running one is itself an
+  event. That it takes an explicit `formula run`, recorded in the audit trail
+  with the principal who asked, is the right shape for it.
+
+  Each distribution names these differently — `procps-ng`, `bind-tools`,
+  `build-base` — so a new `PackageFormula` base holds the package name per
+  manager and writes the apt/apk/dnf switch once. `procps` moved onto it, which
+  removed the copy it had. On macOS, `nmap` comes from Homebrew; `netstat`,
+  `route` and `nslookup` ship with the system, and `gcc`/`make` come from the
+  Xcode tools, whose installer opens a dialog — so that one declines rather
+  than half-starting something nobody is there to click through.
+
+- **`procps` formula — the `ps` and `top` commands.** Less cosmetic than it
+  sounds: the agent reports its process table by shelling out to `ps`, and
+  degrades to an empty list when it is missing. A node on a slim image — which
+  is most container images, including `debian:stable-slim` and `dart:stable` —
+  therefore reports its CPU and memory perfectly well and *no processes at all*.
+  `formula run procps install` fills that in, and the next heartbeat carries a
+  populated table; nothing restarts.
+
+  Registered in `FormulaRegistry.standard()`, so every node has it without being
+  configured to, and listed in the Hub's catalogue, so a client offers it rather
+  than guessing at a name. On Linux it picks whichever of `apt-get`, `apk` or
+  `dnf` the host has — `stepFor` is told the OS, not the distribution, so the
+  choice has to be made on the host — and names the package each family uses
+  (`procps`, or `procps-ng` on the Red Hat side). A host with none of the three
+  says so rather than failing obscurely.
+
+  macOS ships both tools as part of the system, so `install` is a no-op there
+  and `uninstall` refuses: a formula asked to remove `/bin/ps` should decline.
+  There are no start/stop/restart actions, because two binaries are not a
+  service.
 
 ### Fixed
+
+- **`formula run dart install` could never have worked.** The Linux step was
+  `apt-get update && apt-get install -y dart`, and neither Debian nor Ubuntu
+  carries a `dart` package — the SDK lives in Google's own apt repository. Every
+  attempt answered `E: Unable to locate package dart`. The step now adds that
+  repository (key, source list, refresh) before installing, once and
+  idempotently, and `update` does the same.
+
+  Worth saying plainly, because it is a real act on a node: this installs
+  Google's signing key into the host's trusted keyring, which everything apt
+  installs afterwards trusts too. It is what dart.dev documents.
+
+- **`formula run docker install` reported success while installing nothing.**
+  The step was `curl -fsSL https://get.docker.com | sh`, whose exit status is
+  `sh`'s — and `sh` reading an empty script succeeds. On a host with no curl
+  (most slim images) it printed `curl: not found` and **exited 0**; a network
+  failure or a 404 looked the same. The Hub then recorded Docker as installed
+  and drift reconciliation agreed there was nothing left to do.
+
+  The script is fetched to a file and then run, so a failed download fails the
+  step, and a host with neither curl nor wget is told so. The same reasoning
+  removed the `wget … | gpg` pipe from the Dart step: dearmoring an empty
+  download produces a keyring that verifies nothing and fails much later,
+  somewhere else.
+
+  Audited the rest while there. The remaining steps name packages that exist
+  (`procps`, `procps-ng`, `docker-ce`) and fail honestly — `systemctl start
+  docker` on a host without systemd, `brew` on a Mac without Homebrew — and
+  `brew install dart-sdk` and the `docker` cask are both still real. A test now
+  walks every scripted step and fails any multi-command one that would run on
+  after a failure.
+
+- **`restart` and `shutdown` did nothing, and reported success.** The node's
+  control handler acted on `update` and answered everything else with
+  `acknowledged <action>` — so the Hub replied `{"status":"restarting"}`, the
+  dashboard showed a green confirmation, and the agent carried on untouched.
+  Reporting work as done is worse than reporting it as impossible.
+
+  Both now act, **on the agent and never on the machine it runs on**: `restart`
+  stops the agent so its supervisor starts it again, `shutdown` stops it and
+  leaves it stopped. The difference is the exit code — non-zero
+  (`agentRestartExitCode`, `EX_TEMPFAIL`) for a restart, zero for a shutdown —
+  which is what `Restart=on-failure` and Docker's `restart: on-failure` read to
+  decide whether to bring the agent back. A crashed agent is still restarted by
+  either.
+
+  The reply is sent before the agent goes, so an operator sees a confirmation
+  rather than a dropped connection. `UpdateService` takes `onRestartAgent` and
+  `onStopAgent` — only the process owning the agent's lifecycle can end it — and
+  an agent wired without them now says so instead of claiming success. Every
+  name and description says "the agent": the CLI, the OpenAPI document, and the
+  dashboard's buttons (now **Restart agent** and **Stop agent**).
 
 - **A failing memory probe on macOS escaped its own fallback.** `_memory()`
   wraps its platform probes in a `try` that falls through to a zeroed
@@ -18,6 +174,19 @@ behind both taken off the isolate's back. No API change.
   inside the `try`.
 
 ### Changed
+
+- **A service unit now restarts a crash, not a deliberate stop.**
+  `service install` writes `Restart=on-failure` (and launchd's equivalent,
+  `KeepAlive` with `SuccessfulExit: false`) where it wrote `Restart=always`.
+
+  A crash is still brought back. What changes is that a deliberate stop is
+  honoured: the agent exits 0 to mean "I was told to stop" and non-zero to ask
+  for a restart, and `always` undid both — an operator who shut a node down from
+  the dashboard watched the service manager start it straight back. Measured
+  before the change: a clean exit took the unit from PID 224 to 241.
+
+  Existing installed services keep the policy they were installed with, until
+  `omnyserver service reinstall <role>` rewrites the unit.
 
 - **The JSON-directory repositories no longer block the isolate they serve
   from.** Every method implements a `Future`-returning repository interface, and
@@ -45,12 +214,29 @@ behind both taken off the isolate's back. No API change.
   `stdin.readLineSync`, which is a deliberate blocking read of a terminal; and
   `Sha256().toSync()`, which is the cryptography package's sync API, not I/O.
 
-- **[omnyshell](https://pub.dev/packages/omnyshell) `^1.57.0`** (from `^1.56.1`),
-  which adds the standalone `omnyshell ide [path]` command and routes both IDE
-  entry points through one launcher. OmnyServer embeds OmnyShell for its shell
-  broker (`AiConfig` / `AiConfigIo` / `HttpProxyService`) and never launches the
-  IDE itself, so nothing here changes what the Hub serves — the constraint moves
-  so a dependent resolving both packages is not pinned back.
+- **[omnyshell](https://pub.dev/packages/omnyshell) `^1.57.2`** (from `^1.56.1`),
+  which makes a shell on a node that runs as a service behave like a shell.
+  Two fixes, and both of them showed up here first:
+
+  **It had no `$HOME`** (1.57.1). systemd hands a system unit `PATH`, `LANG` and
+  even `USER`, but sets `HOME` only if the unit asks — and a session inherits
+  the node's environment, so there was nothing to inherit. Quietly, too: `cd ~`
+  went nowhere and said nothing, `~/…` stopped expanding, and git, ssh and
+  package managers wrote somewhere other than the user's home. A session now
+  gets a `HOME` resolved from the password database when the node has none.
+
+  **It opened in the wrong directory** (1.57.2). Sessions started wherever the
+  node process was standing, which for an agent installed as a service is where
+  its binary lives — `/usr/local/bin`. They now start in the user's home, and
+  `exec` follows the same rule as an interactive shell.
+
+  Both matter here because `service install` is how a node is meant to run. In
+  the example fleet, `omnyshell exec worker-1 pwd` and `echo $HOME` now answer
+  `/root`; they answered `/usr/local/bin` and nothing at all.
+
+  1.57.0 along the way added the standalone `omnyshell ide [path]` command,
+  which OmnyServer does not use — it embeds OmnyShell for its shell broker
+  (`AiConfig` / `AiConfigIo` / `HttpProxyService`) and never launches the IDE.
 
 - `http: ^1.6.0` (from `^1.0.0`), `uuid: ^4.6.0` (from `^4.5.3`) — the latter
   matching what omnyshell 1.57.0 already requires.

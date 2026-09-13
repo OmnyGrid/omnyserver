@@ -92,12 +92,29 @@ void main() {
 
       final formulas = (body as List).cast<Map>();
       final ids = [for (final f in formulas) f['id']];
-      expect(ids, containsAll(['docker', 'dart']));
+      expect(
+        ids,
+        containsAll([
+          'docker',
+          'dart',
+          'procps',
+          'net-tools',
+          'dns-utils',
+          'build-tools',
+          'nmap',
+        ]),
+      );
 
       final docker = formulas.firstWhere((f) => f['id'] == 'docker');
       expect(docker['name'], 'Docker');
       // The actions are what a client offers instead of a free-text box.
       expect(docker['actions'], containsAll(['install', 'verify', 'restart']));
+
+      // And a formula that manages no service offers no service actions, so a
+      // client cannot offer "restart the ps command".
+      final procps = formulas.firstWhere((f) => f['id'] == 'procps');
+      expect(procps['actions'], containsAll(['install', 'verify']));
+      expect(procps['actions'], isNot(contains('restart')));
     });
 
     test(
@@ -116,6 +133,74 @@ void main() {
           }
           expect(formula.spec.actions, spec.actions, reason: spec.id.value);
         }
+      },
+    );
+  });
+
+  group('what a node has, as opposed to what it could have', () {
+    test('the Hub asks the node, and answers with a row each', () async {
+      // `/formulas` is the catalogue: what a node *can* run. This is the node
+      // reporting what it actually carries, and whether it is working — which
+      // the Hub cannot know from its own history of dispatched operations.
+      final service = NodeFormulaService(
+        registry: FormulaRegistry.standard(executor: _InstalledExecutor()),
+      );
+      await cluster.startNode(
+        id: 'worker-01',
+        formulaStatusHandler: service.reportStatus,
+      );
+
+      final (status, body) = await send(
+        'GET',
+        '/api/v1/nodes/worker-01/formulas',
+      );
+      expect(status, 200);
+
+      final reports = (body as List).cast<Map>();
+      expect([
+        for (final r in reports) r['formula'],
+      ], containsAll(['docker', 'dart', 'procps', 'nmap']));
+      // Every probe passes for this executor, so every formula is present —
+      // Docker's status probe reaches a "daemon" too, hence `running`.
+      final docker = reports.firstWhere((r) => r['formula'] == 'docker');
+      expect(docker['status'], 'running');
+      final nmap = reports.firstWhere((r) => r['formula'] == 'nmap');
+      expect(
+        nmap['status'],
+        'installed',
+        reason: 'a command has nothing to be running',
+      );
+    });
+
+    test('asking about one formula reports only that one', () async {
+      final service = NodeFormulaService(
+        registry: FormulaRegistry.standard(executor: _InstalledExecutor()),
+      );
+      await cluster.startNode(
+        id: 'worker-01',
+        formulaStatusHandler: service.reportStatus,
+      );
+
+      final (status, body) = await send(
+        'GET',
+        '/api/v1/nodes/worker-01/formulas?formulas=nmap',
+      );
+      expect(status, 200);
+      expect((body as List).single['formula'], 'nmap');
+    });
+
+    test(
+      'a node with no formula engine reports nothing, not an error',
+      () async {
+        // A node can be a plain agent. "No software to report" is a true answer;
+        // a 500 would put a red banner on a healthy node's page.
+        await cluster.startNode(id: 'worker-01');
+        final (status, body) = await send(
+          'GET',
+          '/api/v1/nodes/worker-01/formulas',
+        );
+        expect(status, 200);
+        expect(body, isEmpty);
       },
     );
   });

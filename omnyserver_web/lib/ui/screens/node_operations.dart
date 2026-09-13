@@ -6,6 +6,7 @@ import 'package:omnyshell_web/ui_kit.dart';
 import 'package:web/web.dart' as web;
 
 import '../../app/app_context.dart';
+import 'node_logs.dart';
 
 /// The operational half of a node's screen: what it is declared to be, and what
 /// you can run on it.
@@ -24,6 +25,7 @@ class NodeOperations {
   final web.HTMLElement element = el('div', classes: 'stack');
 
   final web.HTMLElement _driftBody = div();
+  final web.HTMLElement _softwareBody = div();
   final web.HTMLElement _runBody = div();
   final web.HTMLElement _opsBody = div();
   StreamSubscription<OmnyEvent>? _events;
@@ -50,6 +52,27 @@ class NodeOperations {
           'div',
           classes: 'card stack',
           children: [
+            el(
+              'div',
+              classes: 'row',
+              children: [
+                el('h3', classes: 'grow', text: 'Software'),
+                button(
+                  'Refresh',
+                  className: 'ghost',
+                  onClick: () => unawaited(_loadSoftware()),
+                ),
+              ],
+            ),
+            _softwareBody,
+          ],
+        ),
+      )
+      ..appendChild(
+        el(
+          'div',
+          classes: 'card stack',
+          children: [
             el('h3', text: 'Run'),
             _runBody,
           ],
@@ -67,6 +90,7 @@ class NodeOperations {
       );
 
     unawaited(_loadDrift());
+    unawaited(_loadSoftware());
     unawaited(_loadCatalog());
     unawaited(_loadOperations());
     _watchOperations();
@@ -86,7 +110,12 @@ class NodeOperations {
         OperationFinished(nodeId: final node) => node.value == nodeId,
         _ => false,
       };
-      if (mine) unawaited(_loadOperations());
+      if (!mine) return;
+      unawaited(_loadOperations());
+      // An install that just finished changed what the node has, so the
+      // software panel is now stale — and it is the panel the operator is
+      // looking at to find out whether the install worked.
+      if (event is OperationFinished) unawaited(_loadSoftware());
     }, onError: (Object _) {});
   }
 
@@ -126,6 +155,9 @@ class NodeOperations {
                 classes: 'muted mono',
                 text: '${op.duration(now).inSeconds}s',
               ),
+              // Only a formula tags its output, so only a formula has a log to
+              // pick out of the node's stream.
+              if (op.kind == 'formula') _logButton(op),
             ],
           ),
         );
@@ -289,6 +321,80 @@ class NodeOperations {
     }
   }
 
+  // --- What the node actually has -------------------------------------------
+
+  /// Asks the node what state each of its formulas is in.
+  ///
+  /// The node is asked, rather than the Hub's own history of what it
+  /// dispatched: a daemon that died after a successful install, or one somebody
+  /// stopped over SSH, leaves that history saying "installed, fine".
+  Future<void> _loadSoftware() async {
+    clearChildren(_softwareBody);
+    _softwareBody.appendChild(loadingRow('Asking the node…'));
+    try {
+      final reports = await ctx.service.formulaStatus(nodeId);
+      if (_disposed) return;
+      clearChildren(_softwareBody);
+
+      if (reports.isEmpty) {
+        _softwareBody.appendChild(emptyState('This node carries no formulas.'));
+        return;
+      }
+
+      // Present first: what a node *has* is the answer being looked for, and a
+      // list led by five absences buries it.
+      final sorted = [...reports]
+        ..sort((a, b) {
+          if (a.status.isPresent != b.status.isPresent) {
+            return a.status.isPresent ? -1 : 1;
+          }
+          return a.formula.value.compareTo(b.formula.value);
+        });
+
+      for (final report in sorted) {
+        _softwareBody.appendChild(
+          el(
+            'div',
+            classes: 'row',
+            children: [
+              el(
+                'span',
+                classes: _statusBadge(report.status),
+                text: report.status.name,
+              ),
+              el('div', classes: 'grow', text: report.formula.value),
+              if (report.version != null)
+                el('div', classes: 'muted mono', text: report.version!),
+            ],
+          ),
+        );
+        if (report.message.isNotEmpty &&
+            report.status != FormulaStatus.absent) {
+          _softwareBody.appendChild(
+            el('div', classes: 'hint', text: report.message),
+          );
+        }
+      }
+    } on AppError catch (e) {
+      if (_disposed) return;
+      clearChildren(_softwareBody);
+      // A node that is offline cannot be asked, and that is not the panel's
+      // failure — the rest of it still works.
+      _softwareBody.appendChild(errorBanner(e));
+    }
+  }
+
+  /// Green for working, red for broken, plain for everything else.
+  ///
+  /// `installed` is green and `absent` is not red: a formula nobody asked for
+  /// is not a fault, and colouring it like one teaches an operator to ignore
+  /// the colour.
+  String _statusBadge(FormulaStatus status) => switch (status) {
+    FormulaStatus.running || FormulaStatus.installed => 'badge online',
+    FormulaStatus.stopped || FormulaStatus.failed => 'badge offline',
+    FormulaStatus.absent || FormulaStatus.unknown => 'badge',
+  };
+
   // --- Formulas and presets --------------------------------------------------
 
   Future<void> _loadCatalog() async {
@@ -396,6 +502,70 @@ class NodeOperations {
   /// request times out, the node carries on working, and the operator is shown a
   /// failure that did not happen. The operations tray below is where the answer
   /// arrives.
+  /// The button that opens one run's log.
+  ///
+  /// Shaped like the status badge it shares the row with rather than like a
+  /// form's submit button: the tray is a list to scan, and a full-weight button
+  /// on every formula row drew the eye away from the statuses.
+  ///
+  /// The label says "Log" and the accessible name says which run, because a
+  /// screen reader moving button to button would otherwise hear "Log" a dozen
+  /// times with nothing to tell them apart.
+  web.HTMLElement _logButton(Operation op) {
+    final control = button(
+      'Log',
+      className: 'op-log',
+      ariaLabel: 'Show the log of ${op.summary}',
+      onClick: () => _showRunLog(op),
+    );
+    // Prepended, not appended: `button()` sets `textContent`, which would wipe
+    // anything already in there.
+    control.insertBefore(
+      el(
+        'span',
+        classes: 'lines',
+        // Decorative — the button already has a name.
+        attrs: const {'aria-hidden': 'true'},
+        children: [el('i'), el('i'), el('i')],
+      ),
+      control.firstChild,
+    );
+    return control;
+  }
+
+  /// Opens the live log of one run.
+  ///
+  /// The node prefixes every line of a run with `[<formula> <action>]`, and the
+  /// Hub names the operation with the same pair, so the operation's summary is
+  /// the filter. A run that has already finished still reads: its lines are in
+  /// the node's log, and the tail is fetched before the stream is joined.
+  void _showRunLog(Operation op) {
+    final logs = NodeLogs(
+      ctx,
+      nodeId,
+      filter: '[${op.summary}]',
+      title: 'Live log — ${op.summary}',
+    );
+    late final Modal modal;
+    modal = Modal(
+      title: 'Log: ${op.kind} ${op.summary}',
+      body: logs.element,
+      actions: [
+        button(
+          'Close',
+          primary: true,
+          onClick: () {
+            // The stream is per-view, so closing has to end it: a modal opened
+            // and dismissed a dozen times should not leave a dozen listeners.
+            logs.dispose();
+            modal.close();
+          },
+        ),
+      ],
+    );
+    modal.show();
+  }
+
   Future<void> _runFormula(String formula, FormulaAction action) async {
     try {
       await ctx.service.runFormulaAsync(

@@ -25,8 +25,14 @@ export 'src/infrastructure/service/service_controller.dart';
 // Formula engine.
 export 'src/infrastructure/formulas/command_executor.dart';
 export 'src/infrastructure/formulas/command_formula.dart';
+export 'src/infrastructure/formulas/build_tools_formula.dart';
 export 'src/infrastructure/formulas/dart_formula.dart';
+export 'src/infrastructure/formulas/dns_utils_formula.dart';
 export 'src/infrastructure/formulas/docker_formula.dart';
+export 'src/infrastructure/formulas/net_tools_formula.dart';
+export 'src/infrastructure/formulas/nmap_formula.dart';
+export 'src/infrastructure/formulas/package_formula.dart';
+export 'src/infrastructure/formulas/procps_formula.dart';
 export 'src/infrastructure/state/default_reconciler.dart';
 
 // Credentials.

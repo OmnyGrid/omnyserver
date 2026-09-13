@@ -313,24 +313,28 @@ class NodeDetailScreen implements Screen {
     _actionsBody
       ..appendChild(
         button(
-          'Restart',
+          'Restart agent',
           onClick: () => _confirm(
-            'Restart $nodeId?',
-            'The agent reconnects on its own.',
+            'Restart the agent on $nodeId?',
+            'The OmnyServer agent stops and is started again — the machine is '
+                'not touched. The node goes offline briefly and reconnects on '
+                'its own.',
             () => ctx.service.restart(nodeId),
-            'Restart requested.',
+            'Agent restart requested.',
           ),
         ),
       )
       ..appendChild(
         button(
-          'Shut down',
+          'Stop agent',
           className: 'danger',
           onClick: () => _confirm(
-            'Shut down $nodeId?',
-            'The node goes offline and will not come back on its own.',
+            'Stop the agent on $nodeId?',
+            'The OmnyServer agent stops — the machine is not touched. The node '
+                'goes offline and will not come back until something starts '
+                'the agent again.',
             () => ctx.service.shutdown(nodeId),
-            'Shutdown requested.',
+            'Agent shutdown requested.',
           ),
         ),
       )

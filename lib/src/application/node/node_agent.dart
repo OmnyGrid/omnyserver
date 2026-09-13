@@ -244,6 +244,9 @@ class NodeAgent {
       Operations.formula => (await _runFormula(
         FormulaRun.fromJson(payload),
       )).toJson(),
+      Operations.formulaStatus => (await _formulaStatus(
+        FormulaStatusRequest.fromJson(payload),
+      )).toJson(),
       Operations.preset => (await _applyPreset(
         PresetApply.fromJson(payload),
       )).toJson(),
@@ -285,6 +288,19 @@ class NodeAgent {
     }
     final result = await handler(request);
     return FormulaRunResult(requestId: request.requestId, result: result);
+  }
+
+  /// An empty report, not a failure, when the node has no formula engine: a
+  /// node that manages nothing has nothing to say about it, and a dashboard
+  /// showing "no formulas" is right.
+  Future<FormulaStatusResult> _formulaStatus(
+    FormulaStatusRequest request,
+  ) async {
+    final handler = config.formulaStatusHandler;
+    if (handler == null) {
+      return FormulaStatusResult(requestId: request.requestId);
+    }
+    return handler(request);
   }
 
   Future<PresetApplyResult> _applyPreset(PresetApply request) async {

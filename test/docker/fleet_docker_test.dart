@@ -215,4 +215,284 @@ void main() {
       client.close();
     }
   });
+
+  test('restart and shutdown stop the agent, and say so differently', () async {
+    if (await skipWithoutDocker()) return;
+    // These used to be acknowledged and dropped: the API answered "restarting"
+    // and the agent carried on as if nothing had been asked. What separates
+    // them now is the exit code the agent leaves with — that is what a
+    // supervisor reads to decide whether to bring it back — so the exit code
+    // is what this asserts, on a real process rather than a fake handler.
+    await fleet.startHub();
+    final restarting = await fleet.startNode(id: 'worker-a');
+    final stopping = await fleet.startNode(id: 'worker-b');
+
+    final client = fleet.apiClient();
+    try {
+      await fleet.eventually(
+        () async => (await client.get('/nodes') as List).length,
+        (count) => count == 2,
+        what: 'both nodes to register',
+      );
+
+      // Answered before the agent goes: an operator should see a confirmation,
+      // not a dropped connection.
+      final reply = await client.post('/nodes/worker-a/restart') as Map;
+      expect(reply['status'], 'restarting');
+
+      await client.post('/nodes/worker-b/shutdown');
+
+      expect(
+        await restarting.waitExit(),
+        75,
+        reason: 'non-zero, so `restart: on-failure` starts the agent again',
+      );
+      expect(
+        await stopping.waitExit(),
+        0,
+        reason: 'a clean exit, so the same policy leaves it stopped',
+      );
+    } finally {
+      client.close();
+    }
+  }, timeout: const Timeout(Duration(minutes: 5)));
+
+  test('a formula run can be watched on the node log, tagged', () async {
+    if (await skipWithoutDocker()) return;
+    // What the dashboard's Log button reads. The node tags each line with the
+    // run that produced it and ships it to the Hub, so one run can be picked
+    // out of a stream carrying everything the node says. Only a real agent
+    // shipping to a real Hub proves the chain, since every link is a different
+    // process.
+    await fleet.startHub();
+    await fleet.startNode(id: 'bare-01');
+
+    final client = fleet.apiClient();
+    try {
+      await fleet.eventually(
+        () async => (await client.get('/nodes') as List).length,
+        (count) => count == 1,
+        what: 'the node to register',
+      );
+
+      final reply =
+          await client.post('/nodes/bare-01/formula', {
+                'formula': 'procps',
+                'action': 'install',
+              })
+              as Map;
+      final result = reply['result'] as Map;
+      expect(result['success'], isTrue, reason: '${result['message']}');
+
+      // The result keeps its own copy, so a run nobody watched is still
+      // readable afterwards.
+      final logs = (result['logs'] as List? ?? const []).cast<String>();
+      expect(logs, isNotEmpty);
+      expect(logs.first, contains('running'));
+
+      // And the same output reached the Hub, tagged with exactly the string a
+      // client builds from the operation's summary.
+      final shipped = await fleet.eventually(
+        () async {
+          final lines = (await client.get('/nodes/bare-01/logs') as List)
+              .cast<Map>();
+          return [
+            for (final line in lines)
+              if ((line['message'] as String).contains('[procps install]'))
+                line['message'] as String,
+          ];
+        },
+        (lines) => lines.isNotEmpty,
+        what: 'the run output to reach the Hub',
+      );
+      expect(shipped.length, greaterThan(1));
+    } finally {
+      client.close();
+    }
+  }, timeout: const Timeout(Duration(minutes: 5)));
+
+  test('the dart formula installs a Dart SDK that then runs', () async {
+    if (await skipWithoutDocker()) return;
+    // A formula step can name a package that does not exist and nothing will
+    // say so until someone tries it on a real host: `apt-get install -y dart`
+    // answered "E: Unable to locate package dart" on every Debian and Ubuntu
+    // there has ever been, because the SDK lives in Google's own repository.
+    // Only an actual install catches that, so this does one.
+    await fleet.startHub();
+    await fleet.startNode(id: 'bare-01');
+
+    final client = fleet.apiClient();
+    try {
+      await fleet.eventually(
+        () async => (await client.get('/nodes') as List).length,
+        (count) => count == 1,
+        what: 'the node to register',
+      );
+
+      final before =
+          await client.post('/nodes/bare-01/formula', {
+                'formula': 'dart',
+                'action': 'verify',
+              })
+              as Map;
+      expect((before['result'] as Map)['success'], isFalse);
+
+      final installed =
+          await client.post('/nodes/bare-01/formula', {
+                'formula': 'dart',
+                'action': 'install',
+              })
+              as Map;
+      final result = installed['result'] as Map;
+      expect(result['success'], isTrue, reason: '${result['message']}');
+      expect(result['changed'], isTrue);
+
+      // Installed, and the node can now prove it — the claim the Hub records.
+      final after =
+          await client.post('/nodes/bare-01/formula', {
+                'formula': 'dart',
+                'action': 'verify',
+              })
+              as Map;
+      expect((after['result'] as Map)['success'], isTrue);
+
+      // And asking again changes nothing, rather than re-adding the repository.
+      final again =
+          await client.post('/nodes/bare-01/formula', {
+                'formula': 'dart',
+                'action': 'install',
+              })
+              as Map;
+      expect((again['result'] as Map)['changed'], isFalse);
+      expect((again['result'] as Map)['message'], contains('already'));
+    } finally {
+      client.close();
+    }
+  }, timeout: const Timeout(Duration(minutes: 10)));
+
+  test('a node reports what it actually has, before and after', () async {
+    if (await skipWithoutDocker()) return;
+    // The point of asking the node rather than reading the Hub's history: only
+    // a real host can be wrong about this. Two images, the same question — the
+    // slim one has no Dart and the SDK one does, and neither has a Docker
+    // daemon, which is exactly the case a version probe gets wrong.
+    await fleet.startHub();
+    await fleet.startNode(id: 'bare-01');
+    await fleet.startNode(id: 'sdk-01', sdk: true);
+
+    final client = fleet.apiClient();
+    try {
+      await fleet.eventually(
+        () async => (await client.get('/nodes') as List).length,
+        (count) => count == 2,
+        what: 'both nodes to register',
+      );
+
+      Future<Map<String, String>> statusOf(String node) async {
+        final rows = await client.get('/nodes/$node/formulas') as List;
+        return {
+          for (final row in rows.cast<Map>())
+            row['formula'] as String: row['status'] as String,
+        };
+      }
+
+      final bare = await statusOf('bare-01');
+      final sdk = await statusOf('sdk-01');
+
+      expect(bare['dart'], 'absent');
+      expect(sdk['dart'], 'installed', reason: 'the SDK image ships one');
+
+      // Not "stopped": neither container has a Docker daemon *or* the client,
+      // and a node with nothing installed should not send an operator looking
+      // for a start button.
+      expect(bare['docker'], 'absent');
+
+      // Now install something, and watch the same endpoint change its mind.
+      final installed =
+          await client.post('/nodes/bare-01/formula', {
+                'formula': 'nmap',
+                'action': 'install',
+              })
+              as Map;
+      expect(
+        (installed['result'] as Map)['success'],
+        isTrue,
+        reason: '${(installed['result'] as Map)['message']}',
+      );
+
+      final after = await statusOf('bare-01');
+      expect(after['nmap'], 'installed');
+      expect(after['dart'], 'absent', reason: 'nothing else moved');
+    } finally {
+      client.close();
+    }
+  }, timeout: const Timeout(Duration(minutes: 10)));
+
+  test('installing the process tools fills in the process table', () async {
+    if (await skipWithoutDocker()) return;
+    // The monitor reports processes by shelling out to `ps`, and degrades to an
+    // empty list without it — so a node on a slim image reports its CPU and
+    // memory perfectly well and no processes at all. This is the one case where
+    // a formula's effect is visible in the node's own status afterwards, and it
+    // needs a real host with a real package manager to show.
+    await fleet.startHub();
+    await fleet.startNode(id: 'bare-01');
+
+    final client = fleet.apiClient();
+    try {
+      Future<int> processCount() async {
+        final status = await client.get('/nodes/bare-01/status') as Map;
+        // Absent rather than empty when there is nothing to report.
+        return (status['processes'] as List? ?? const []).length;
+      }
+
+      await fleet.eventually(
+        () async => (await client.get('/nodes') as List).length,
+        (count) => count == 1,
+        what: 'the node to register',
+      );
+      // Wait for a status to exist at all before reading what is in it.
+      await fleet.eventually(
+        () async => client.get('/nodes/bare-01/status'),
+        (_) => true,
+        what: 'the node-s first status report',
+      );
+      expect(
+        await processCount(),
+        0,
+        reason: 'the slim image has no ps for the monitor to call',
+      );
+
+      final applied =
+          await client.post('/nodes/bare-01/formula', {
+                'formula': 'procps',
+                'action': 'install',
+              })
+              as Map;
+      final result = applied['result'] as Map;
+      expect(result['success'], isTrue, reason: '${result['message']}');
+      expect(result['changed'], isTrue);
+
+      // The next heartbeat carries a status gathered with a `ps` that now
+      // exists — nothing had to restart for it.
+      final count = await fleet.eventually(
+        processCount,
+        (count) => count > 0,
+        what: 'the node to start reporting processes',
+      );
+      expect(count, greaterThan(0));
+
+      // Asking again is a no-op rather than a second install.
+      final again =
+          await client.post('/nodes/bare-01/formula', {
+                'formula': 'procps',
+                'action': 'install',
+              })
+              as Map;
+      expect((again['result'] as Map)['changed'], isFalse);
+      expect((again['result'] as Map)['message'], contains('already'));
+    } finally {
+      client.close();
+    }
+  }, timeout: const Timeout(Duration(minutes: 5)));
 }

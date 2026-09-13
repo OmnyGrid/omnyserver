@@ -17,6 +17,7 @@ import '../../domain/entities/node_status.dart';
 import '../../domain/entities/preset.dart';
 import '../../domain/events/omny_event.dart';
 import '../../domain/formula/formula_action.dart';
+import '../../domain/formula/formula_status.dart';
 import '../../domain/repository/repositories.dart';
 import '../../domain/value_objects/node_id.dart';
 import '../../domain/value_objects/preset_id.dart';
@@ -319,6 +320,30 @@ class OmnyServerHub {
       detail: '$formula:${action.name}',
     );
     return result;
+  }
+
+  /// Asks node [id] what state each of its formulas is in.
+  ///
+  /// Asked of the node, not answered from the Hub's own records, because the
+  /// Hub's records are a history of what it *dispatched*. A daemon that died an
+  /// hour after a successful install, or one an operator stopped by hand over
+  /// SSH, leaves that history untouched. This is the node looking.
+  ///
+  /// Not audited: it changes nothing, and a panel that refreshes would bury the
+  /// entries that do.
+  Future<List<FormulaStatusReport>> formulaStatus(
+    NodeId id, {
+    List<String> formulas = const [],
+  }) async {
+    final reply = await _call(
+      id,
+      Operations.formulaStatus,
+      FormulaStatusRequest(
+        requestId: config.idGenerator.next(),
+        formulas: formulas,
+      ).toJson(),
+    );
+    return FormulaStatusResult.fromJson(reply).reports;
   }
 
   /// Applies [preset] to node [id], returning the result.

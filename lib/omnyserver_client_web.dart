@@ -78,6 +78,7 @@ export 'src/domain/auth/principal.dart';
 export 'src/domain/events/omny_event.dart';
 export 'src/domain/formula/formula_action.dart';
 export 'src/domain/formula/formula_result.dart';
+export 'src/domain/formula/formula_status.dart';
 
 // Operation results (`FormulaRunResult`, `PresetApplyResult`).
 export 'src/protocol/operations.dart';

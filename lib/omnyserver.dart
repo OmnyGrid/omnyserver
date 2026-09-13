@@ -53,6 +53,7 @@ export 'src/domain/formula/formula.dart';
 export 'src/domain/formula/formula_action.dart';
 export 'src/domain/formula/formula_context.dart';
 export 'src/domain/formula/formula_result.dart';
+export 'src/domain/formula/formula_status.dart';
 export 'src/domain/state/desired_state.dart';
 export 'src/domain/state/drift.dart';
 export 'src/domain/state/state_reconciler.dart';
