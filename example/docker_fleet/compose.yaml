@@ -1,0 +1,120 @@
+# A small OmnyServer fleet: one Hub and three nodes, each its own container.
+#
+#   docker compose -f example/docker_fleet/compose.yaml up --build
+#
+# Run it from the repository root — the build context is the repo, so the image
+# is built from the checkout rather than from a published release.
+#
+# Every service runs the same binary. Which role it plays is the first argument
+# and nothing else, which is most of what there is to know about deploying
+# OmnyServer.
+
+name: omnyserver-fleet
+
+services:
+  # Issues the dev CA and the Hub's certificate into a volume the others mount,
+  # then exits. `hub` waits for it to complete, so `up` needs no preparation
+  # step and no certificates on your machine.
+  #
+  # The certificate is issued for `hub`, which is the name the nodes dial: the
+  # nodes verify it for real, and there is no --insecure anywhere below.
+  certs:
+    build: &image
+      context: ../..
+      dockerfile: docker/Dockerfile
+      target: runtime
+    command: ["cert", "gen", "--out", "/certs", "--host", "hub", "--force"]
+    volumes:
+      - certs:/certs
+
+  hub:
+    build: *image
+    depends_on:
+      certs:
+        condition: service_completed_successfully
+    command:
+      - hub
+      - start
+      - --host=0.0.0.0
+      - --port=8443
+      - --cert=/certs/server.crt
+      - --key=/certs/server.key
+      # The credential the nodes present, and the one you drive the API with.
+      - --grant=node-account:node-token:node
+      - --grant=alice:admin-token:admin
+      - --api-token=api-secret
+      # Persisted into a volume: stop the Hub, start it again, and the fleet,
+      # the audit trail and anything issued with `grant add` are still there.
+      - --data-dir=/data
+      # Worth being told about. Nothing is set by default — a tool that invents
+      # its own thresholds is a tool that pages you at 3am.
+      - --alert=disk>90
+      - --alert=offline for 30s
+    ports:
+      # The API and the node channel share this one TLS port.
+      - "8443:8443"
+    volumes:
+      - certs:/certs:ro
+      - hub-data:/data
+
+  # A bare host: nothing installed, so it advertises no capabilities. This is
+  # what most of a real fleet looks like.
+  worker-1:
+    build: *image
+    depends_on: [hub]
+    hostname: worker-1
+    command: &node
+      - node
+      - start
+      - --hub=wss://hub:8443
+      - --id=worker-1
+      - --principal=node-account
+      - --token=node-token
+      - --ca=/certs/ca.crt
+      - --label=env=prod
+      - --label=region=eu
+    volumes:
+      - certs:/certs:ro
+
+  worker-2:
+    build: *image
+    depends_on: [hub]
+    hostname: worker-2
+    command:
+      - node
+      - start
+      - --hub=wss://hub:8443
+      - --id=worker-2
+      - --principal=node-account
+      - --token=node-token
+      - --ca=/certs/ca.crt
+      - --label=env=prod
+      - --label=region=us
+    volumes:
+      - certs:/certs:ro
+
+  # The same agent on a host that has the Dart SDK installed. It discovers that
+  # for itself and advertises it, which is how `formula run dart` can succeed
+  # here and fail on the two above.
+  builder-1:
+    build:
+      <<: *image
+      target: sdk
+    depends_on: [hub]
+    hostname: builder-1
+    command:
+      - node
+      - start
+      - --hub=wss://hub:8443
+      - --id=builder-1
+      - --principal=node-account
+      - --token=node-token
+      - --ca=/certs/ca.crt
+      - --label=env=staging
+      - --label=role=builder
+    volumes:
+      - certs:/certs:ro
+
+volumes:
+  certs:
+  hub-data:

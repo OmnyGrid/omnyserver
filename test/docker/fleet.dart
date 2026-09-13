@@ -19,7 +19,7 @@ class OmnyFleet {
   /// How long a container has to come up before a test gives up on it.
   static const Duration readyTimeout = Duration(seconds: 60);
 
-  /// The image tags built from `test/docker/Dockerfile`.
+  /// The image tags built from `docker/Dockerfile`.
   static const String runtimeImage = 'omnyserver-test:runtime';
   static const String sdkImage = 'omnyserver-test:sdk';
 
@@ -118,7 +118,7 @@ class OmnyFleet {
     return OmnyFleet._(docker, network, certs, await _freePort());
   }
 
-  /// Builds both runtime images from `test/docker/Dockerfile`.
+  /// Builds both runtime images from `docker/Dockerfile`.
   static Future<void> _buildImages(DockerCommander docker) async {
     for (final (target, tag) in [
       ('runtime', runtimeImage),
@@ -126,7 +126,7 @@ class OmnyFleet {
     ]) {
       final build = await docker.command('build', [
         '--file',
-        'test/docker/Dockerfile',
+        'docker/Dockerfile',
         '--target',
         target,
         '--tag',

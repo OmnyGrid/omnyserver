@@ -592,6 +592,23 @@ dart test
 dart run example/omnyserver_embedded_example.dart
 ```
 
+### A fleet of servers, in Docker
+
+[`example/docker_fleet/`](example/docker_fleet/) brings up one Hub and three
+nodes as separate containers — two bare hosts and one with the Dart SDK, so
+they advertise different capabilities because their machines differ:
+
+```sh
+docker compose -f example/docker_fleet/compose.yaml up --build -d
+dart run example/docker_fleet/fleet_tour.dart
+docker compose -f example/docker_fleet/compose.yaml down -v
+```
+
+The tour walks the REST API through the fleet, label selectors, a formula that
+succeeds on one host and fails on another, desired state and drift, issuing and
+revoking a credential, and the audit trail left behind. See its
+[README](example/docker_fleet/README.md).
+
 ### The container fleet
 
 `test/docker/` runs a Hub and its nodes as **real containers on a real
