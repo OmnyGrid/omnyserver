@@ -1,5 +1,12 @@
 ## 0.3.1
 
+- **The shell follows the Hub's scheme instead of always using `wss`.** Opening
+  a terminal built its URL as `wss://<hub>/shell` whatever the Hub address was,
+  so a dashboard reaching its Hub over plain `http` — anything behind a proxy
+  that terminates TLS, which is how a Hub is usually fronted — asked for `wss`
+  on a port speaking `ws`, and the terminal simply never connected. It now
+  derives `ws` from `http` and `wss` from everything else.
+
 - Rebuilt against **OmnyServer 0.16.0** — the login footer reads
   `Dashboard v0.3.1 · OmnyServer v0.16.0`. That server release lets the Hub proxy
   the terminal `:ai` / `:ide` agent (`omnyserver ai config` + `hub start --shell`),

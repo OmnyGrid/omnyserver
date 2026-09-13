@@ -125,7 +125,14 @@ class ShellScreen implements Screen {
         );
       }
 
-      final shellUri = hub.replace(scheme: 'wss', path: '/shell');
+      // The shell mount is the Hub's own origin with a WebSocket scheme. It
+      // follows the Hub's scheme rather than always being `wss`: a dashboard
+      // served behind a proxy that terminates TLS reaches the Hub over plain
+      // `http`, and `wss` to that port connects to nothing.
+      final shellUri = hub.replace(
+        scheme: hub.scheme == 'http' ? 'ws' : 'wss',
+        path: '/shell',
+      );
       await _shellService.connect(
         hubUri: shellUri.toString(),
         principal: identity.principal,

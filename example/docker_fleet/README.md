@@ -17,8 +17,8 @@ docker compose -f example/docker_fleet/compose.yaml down -v
 ```
 
 The first build compiles the CLI and the dashboard, so it takes a few minutes.
-After that, bringing the fleet up takes seconds. Sign-in details and the
-one-time certificate step are [below](#the-fleet-in-a-browser).
+After that, bringing the fleet up takes seconds. Sign-in details are
+[below](#the-fleet-in-a-browser) — there is no certificate to accept.
 
 ## What is in it
 
@@ -42,25 +42,36 @@ looked.
 
 ## The fleet in a browser
 
-<http://localhost:8080> — the same fleet, in the dashboard.
+<http://localhost:8080> — the same fleet, in the dashboard. Nothing to accept,
+nothing to install, no certificate warning.
 
-**Accept the Hub's certificate first.** The fleet issues its own, and a browser
-owns its own TLS stack: there is no in-page `--insecure` to offer, and a page
-cannot ask you about a certificate for a *different* origin. So open
-
-> <https://localhost:8443/healthz>
-
-click through the warning once, and you should see `{"status":"ok"}`. That
-exception is per-origin and sticks, and the certificate is reissued only when
-you `down -v` — so this is a one-time step, not a per-run one.
-
-Then sign in at <http://localhost:8080> with:
+Sign in with:
 
 | Field        | Value                     |
 | ------------ | ------------------------- |
-| Hub address  | `https://localhost:8443`  |
+| Hub address  | `http://localhost:8080`   |
 | Principal    | `alice`                   |
 | Token        | `admin-token`             |
+
+Yes — the Hub address is the dashboard's own address. The `dashboard` service is
+nginx: it serves the compiled page *and* proxies what the page asks of the Hub
+(`nginx.conf`). So the browser only ever talks to one origin, over plain HTTP on
+localhost.
+
+**That is deliberate, and it is the only arrangement that works.** The fleet
+issues its own certificate, and nothing can make a `localhost` certificate
+publicly valid. A browser owns its TLS stack — there is no in-page `--insecure`
+— and, crucially, a page cannot be asked about a certificate for a *different*
+origin: the request just fails with `The certificate for this server is
+invalid`. Pre-accepting it in another tab is a Chrome-ism that Safari does not
+honour. Moving the TLS to the proxy removes the question instead of answering
+it.
+
+The TLS itself does not go away. nginx speaks real `https` to the Hub and
+verifies it against the fleet CA — `proxy_ssl_verify on`, checked against the
+name the certificate was issued for. Point it at the wrong name and it refuses
+with a 502 rather than connecting anyway. This is also how a Hub is fronted in
+production, with the proxy holding a publicly-trusted certificate.
 
 `alice` is an **admin** grant (`--grant alice:admin-token:admin`), so the whole
 dashboard is enabled. The Hub's master token (`api-secret`, no principal) works
@@ -83,20 +94,32 @@ What is worth looking at:
   (`--shell`) and each node serves a session (`--with-shell`), and the grant you
   signed in with authenticates both, so it opens with no second login.
 
-Two flags make this work at all, and both are in `compose.yaml`:
-`--cors-origin=http://localhost:8080` on the Hub (a browser will not hand a page
-a cross-origin response unless the server names the origin) and `--shell` for
-the terminal. Without the first you get network errors and nothing else.
+The terminal needs one Hub flag, `--shell`, and one node flag, `--with-shell`.
+Both are in `compose.yaml`; without them the rest of the dashboard works and
+"Open shell" does not.
 
-If you would rather not click through a warning, trust the CA at the OS level
-instead:
+### Pointing it straight at the Hub instead
+
+If you would rather the page talked to `https://localhost:8443` itself — the
+arrangement the proxy exists to avoid — two things have to be true, and the
+second is the awkward one:
+
+1. The Hub must name the dashboard's origin, which it does:
+   `--cors-origin=http://localhost:8080` is already in `compose.yaml`. Without
+   it a browser will not hand the page a cross-origin response at all.
+2. Your machine must *trust* the fleet CA — accepting the warning in another
+   tab is not enough for a cross-origin request:
 
 ```sh
 docker compose -f example/docker_fleet/compose.yaml cp hub:/certs/ca.crt ./fleet-ca.crt
-# macOS:
+# macOS — and then restart the browser:
 sudo security add-trusted-cert -d -r trustRoot \
   -k /Library/Keychains/System.keychain ./fleet-ca.crt
 ```
+
+That is a real change to your system trust store for a throwaway dev CA, which
+is why it is not the default path here. Remove it afterwards with
+`sudo security delete-certificate -c "OmnyServer Dev CA"`.
 
 ## What the tour shows
 

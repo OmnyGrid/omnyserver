@@ -68,10 +68,11 @@ services:
       # its own thresholds is a tool that pages you at 3am.
       - --alert=disk>90
       - --alert=offline for 30s
-      # Without this the dashboard gets network errors and nothing else: a
+      # The dashboard reaches the Hub through its own origin (nginx proxies it),
+      # so nothing here needs CORS. This is for the other way of doing it —
+      # pointing the dashboard straight at https://localhost:8443 — where a
       # browser will not hand a page a cross-origin response unless the server
-      # names the origin, and the dashboard is always a different origin than
-      # the Hub (:8080 against :8443).
+      # names the origin. See the README.
       - --cors-origin=http://localhost:8080
       # An OmnyShell broker beside the REST API, on the same port and the same
       # certificate, so "Open shell" in the dashboard reaches a real terminal
@@ -86,14 +87,11 @@ services:
 
   # The fleet in a browser: http://localhost:8080
   #
-  # `omnyserver_web` compiled to JavaScript and served as static files. It has
-  # no backend of its own — the page calls the Hub's API directly with the
-  # credentials you sign in with — which is why the Hub needs the
-  # --cors-origin above, and why this service is just nginx.
-  #
-  # The Hub's certificate is self-signed, and a browser owns its own TLS stack:
-  # there is no in-page --insecure to offer. Visit https://localhost:8443/healthz
-  # once and accept the warning before signing in. See the README.
+  # `omnyserver_web` compiled to JavaScript, plus an nginx that serves it *and*
+  # proxies what it asks of the Hub (see nginx.conf). One origin, so there is
+  # no certificate for you to accept and no CORS to get wrong — the TLS is the
+  # proxy's job, and it verifies the Hub against the fleet CA like everything
+  # else here.
   dashboard:
     build:
       <<: *image
@@ -101,6 +99,9 @@ services:
     depends_on: [hub]
     ports:
       - "8080:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - certs:/certs:ro
 
   # A bare host: nothing installed, so it advertises no capabilities. This is
   # what most of a real fleet looks like.
