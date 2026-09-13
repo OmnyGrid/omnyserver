@@ -6,6 +6,7 @@ import 'package:omnyshell_web/ui_kit.dart';
 import 'package:web/web.dart' as web;
 
 import '../../app/app_context.dart';
+import 'node_logs.dart';
 
 /// The operational half of a node's screen: what it is declared to be, and what
 /// you can run on it.
@@ -126,6 +127,14 @@ class NodeOperations {
                 classes: 'muted mono',
                 text: '${op.duration(now).inSeconds}s',
               ),
+              // Only a formula tags its output, so only a formula has a log to
+              // pick out of the node's stream.
+              if (op.kind == 'formula')
+                button(
+                  'Log',
+                  className: 'ghost',
+                  onClick: () => _showRunLog(op),
+                ),
             ],
           ),
         );
@@ -396,6 +405,39 @@ class NodeOperations {
   /// request times out, the node carries on working, and the operator is shown a
   /// failure that did not happen. The operations tray below is where the answer
   /// arrives.
+  /// Opens the live log of one run.
+  ///
+  /// The node prefixes every line of a run with `[<formula> <action>]`, and the
+  /// Hub names the operation with the same pair, so the operation's summary is
+  /// the filter. A run that has already finished still reads: its lines are in
+  /// the node's log, and the tail is fetched before the stream is joined.
+  void _showRunLog(Operation op) {
+    final logs = NodeLogs(
+      ctx,
+      nodeId,
+      filter: '[${op.summary}]',
+      title: 'Live log — ${op.summary}',
+    );
+    late final Modal modal;
+    modal = Modal(
+      title: 'Log: ${op.kind} ${op.summary}',
+      body: logs.element,
+      actions: [
+        button(
+          'Close',
+          primary: true,
+          onClick: () {
+            // The stream is per-view, so closing has to end it: a modal opened
+            // and dismissed a dozen times should not leave a dozen listeners.
+            logs.dispose();
+            modal.close();
+          },
+        ),
+      ],
+    );
+    modal.show();
+  }
+
   Future<void> _runFormula(String formula, FormulaAction action) async {
     try {
       await ctx.service.runFormulaAsync(

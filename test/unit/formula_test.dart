@@ -322,6 +322,138 @@ void main() {
     });
   });
 
+  // What a formula says while it works used to go nowhere: the service took an
+  // `onLog` sink that nothing ever passed, and `FormulaResult.logs` was always
+  // empty. An operator could watch a node install something for two minutes and
+  // be told only whether it worked.
+  group('NodeFormulaService run output', () {
+    /// A formula that is absent, so `install` actually runs its step.
+    FormulaRegistry absentDocker(List<String> stdout) =>
+        FormulaRegistry()..register(
+          DockerFormula(
+            executor: FakeExecutor(
+              scripted: {
+                'docker --version': const ExecResult(exitCode: 1, stderr: 'no'),
+              },
+              fallback: ExecResult(exitCode: 0, stdout: stdout.join('\n')),
+            ),
+          ),
+        );
+
+    test('the result carries what the run printed', () async {
+      final service = NodeFormulaService(
+        registry: absentDocker(['fetching', 'unpacking', 'done']),
+      );
+      final result = await service.runFormula(
+        FormulaRun(
+          requestId: 'r',
+          formula: 'docker',
+          action: FormulaAction.install,
+        ),
+      );
+
+      expect(result.logs, contains('fetching'));
+      expect(result.logs, contains('done'));
+      expect(
+        result.logs.first,
+        contains('running'),
+        reason: 'the command itself is the first thing worth seeing',
+      );
+    });
+
+    test('every line is tagged with the run, for the shared stream', () async {
+      // The node log carries everything the agent says; a reader picks one run
+      // out of it by this tag, and the Hub names the operation the same way.
+      final streamed = <String>[];
+      final service = NodeFormulaService(
+        registry: absentDocker(['unpacking']),
+        onLog: streamed.add,
+      );
+      await service.runFormula(
+        FormulaRun(
+          requestId: 'r',
+          formula: 'docker',
+          action: FormulaAction.install,
+        ),
+      );
+
+      expect(streamed, isNotEmpty);
+      expect(
+        streamed.every((l) => l.startsWith('[docker install] ')),
+        isTrue,
+        reason: 'an untagged line cannot be attributed to a run',
+      );
+      expect(streamed.any((l) => l.endsWith('unpacking')), isTrue);
+      expect(
+        NodeFormulaService.runTag('docker', FormulaAction.install),
+        '[docker install]',
+      );
+    });
+
+    test('a noisy run keeps its tail, and says what it dropped', () async {
+      final noisy = [
+        for (var i = 0; i < NodeFormulaService.logLimit + 50; i++) 'line $i',
+      ];
+      final streamed = <String>[];
+      final service = NodeFormulaService(
+        registry: absentDocker(noisy),
+        onLog: streamed.add,
+      );
+      final result = await service.runFormula(
+        FormulaRun(
+          requestId: 'r',
+          formula: 'docker',
+          action: FormulaAction.install,
+        ),
+      );
+
+      // The tail, because a failure is explained by the last lines, not the
+      // first — and the reader is told the beginning is missing rather than
+      // being left to assume it is looking at one.
+      expect(result.logs.length, NodeFormulaService.logLimit + 1);
+      expect(result.logs.first, contains('earlier lines not kept'));
+      expect(result.logs.last, 'line ${noisy.length - 1}');
+
+      // Only the result is capped. The stream carried everything.
+      expect(streamed.length, greaterThan(result.logs.length));
+    });
+
+    test('preset steps each carry their own output', () async {
+      final exec = FakeExecutor(
+        scripted: {
+          'docker --version': const ExecResult(exitCode: 1, stderr: 'no'),
+          'dart --version': const ExecResult(exitCode: 1, stderr: 'no'),
+        },
+        fallback: const ExecResult(exitCode: 0, stdout: 'working'),
+      );
+      final streamed = <String>[];
+      final service = NodeFormulaService(
+        registry: FormulaRegistry.standard(executor: exec),
+        onLog: streamed.add,
+      );
+
+      final result = await service.applyPreset(
+        PresetApply(
+          requestId: 'r',
+          preset: Preset(
+            id: PresetId('dev'),
+            name: 'Dev',
+            steps: [
+              PresetStep(formula: FormulaId('docker')),
+              PresetStep(formula: FormulaId('dart')),
+            ],
+          ),
+        ),
+      );
+
+      expect(result.results.every((r) => r.logs.isNotEmpty), isTrue);
+      // Two steps, two tags — a preset's output is not one undifferentiated
+      // heap.
+      expect(streamed.any((l) => l.startsWith('[docker install]')), isTrue);
+      expect(streamed.any((l) => l.startsWith('[dart install]')), isTrue);
+    });
+  });
+
   group('DefaultStateReconciler', () {
     test('drops install steps for already-present capabilities', () {
       const reconciler = DefaultStateReconciler();

@@ -257,6 +257,60 @@ void main() {
     }
   }, timeout: const Timeout(Duration(minutes: 5)));
 
+  test('a formula run can be watched on the node log, tagged', () async {
+    if (await skipWithoutDocker()) return;
+    // What the dashboard's Log button reads. The node tags each line with the
+    // run that produced it and ships it to the Hub, so one run can be picked
+    // out of a stream carrying everything the node says. Only a real agent
+    // shipping to a real Hub proves the chain, since every link is a different
+    // process.
+    await fleet.startHub();
+    await fleet.startNode(id: 'bare-01');
+
+    final client = fleet.apiClient();
+    try {
+      await fleet.eventually(
+        () async => (await client.get('/nodes') as List).length,
+        (count) => count == 1,
+        what: 'the node to register',
+      );
+
+      final reply =
+          await client.post('/nodes/bare-01/formula', {
+                'formula': 'procps',
+                'action': 'install',
+              })
+              as Map;
+      final result = reply['result'] as Map;
+      expect(result['success'], isTrue, reason: '${result['message']}');
+
+      // The result keeps its own copy, so a run nobody watched is still
+      // readable afterwards.
+      final logs = (result['logs'] as List? ?? const []).cast<String>();
+      expect(logs, isNotEmpty);
+      expect(logs.first, contains('running'));
+
+      // And the same output reached the Hub, tagged with exactly the string a
+      // client builds from the operation's summary.
+      final shipped = await fleet.eventually(
+        () async {
+          final lines = (await client.get('/nodes/bare-01/logs') as List)
+              .cast<Map>();
+          return [
+            for (final line in lines)
+              if ((line['message'] as String).contains('[procps install]'))
+                line['message'] as String,
+          ];
+        },
+        (lines) => lines.isNotEmpty,
+        what: 'the run output to reach the Hub',
+      );
+      expect(shipped.length, greaterThan(1));
+    } finally {
+      client.close();
+    }
+  }, timeout: const Timeout(Duration(minutes: 5)));
+
   test('the dart formula installs a Dart SDK that then runs', () async {
     if (await skipWithoutDocker()) return;
     // A formula step can name a package that does not exist and nothing will

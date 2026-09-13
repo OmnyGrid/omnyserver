@@ -82,6 +82,20 @@ class FormulaResult {
     this.logs = const [],
   });
 
+  /// The same result, carrying [logs].
+  ///
+  /// A formula reports its outcome; what it *said* on the way there is
+  /// collected by whoever ran it, so this is what joins the two.
+  FormulaResult withLogs(List<String> logs) => FormulaResult(
+    formula: formula,
+    action: action,
+    success: success,
+    finishedAt: finishedAt,
+    changed: changed,
+    message: message,
+    logs: logs,
+  );
+
   /// JSON form.
   Map<String, dynamic> toJson() => {
     'formula': formula,

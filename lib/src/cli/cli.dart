@@ -564,7 +564,6 @@ class NodeStartCommand extends Command<void> {
             ..setTrustedCertificates(ca));
 
     final registry = FormulaRegistry.standard();
-    final formulaService = NodeFormulaService(registry: registry);
 
     // `node restart` and `node shutdown` act on *this agent*, not on the host,
     // and only the command owning its lifecycle can end it. Completing this is
@@ -592,6 +591,11 @@ class NodeStartCommand extends Command<void> {
       stdout.writeln(message);
       shipper?.add(message);
     }
+
+    // A formula's output goes the same way, so an operator can watch an install
+    // happen rather than wait to be told how it went. Until this was wired the
+    // lines were produced and dropped: nothing was listening.
+    final formulaService = NodeFormulaService(registry: registry, onLog: log);
 
     final agentConfig = NodeAgentConfig(
       hubUri: Uri.parse(hub),

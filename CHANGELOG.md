@@ -7,6 +7,28 @@ own monitor depends on.
 
 ### Added
 
+- **A formula's output is reported while it runs, and kept afterwards.** The
+  node service has always accepted an `onLog` sink for formula output, and
+  nothing ever passed one — so every line a formula produced, including each
+  line of `apt-get`, was created and dropped. `FormulaResult.logs` existed and
+  was always empty. An operator could watch a node install something for two
+  minutes and be told only whether it worked.
+
+  The agent now wires that sink to its own logger, so output travels the path
+  the node's log already takes: shipped to the Hub (`--ship-logs`, on by
+  default) and readable at `GET /nodes/<id>/logs` and `/logs/stream`. Each line
+  is tagged with the run — `[dart install] …` — because the stream carries
+  everything the node says and a reader needs to pick one run out of it. The
+  Hub already names a dispatched operation with the same `<formula> <action>`
+  pair, so the operation *is* the filter.
+
+  The result keeps the tail too (200 lines), so a run nobody watched is still
+  readable, and says how many earlier lines it dropped rather than quietly
+  starting in the middle. The live stream is not capped.
+
+  Batching means "live" is a second or two granular, not instant — that is
+  `LogShipper`'s existing 2s/50-line cadence, unchanged.
+
 - **`procps` formula — the `ps` and `top` commands.** Less cosmetic than it
   sounds: the agent reports its process table by shelling out to `ps`, and
   degrades to an empty list when it is missing. A node on a slim image — which

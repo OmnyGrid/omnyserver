@@ -1,5 +1,17 @@
 ## 0.3.1
 
+- **A Log button on every formula run, showing its output as it happens.**
+  Running a formula from the dashboard dispatched it and left you watching a
+  status badge. Each formula operation now carries a **Log** button that opens
+  the node's live log filtered to that run — the node tags every line with
+  `[<formula> <action>]`, and the Hub names the operation with the same pair, so
+  the operation is the filter.
+
+  It reads a finished run as well as a live one: the tail is fetched before the
+  stream is joined. Closing the dialog ends the stream, so opening it a dozen
+  times does not leave a dozen listeners behind. Needs OmnyServer 0.16.1, where
+  the node started reporting formula output at all.
+
 - **The service worker no longer caches the Hub when a proxy puts it on our
   own origin.** Its exclusion rule was a single origin check, written when the
   dashboard could only reach a Hub at its own address. Serve the app from a
