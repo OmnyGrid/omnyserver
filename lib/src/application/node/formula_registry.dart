@@ -2,11 +2,12 @@ import '../../domain/formula/formula.dart';
 import '../../infrastructure/formulas/command_executor.dart';
 import '../../infrastructure/formulas/dart_formula.dart';
 import '../../infrastructure/formulas/docker_formula.dart';
+import '../../infrastructure/formulas/procps_formula.dart';
 
 /// A catalogue of [Formula]s available on a node, keyed by formula id.
 ///
 /// Operators register custom formulas here; the [standard] factory wires the
-/// built-ins (Docker, Dart).
+/// built-ins (Docker, Dart, process tools).
 class FormulaRegistry {
   final Map<String, Formula> _formulas = {};
 
@@ -20,7 +21,8 @@ class FormulaRegistry {
     final registry = FormulaRegistry();
     registry
       ..register(DockerFormula(executor: executor))
-      ..register(DartFormula(executor: executor));
+      ..register(DartFormula(executor: executor))
+      ..register(ProcpsFormula(executor: executor));
     return registry;
   }
 

@@ -27,6 +27,7 @@ export 'src/infrastructure/formulas/command_executor.dart';
 export 'src/infrastructure/formulas/command_formula.dart';
 export 'src/infrastructure/formulas/dart_formula.dart';
 export 'src/infrastructure/formulas/docker_formula.dart';
+export 'src/infrastructure/formulas/procps_formula.dart';
 export 'src/infrastructure/state/default_reconciler.dart';
 
 // Credentials.

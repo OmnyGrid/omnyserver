@@ -88,6 +88,13 @@ What is worth looking at:
 - **Run** — formulas come from the Hub's catalogue, so try `dart verify` on
   `builder-1` and then on `worker-1`: the same request, two answers, because
   the work happens on the node.
+
+  The one to watch is **`procps install`**. The process table starts empty on
+  every node here, because the agent reports it by shelling out to `ps` and
+  these images ship without one — CPU and memory are fine, processes are
+  missing. Install it from the Run screen and the table fills in on the next
+  heartbeat, without anything restarting.
+
 - **Declared state** — what you set with the tour, and whether it still holds.
 - **Activity** — the events and the audit trail, filling in as you click.
 - **Shell** — a real terminal on any node. The Hub runs a shell broker

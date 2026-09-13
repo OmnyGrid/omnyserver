@@ -78,6 +78,126 @@ void main() {
     });
   });
 
+  // The node's own monitor reports its process table by shelling out to `ps`,
+  // so on a host without it the table is empty rather than wrong. This is the
+  // formula that puts it there.
+  group('ProcpsFormula', () {
+    /// The probe the formula verifies with, as the fake executor records it.
+    String probeOf(FakeExecutor exec) =>
+        exec.calls.firstWhere((c) => c.contains('command -v ps'));
+
+    test('verify wants both tools, and takes a version if one is offered', () {
+      final step = ProcpsFormula().verifyStep;
+      expect(step.args.join(' '), contains('command -v ps'));
+      expect(step.args.join(' '), contains('command -v top'));
+      // procps-ng answers `--version`; BSD and busybox do not, and the probe
+      // must not fail because of it.
+      expect(step.args.join(' '), contains('ps --version 2>/dev/null || true'));
+    });
+
+    test('reports the version a procps-ng host prints', () async {
+      final exec = FakeExecutor(
+        fallback: const ExecResult(
+          exitCode: 0,
+          stdout: 'ps from procps-ng 4.0.4',
+        ),
+      );
+      final v = await ProcpsFormula(executor: exec).validate(_context());
+      expect(v.valid, isTrue);
+      expect(v.detectedVersion, '4.0.4');
+    });
+
+    test('a host with neither tool is simply not valid', () async {
+      final exec = FakeExecutor(fallback: const ExecResult(exitCode: 1));
+      final v = await ProcpsFormula(executor: exec).validate(_context());
+      expect(v.valid, isFalse);
+      expect(v.message, contains('not found'));
+    });
+
+    test('install is idempotent when the tools are already there', () async {
+      final exec = FakeExecutor(
+        fallback: const ExecResult(exitCode: 0, stdout: '/bin/ps'),
+      );
+      final result = await ProcpsFormula(
+        executor: exec,
+      ).install(_context(osName: 'linux'));
+
+      expect(result.success, isTrue);
+      expect(result.changed, isFalse);
+      expect(result.message, contains('already installed'));
+      expect(exec.calls, hasLength(1), reason: 'only the probe ran');
+    });
+
+    test('install picks the package manager on the host', () async {
+      final exec = FakeExecutor(fallback: const ExecResult(exitCode: 1));
+      await ProcpsFormula(executor: exec).install(_context(osName: 'linux'));
+
+      // One script rather than a branch here, because `stepFor` is told the OS
+      // and not the distribution — only the host knows which manager it has.
+      final script = exec.calls.last;
+      expect(script, contains('apt-get install -y procps'));
+      expect(script, contains('apk add --no-cache procps'));
+      expect(script, contains('dnf install -y procps-ng'));
+      expect(
+        script,
+        contains('no supported package manager'),
+        reason: 'a host with none of them should say so, not fail obscurely',
+      );
+    });
+
+    test('update and uninstall cover the same three managers', () async {
+      final exec = FakeExecutor(
+        fallback: const ExecResult(exitCode: 0, stdout: '/bin/ps'),
+      );
+      final formula = ProcpsFormula(executor: exec);
+
+      await formula.update(_context(osName: 'linux'));
+      expect(exec.calls.last, contains('--only-upgrade procps'));
+      expect(exec.calls.last, contains('apk add --no-cache --upgrade procps'));
+      expect(exec.calls.last, contains('dnf upgrade -y procps-ng'));
+
+      await formula.uninstall(_context(osName: 'linux'));
+      expect(exec.calls.last, contains('apt-get remove -y procps'));
+      expect(exec.calls.last, contains('apk del procps'));
+      expect(exec.calls.last, contains('dnf remove -y procps-ng'));
+    });
+
+    test('on macOS the tools are the system-s, and stay that way', () async {
+      final exec = FakeExecutor(
+        fallback: const ExecResult(exitCode: 0, stdout: '/bin/ps'),
+      );
+      final formula = ProcpsFormula(executor: exec);
+
+      // Present, so install is a no-op rather than an attempt to package-manage
+      // a platform that does not package these.
+      final installed = await formula.install(_context());
+      expect(installed.success, isTrue);
+      expect(installed.changed, isFalse);
+      expect(probeOf(exec), isNotEmpty);
+
+      // And removing /bin/ps is not something to be talked into.
+      final removed = await formula.uninstall(_context());
+      expect(removed.success, isFalse);
+      expect(removed.message, contains('not supported on macos'));
+    });
+
+    test('every node has it, and it is not a service', () {
+      expect(
+        FormulaRegistry.standard().byId('procps'),
+        isA<ProcpsFormula>(),
+        reason: 'a node should have it without being configured to',
+      );
+
+      final spec = ProcpsFormula().spec;
+      expect(spec.actions, contains(FormulaAction.install));
+      expect(
+        spec.actions,
+        isNot(contains(FormulaAction.restart)),
+        reason: 'two binaries are not a service',
+      );
+    });
+  });
+
   group('NodeFormulaService', () {
     test('applyPreset runs each step and aggregates success', () async {
       final exec = FakeExecutor(

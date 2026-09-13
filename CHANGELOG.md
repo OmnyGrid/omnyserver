@@ -1,8 +1,32 @@
 ## 0.16.1
 
 A Hub that stops to read a file is a Hub that stops answering. Dependency
-constraints, a memory probe that escaped its own fallback, and the file I/O
-behind both taken off the isolate's back. No API change.
+constraints, a memory probe that escaped its own fallback, the file I/O behind
+both taken off the isolate's back — and a node that can install the tools its
+own monitor depends on.
+
+### Added
+
+- **`procps` formula — the `ps` and `top` commands.** Less cosmetic than it
+  sounds: the agent reports its process table by shelling out to `ps`, and
+  degrades to an empty list when it is missing. A node on a slim image — which
+  is most container images, including `debian:stable-slim` and `dart:stable` —
+  therefore reports its CPU and memory perfectly well and *no processes at all*.
+  `formula run procps install` fills that in, and the next heartbeat carries a
+  populated table; nothing restarts.
+
+  Registered in `FormulaRegistry.standard()`, so every node has it without being
+  configured to, and listed in the Hub's catalogue, so a client offers it rather
+  than guessing at a name. On Linux it picks whichever of `apt-get`, `apk` or
+  `dnf` the host has — `stepFor` is told the OS, not the distribution, so the
+  choice has to be made on the host — and names the package each family uses
+  (`procps`, or `procps-ng` on the Red Hat side). A host with none of the three
+  says so rather than failing obscurely.
+
+  macOS ships both tools as part of the system, so `install` is a no-op there
+  and `uninstall` refuses: a formula asked to remove `/bin/ps` should decline.
+  There are no start/stop/restart actions, because two binaries are not a
+  service.
 
 ### Fixed
 

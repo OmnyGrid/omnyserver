@@ -92,12 +92,18 @@ void main() {
 
       final formulas = (body as List).cast<Map>();
       final ids = [for (final f in formulas) f['id']];
-      expect(ids, containsAll(['docker', 'dart']));
+      expect(ids, containsAll(['docker', 'dart', 'procps']));
 
       final docker = formulas.firstWhere((f) => f['id'] == 'docker');
       expect(docker['name'], 'Docker');
       // The actions are what a client offers instead of a free-text box.
       expect(docker['actions'], containsAll(['install', 'verify', 'restart']));
+
+      // And a formula that manages no service offers no service actions, so a
+      // client cannot offer "restart the ps command".
+      final procps = formulas.firstWhere((f) => f['id'] == 'procps');
+      expect(procps['actions'], containsAll(['install', 'verify']));
+      expect(procps['actions'], isNot(contains('restart')));
     });
 
     test(

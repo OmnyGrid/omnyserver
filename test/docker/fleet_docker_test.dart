@@ -215,4 +215,72 @@ void main() {
       client.close();
     }
   });
+
+  test('installing the process tools fills in the process table', () async {
+    if (await skipWithoutDocker()) return;
+    // The monitor reports processes by shelling out to `ps`, and degrades to an
+    // empty list without it — so a node on a slim image reports its CPU and
+    // memory perfectly well and no processes at all. This is the one case where
+    // a formula's effect is visible in the node's own status afterwards, and it
+    // needs a real host with a real package manager to show.
+    await fleet.startHub();
+    await fleet.startNode(id: 'bare-01');
+
+    final client = fleet.apiClient();
+    try {
+      Future<int> processCount() async {
+        final status = await client.get('/nodes/bare-01/status') as Map;
+        // Absent rather than empty when there is nothing to report.
+        return (status['processes'] as List? ?? const []).length;
+      }
+
+      await fleet.eventually(
+        () async => (await client.get('/nodes') as List).length,
+        (count) => count == 1,
+        what: 'the node to register',
+      );
+      // Wait for a status to exist at all before reading what is in it.
+      await fleet.eventually(
+        () async => client.get('/nodes/bare-01/status'),
+        (_) => true,
+        what: 'the node-s first status report',
+      );
+      expect(
+        await processCount(),
+        0,
+        reason: 'the slim image has no ps for the monitor to call',
+      );
+
+      final applied =
+          await client.post('/nodes/bare-01/formula', {
+                'formula': 'procps',
+                'action': 'install',
+              })
+              as Map;
+      final result = applied['result'] as Map;
+      expect(result['success'], isTrue, reason: '${result['message']}');
+      expect(result['changed'], isTrue);
+
+      // The next heartbeat carries a status gathered with a `ps` that now
+      // exists — nothing had to restart for it.
+      final count = await fleet.eventually(
+        processCount,
+        (count) => count > 0,
+        what: 'the node to start reporting processes',
+      );
+      expect(count, greaterThan(0));
+
+      // Asking again is a no-op rather than a second install.
+      final again =
+          await client.post('/nodes/bare-01/formula', {
+                'formula': 'procps',
+                'action': 'install',
+              })
+              as Map;
+      expect((again['result'] as Map)['changed'], isFalse);
+      expect((again['result'] as Map)['message'], contains('already'));
+    } finally {
+      client.close();
+    }
+  }, timeout: const Timeout(Duration(minutes: 5)));
 }

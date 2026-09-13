@@ -31,6 +31,23 @@ final FormulaSpec dartSpec = FormulaSpec(
   },
 );
 
+/// What the process-tools formula manages, and which actions it implements.
+///
+/// No start/stop/restart: there is no service here, only the two binaries the
+/// node's own monitor needs in order to report a process table.
+final FormulaSpec procpsSpec = FormulaSpec(
+  id: FormulaId('procps'),
+  name: 'Process tools',
+  description:
+      'The ps and top commands, which the node reports processes with.',
+  actions: const {
+    FormulaAction.install,
+    FormulaAction.update,
+    FormulaAction.uninstall,
+    FormulaAction.verify,
+  },
+);
+
 /// The formulas every node ships with.
 ///
 /// These specs live in the domain, not on the `Formula` implementations that
@@ -41,4 +58,8 @@ final FormulaSpec dartSpec = FormulaSpec(
 ///
 /// One definition, so a catalogue served by the Hub cannot drift from the
 /// formulas a node actually implements.
-final List<FormulaSpec> standardFormulaSpecs = [dockerSpec, dartSpec];
+final List<FormulaSpec> standardFormulaSpecs = [
+  dockerSpec,
+  dartSpec,
+  procpsSpec,
+];
