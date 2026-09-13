@@ -101,6 +101,11 @@ What is worth looking at:
   missing. Install it from the Run screen and the table fills in on the next
   heartbeat, without anything restarting.
 
+- **Restart agent / Stop agent** — both act on the **agent**, never on the
+  machine. Restart stops it and it comes straight back; stop leaves it down, and
+  the node shows offline until you `docker compose start worker-2`. What
+  separates them is the exit code the agent leaves with, which is why the node
+  services carry `restart: on-failure`.
 - **Declared state** — what you set with the tour, and whether it still holds.
 - **Activity** — the events and the audit trail, filling in as you click.
 - **Shell** — a real terminal on any node. The Hub runs a shell broker

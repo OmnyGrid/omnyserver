@@ -30,6 +30,33 @@ own monitor depends on.
 
 ### Fixed
 
+- **`restart` and `shutdown` did nothing, and reported success.** The node's
+  control handler acted on `update` and answered everything else with
+  `acknowledged <action>` — so the Hub replied `{"status":"restarting"}`, the
+  dashboard showed a green confirmation, and the agent carried on untouched.
+  Reporting work as done is worse than reporting it as impossible.
+
+  Both now act, **on the agent and never on the machine it runs on**: `restart`
+  stops the agent so its supervisor starts it again, `shutdown` stops it and
+  leaves it stopped. The difference is the exit code — non-zero
+  (`agentRestartExitCode`, `EX_TEMPFAIL`) for a restart, zero for a shutdown —
+  which is what `Restart=on-failure` and Docker's `restart: on-failure` read to
+  decide whether to bring the agent back. A crashed agent is still restarted by
+  either.
+
+  The reply is sent before the agent goes, so an operator sees a confirmation
+  rather than a dropped connection. `UpdateService` takes `onRestartAgent` and
+  `onStopAgent` — only the process owning the agent's lifecycle can end it — and
+  an agent wired without them now says so instead of claiming success. Every
+  name and description says "the agent": the CLI, the OpenAPI document, and the
+  dashboard's buttons (now **Restart agent** and **Stop agent**).
+
+  **Worth knowing:** `service install` writes `Restart=always`, which restarts
+  the agent whatever its exit code — so under a unit generated today, `shutdown`
+  stops the agent and systemd starts it again. Moving those units to
+  `on-failure` would make shutdown stick; that is a change to generated
+  production config and has been left alone deliberately.
+
 - **A failing memory probe on macOS escaped its own fallback.** `_memory()`
   wraps its platform probes in a `try` that falls through to a zeroed
   `MemoryInfo`, but the macOS branch returned the probe's future *without*

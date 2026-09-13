@@ -26,6 +26,12 @@ x-node: &node
   depends_on:
     hub:
       condition: service_healthy
+  # What makes "Restart agent" and "Stop agent" in the dashboard mean different
+  # things. Both stop the agent; the exit code says whether it should come
+  # back, and `on-failure` is the policy that listens: a restart exits non-zero
+  # and Docker starts it again, a shutdown exits 0 and Docker leaves it alone.
+  # A crashed agent is restarted either way, which is the point of the policy.
+  restart: on-failure
   volumes:
     - certs:/certs:ro
 

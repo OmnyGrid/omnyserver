@@ -1,5 +1,13 @@
 ## 0.3.1
 
+- **The control buttons say what they act on: Restart agent, Stop agent.**
+  They were "Restart" and "Shut down" beside a node's name, which reads as the
+  machine — and these have only ever meant the OmnyServer agent. The
+  confirmations now say so outright, including that the machine is not touched
+  and what the node does afterwards. (Until OmnyServer 0.16.1 neither did
+  anything at all: the node acknowledged both and carried on, so the dashboard
+  showed a green result for work that never happened.)
+
 - **The shell follows the Hub's scheme instead of always using `wss`.** Opening
   a terminal built its URL as `wss://<hub>/shell` whatever the Hub address was,
   so a dashboard reaching its Hub over plain `http` — anything behind a proxy

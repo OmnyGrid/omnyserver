@@ -53,21 +53,32 @@ Map<String, dynamic> openApiDocument() => {
     },
     '/nodes/{id}/restart': {
       'post': {
-        'summary': 'Restart a node',
+        'summary': 'Restart the agent on a node',
+        'description':
+            'Restarts the OmnyServer agent, not the machine it runs on. The '
+            'agent stops and its supervisor starts it again, so the node goes '
+            'offline briefly and comes back on its own.',
         'parameters': [_pathId],
         'responses': {'200': _ok('Accepted'), '404': _err, '502': _err},
       },
     },
     '/nodes/{id}/shutdown': {
       'post': {
-        'summary': 'Shut down a node',
+        'summary': 'Stop the agent on a node',
+        'description':
+            'Stops the OmnyServer agent, not the machine it runs on. The node '
+            'goes offline and stays offline until something starts the agent '
+            'again.',
         'parameters': [_pathId],
         'responses': {'200': _ok('Accepted'), '404': _err, '502': _err},
       },
     },
     '/nodes/{id}/update': {
       'post': {
-        'summary': 'Trigger a node update',
+        'summary': 'Update software the agent manages',
+        'description':
+            'Applies an update on the node: the OS packages, a single named '
+            'package, or the agent itself — chosen with `target`.',
         'parameters': [_pathId],
         'requestBody': _jsonBody({'target': 'string'}),
         'responses': {'200': _ok('Accepted'), '404': _err, '502': _err},

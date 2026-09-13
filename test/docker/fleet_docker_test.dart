@@ -216,6 +216,47 @@ void main() {
     }
   });
 
+  test('restart and shutdown stop the agent, and say so differently', () async {
+    if (await skipWithoutDocker()) return;
+    // These used to be acknowledged and dropped: the API answered "restarting"
+    // and the agent carried on as if nothing had been asked. What separates
+    // them now is the exit code the agent leaves with — that is what a
+    // supervisor reads to decide whether to bring it back — so the exit code
+    // is what this asserts, on a real process rather than a fake handler.
+    await fleet.startHub();
+    final restarting = await fleet.startNode(id: 'worker-a');
+    final stopping = await fleet.startNode(id: 'worker-b');
+
+    final client = fleet.apiClient();
+    try {
+      await fleet.eventually(
+        () async => (await client.get('/nodes') as List).length,
+        (count) => count == 2,
+        what: 'both nodes to register',
+      );
+
+      // Answered before the agent goes: an operator should see a confirmation,
+      // not a dropped connection.
+      final reply = await client.post('/nodes/worker-a/restart') as Map;
+      expect(reply['status'], 'restarting');
+
+      await client.post('/nodes/worker-b/shutdown');
+
+      expect(
+        await restarting.waitExit(),
+        75,
+        reason: 'non-zero, so `restart: on-failure` starts the agent again',
+      );
+      expect(
+        await stopping.waitExit(),
+        0,
+        reason: 'a clean exit, so the same policy leaves it stopped',
+      );
+    } finally {
+      client.close();
+    }
+  }, timeout: const Timeout(Duration(minutes: 5)));
+
   test('installing the process tools fills in the process table', () async {
     if (await skipWithoutDocker()) return;
     // The monitor reports processes by shelling out to `ps`, and degrades to an
