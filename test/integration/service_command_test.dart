@@ -63,6 +63,21 @@ void main() {
       expect(out, contains(p.join(home.path, '.omnyserver', 'hub')));
       // A dry run touches nothing.
       expect(out, isNot(contains('Installed and started')));
+
+      // A crash is restarted; a clean exit is not, because that is how the
+      // agent says it was told to stop (`node shutdown`). Each platform spells
+      // it differently, and under the old `always` policy both spellings
+      // restarted the agent regardless — undoing every shutdown.
+      if (Platform.isMacOS) {
+        expect(
+          out,
+          stringContainsInOrder(['KeepAlive', 'SuccessfulExit', '<false/>']),
+          reason: 'launchd: keep it alive unless it exited successfully',
+        );
+      } else {
+        expect(out, contains('Restart=on-failure'));
+        expect(out, isNot(contains('Restart=always')));
+      }
     });
 
     test('absolutizes a relative cert against the cwd', () async {

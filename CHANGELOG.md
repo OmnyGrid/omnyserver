@@ -51,12 +51,6 @@ own monitor depends on.
   name and description says "the agent": the CLI, the OpenAPI document, and the
   dashboard's buttons (now **Restart agent** and **Stop agent**).
 
-  **Worth knowing:** `service install` writes `Restart=always`, which restarts
-  the agent whatever its exit code — so under a unit generated today, `shutdown`
-  stops the agent and systemd starts it again. Moving those units to
-  `on-failure` would make shutdown stick; that is a change to generated
-  production config and has been left alone deliberately.
-
 - **A failing memory probe on macOS escaped its own fallback.** `_memory()`
   wraps its platform probes in a `try` that falls through to a zeroed
   `MemoryInfo`, but the macOS branch returned the probe's future *without*
@@ -69,6 +63,19 @@ own monitor depends on.
   inside the `try`.
 
 ### Changed
+
+- **A service unit now restarts a crash, not a deliberate stop.**
+  `service install` writes `Restart=on-failure` (and launchd's equivalent,
+  `KeepAlive` with `SuccessfulExit: false`) where it wrote `Restart=always`.
+
+  A crash is still brought back. What changes is that a deliberate stop is
+  honoured: the agent exits 0 to mean "I was told to stop" and non-zero to ask
+  for a restart, and `always` undid both — an operator who shut a node down from
+  the dashboard watched the service manager start it straight back. Measured
+  before the change: a clean exit took the unit from PID 224 to 241.
+
+  Existing installed services keep the policy they were installed with, until
+  `omnyserver service reinstall <role>` rewrites the unit.
 
 - **The JSON-directory repositories no longer block the isolate they serve
   from.** Every method implements a `Future`-returning repository interface, and

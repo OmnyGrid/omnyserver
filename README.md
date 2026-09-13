@@ -611,7 +611,12 @@ The dashboard gives you the fleet, a node's live status, formulas, declared
 state, the audit trail and a terminal on any node. The tour walks the same
 ground over the REST API: label selectors, a formula that succeeds on one host
 and fails on another, desired state and drift, issuing and revoking a
-credential. See its [README](example/docker_fleet/README.md).
+credential.
+
+`compose.service.yaml` beside it runs the same fleet the way a server does —
+under systemd, installed with `omnyserver service install`, so each role is a
+unit you can `systemctl status`. See its
+[README](example/docker_fleet/README.md).
 
 ### The container fleet
 

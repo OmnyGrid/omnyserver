@@ -180,6 +180,59 @@ docker compose -f example/docker_fleet/compose.yaml logs -f builder-1
 `down -v` removes the volumes too, which is what makes the next `up` a clean
 fleet rather than the same one.
 
+## The same fleet, run as a service
+
+Servers do not run `omnyserver hub start` in a terminal — they run it under a
+service manager, installed with `omnyserver service install`. `compose.service.yaml`
+is that fleet:
+
+```sh
+docker compose -f example/docker_fleet/compose.service.yaml up --build -d
+open http://localhost:8080
+
+docker compose -f example/docker_fleet/compose.service.yaml exec hub \
+  omnyserver service info hub
+docker compose -f example/docker_fleet/compose.service.yaml exec worker-1 \
+  systemctl status dart_omnyserver_node
+
+docker compose -f example/docker_fleet/compose.service.yaml down -v
+```
+
+Each container runs systemd, a boot-time unit installs its role, and from then
+on the Hub and the nodes are ordinary services — a unit file, a service manager
+that restarts a crash, and `systemctl` to ask about it:
+
+```
+$ … exec worker-1 omnyserver service info node
+Service "node" (omnyserver:node)
+  status:      running
+  scope:       system
+  restart:     onFailure
+  command:     /usr/local/bin/omnyserver node start --hub wss://hub:8443 --id worker-1 …
+```
+
+**Why the buttons behave differently here.** With the agent under a service
+manager, "Restart agent" and "Stop agent" show what they really mean:
+
+| | What happens |
+| --- | --- |
+| Restart agent | The unit stays `active`, with a new PID — the manager started it again |
+| Stop agent | The unit goes `inactive` **and the container stays up** — the machine is untouched, only the agent stopped |
+
+A stopped agent comes back with
+`… exec worker-2 omnyserver service start node`. That distinction is the whole
+reason `service install` writes `Restart=on-failure`: a crash is restarted, a
+deliberate stop is honoured.
+
+**What it costs.** Each container needs `SYS_ADMIN`, the host's cgroup
+filesystem and a tmpfs for `/run` to run an init — not `--privileged`, but not
+nothing either. The image carries systemd and dbus, and boot takes seconds
+rather than an instant. And because systemd is PID 1, the container's command
+belongs to init: the Hub and node flags live in `install-service.sh` instead of
+in the compose file. That is why the simpler `compose.yaml` still exists beside
+it — it is the better place to read what the flags are, and this is the better
+picture of how a server actually runs them.
+
 ## The same shape, asserted
 
 `test/docker/` runs this arrangement as integration tests — a fleet forming,

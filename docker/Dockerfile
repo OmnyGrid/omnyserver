@@ -50,6 +50,33 @@ COPY --from=build /src/omnyserver /usr/local/bin/omnyserver
 ENTRYPOINT ["/usr/local/bin/omnyserver"]
 
 # ---------------------------------------------------------------------------
+# A host that runs OmnyServer the way a server does: as a service, under an
+# init, installed with `omnyserver service install`. Used by
+# `example/docker_fleet/compose.service.yaml`.
+#
+# systemd is PID 1 here, so the container's command belongs to init and the
+# role's flags cannot come from `command:` — they come from the install script
+# the bootstrap unit runs. That is the cost of the honest arrangement, and the
+# reason the simpler compose file still exists beside it.
+FROM debian:stable-slim AS service
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends \
+       systemd systemd-sysv dbus openssl ca-certificates \
+  && rm -rf /var/lib/apt/lists/* \
+  # Nothing here has a console, and a container is not a login host.
+  && rm -f /lib/systemd/system/multi-user.target.wants/getty.target \
+  && systemctl mask getty.target console-getty.service
+
+COPY --from=build /src/omnyserver /usr/local/bin/omnyserver
+COPY docker/omnyserver-bootstrap.service /etc/systemd/system/
+RUN systemctl enable omnyserver-bootstrap.service
+
+# systemd wants SIGRTMIN+3 to shut down cleanly; SIGTERM leaves it to time out.
+STOPSIGNAL SIGRTMIN+3
+CMD ["/sbin/init"]
+
+# ---------------------------------------------------------------------------
 # The browser dashboard: `omnyserver_web` compiled to JavaScript. It has no
 # backend of its own — the page calls the Hub's REST API directly — so serving
 # it is serving a directory of static files.
