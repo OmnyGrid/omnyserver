@@ -103,12 +103,19 @@ own monitor depends on.
   `stdin.readLineSync`, which is a deliberate blocking read of a terminal; and
   `Sha256().toSync()`, which is the cryptography package's sync API, not I/O.
 
-- **[omnyshell](https://pub.dev/packages/omnyshell) `^1.57.0`** (from `^1.56.1`),
-  which adds the standalone `omnyshell ide [path]` command and routes both IDE
-  entry points through one launcher. OmnyServer embeds OmnyShell for its shell
-  broker (`AiConfig` / `AiConfigIo` / `HttpProxyService`) and never launches the
-  IDE itself, so nothing here changes what the Hub serves — the constraint moves
-  so a dependent resolving both packages is not pinned back.
+- **[omnyshell](https://pub.dev/packages/omnyshell) `^1.57.1`** (from `^1.56.1`),
+  which fixes a shell on a node that runs as a service: it had no `$HOME`.
+  systemd hands a system unit `PATH`, `LANG` and even `USER`, but sets `HOME`
+  only if the unit asks — and a session inherits the node's environment, so
+  there was nothing to inherit. Quietly, too: `cd ~` went nowhere and said
+  nothing, `~/…` stopped expanding, and git, ssh and package managers wrote
+  somewhere other than the user's home. A session now gets a `HOME` resolved
+  from the password database when the node has none.
+
+  That matters here because `service install` is how a node is meant to run.
+  1.57.0 along the way added the standalone `omnyshell ide [path]` command,
+  which OmnyServer does not use — it embeds OmnyShell for its shell broker
+  (`AiConfig` / `AiConfigIo` / `HttpProxyService`) and never launches the IDE.
 
 - `http: ^1.6.0` (from `^1.0.0`), `uuid: ^4.6.0` (from `^4.5.3`) — the latter
   matching what omnyshell 1.57.0 already requires.
