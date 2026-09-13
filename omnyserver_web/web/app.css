@@ -85,6 +85,46 @@
   word-break: break-word;
 }
 
+/* The per-run log button, in the operations tray.
+   A default button is 10px/16px and weight 600 — in a row that is already a
+   status badge, a summary and a duration, it outweighed the status it sits
+   next to. This is the badge's own shape and size instead, so the row reads as
+   one thing, and it stays quiet until the pointer is on it. */
+.op-log {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 11px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--fg-muted);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+}
+.op-log:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: transparent;
+}
+/* The three stacked rules of a log, drawn rather than spelled: an icon font is
+   a download, and an emoji is a different colour on every platform. */
+.op-log .lines {
+  display: inline-flex;
+  flex-direction: column;
+  justify-content: space-between;
+  width: 9px;
+  height: 8px;
+}
+.op-log .lines i {
+  display: block;
+  height: 1.5px;
+  border-radius: 1px;
+  background: currentColor;
+}
+.op-log .lines i:nth-child(2) { width: 70%; }
+
 /* Alerts sit above the fleet, and are the one thing on the page that should
    catch the eye. */
 .alerts {

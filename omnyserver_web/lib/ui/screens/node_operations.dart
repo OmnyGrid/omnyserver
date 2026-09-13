@@ -157,12 +157,7 @@ class NodeOperations {
               ),
               // Only a formula tags its output, so only a formula has a log to
               // pick out of the node's stream.
-              if (op.kind == 'formula')
-                button(
-                  'Log',
-                  className: 'ghost',
-                  onClick: () => _showRunLog(op),
-                ),
+              if (op.kind == 'formula') _logButton(op),
             ],
           ),
         );
@@ -507,6 +502,37 @@ class NodeOperations {
   /// request times out, the node carries on working, and the operator is shown a
   /// failure that did not happen. The operations tray below is where the answer
   /// arrives.
+  /// The button that opens one run's log.
+  ///
+  /// Shaped like the status badge it shares the row with rather than like a
+  /// form's submit button: the tray is a list to scan, and a full-weight button
+  /// on every formula row drew the eye away from the statuses.
+  ///
+  /// The label says "Log" and the accessible name says which run, because a
+  /// screen reader moving button to button would otherwise hear "Log" a dozen
+  /// times with nothing to tell them apart.
+  web.HTMLElement _logButton(Operation op) {
+    final control = button(
+      'Log',
+      className: 'op-log',
+      ariaLabel: 'Show the log of ${op.summary}',
+      onClick: () => _showRunLog(op),
+    );
+    // Prepended, not appended: `button()` sets `textContent`, which would wipe
+    // anything already in there.
+    control.insertBefore(
+      el(
+        'span',
+        classes: 'lines',
+        // Decorative — the button already has a name.
+        attrs: const {'aria-hidden': 'true'},
+        children: [el('i'), el('i'), el('i')],
+      ),
+      control.firstChild,
+    );
+    return control;
+  }
+
   /// Opens the live log of one run.
   ///
   /// The node prefixes every line of a run with `[<formula> <action>]`, and the
