@@ -612,6 +612,7 @@ class NodeStartCommand extends Command<void> {
       statusProvider: monitor.snapshot,
       capabilityProvider: scanner.scan,
       formulaHandler: formulaService.runFormula,
+      formulaStatusHandler: formulaService.reportStatus,
       presetHandler: formulaService.applyPreset,
       nodeControlHandler: updateService.handle,
       logger: log,

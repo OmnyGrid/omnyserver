@@ -2,6 +2,7 @@ import '../../domain/formula/formula.dart';
 import '../../domain/formula/formula_action.dart';
 import '../../domain/formula/formula_context.dart';
 import '../../domain/formula/formula_result.dart';
+import '../../domain/formula/formula_status.dart';
 import 'command_executor.dart';
 
 /// A platform command template: the executable and args to run for an action on
@@ -39,6 +40,63 @@ abstract class CommandFormula extends Formula {
   /// Returns the command template for [action] on [osName], or `null` if the
   /// action is unsupported on that platform.
   CommandStep? stepFor(FormulaAction action, String osName);
+
+  /// The probe that says whether what this formula manages is *running*, or
+  /// `null` when it manages nothing that runs.
+  ///
+  /// Null is the right answer for most formulas: `nmap` is a command, and a
+  /// command that is installed is the whole story. A formula that manages a
+  /// daemon supplies one, and [statusFrom] turns its exit into a status.
+  CommandStep? statusStepFor(String osName) => null;
+
+  /// Maps a [statusStepFor] probe's outcome to a status.
+  ///
+  /// The default reads a zero exit as running and anything else as stopped,
+  /// which is what a well-behaved `… info` or `… is-active` probe reports.
+  /// Override where a tool distinguishes "not running" from "broken".
+  FormulaStatus statusFrom(ExecResult result) =>
+      result.ok ? FormulaStatus.running : FormulaStatus.stopped;
+
+  /// Present first, running second.
+  ///
+  /// The order matters: a stopped daemon and an uninstalled one both fail the
+  /// running probe, and calling the second one "stopped" would send an operator
+  /// to a start button for software that is not there.
+  @override
+  Future<FormulaStatusReport> status(FormulaContext context) async {
+    final present = await validate(context);
+    if (!present.valid) {
+      return FormulaStatusReport(
+        formula: spec.id,
+        status: FormulaStatus.absent,
+        message: present.message,
+        checkedAt: context.now(),
+      );
+    }
+
+    final step = statusStepFor(context.platform.osName);
+    if (step == null) {
+      return FormulaStatusReport(
+        formula: spec.id,
+        status: FormulaStatus.installed,
+        version: present.detectedVersion,
+        message: present.message,
+        checkedAt: context.now(),
+      );
+    }
+
+    final probe = await executor.run(step.executable, step.args);
+    final detail = (probe.ok ? probe.stdout : probe.stderr).trim();
+    return FormulaStatusReport(
+      formula: spec.id,
+      status: statusFrom(probe),
+      version: present.detectedVersion,
+      // One line: this is a badge's tooltip, not a log. The log is what
+      // `verify` is for.
+      message: detail.isEmpty ? present.message : detail.split('\n').first,
+      checkedAt: context.now(),
+    );
+  }
 
   @override
   Future<ValidationResult> validate(FormulaContext context) async {

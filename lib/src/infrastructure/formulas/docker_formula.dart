@@ -20,6 +20,17 @@ class DockerFormula extends CommandFormula {
   @override
   CommandStep get verifyStep => const CommandStep('docker', ['--version']);
 
+  /// The daemon, not the CLI.
+  ///
+  /// `docker --version` answers from the client binary alone and says nothing
+  /// about whether anything is running — it prints a version perfectly happily
+  /// on a host whose daemon is stopped. `docker info` has to reach the daemon,
+  /// so it is the question worth asking, and its server version is what the
+  /// badge shows.
+  @override
+  CommandStep? statusStepFor(String osName) =>
+      const CommandStep('docker', ['info', '--format', '{{.ServerVersion}}']);
+
   @override
   CommandStep? stepFor(FormulaAction action, String osName) {
     switch (osName) {

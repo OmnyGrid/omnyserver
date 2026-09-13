@@ -370,6 +370,64 @@ void main() {
     }
   }, timeout: const Timeout(Duration(minutes: 10)));
 
+  test('a node reports what it actually has, before and after', () async {
+    if (await skipWithoutDocker()) return;
+    // The point of asking the node rather than reading the Hub's history: only
+    // a real host can be wrong about this. Two images, the same question — the
+    // slim one has no Dart and the SDK one does, and neither has a Docker
+    // daemon, which is exactly the case a version probe gets wrong.
+    await fleet.startHub();
+    await fleet.startNode(id: 'bare-01');
+    await fleet.startNode(id: 'sdk-01', sdk: true);
+
+    final client = fleet.apiClient();
+    try {
+      await fleet.eventually(
+        () async => (await client.get('/nodes') as List).length,
+        (count) => count == 2,
+        what: 'both nodes to register',
+      );
+
+      Future<Map<String, String>> statusOf(String node) async {
+        final rows = await client.get('/nodes/$node/formulas') as List;
+        return {
+          for (final row in rows.cast<Map>())
+            row['formula'] as String: row['status'] as String,
+        };
+      }
+
+      final bare = await statusOf('bare-01');
+      final sdk = await statusOf('sdk-01');
+
+      expect(bare['dart'], 'absent');
+      expect(sdk['dart'], 'installed', reason: 'the SDK image ships one');
+
+      // Not "stopped": neither container has a Docker daemon *or* the client,
+      // and a node with nothing installed should not send an operator looking
+      // for a start button.
+      expect(bare['docker'], 'absent');
+
+      // Now install something, and watch the same endpoint change its mind.
+      final installed =
+          await client.post('/nodes/bare-01/formula', {
+                'formula': 'nmap',
+                'action': 'install',
+              })
+              as Map;
+      expect(
+        (installed['result'] as Map)['success'],
+        isTrue,
+        reason: '${(installed['result'] as Map)['message']}',
+      );
+
+      final after = await statusOf('bare-01');
+      expect(after['nmap'], 'installed');
+      expect(after['dart'], 'absent', reason: 'nothing else moved');
+    } finally {
+      client.close();
+    }
+  }, timeout: const Timeout(Duration(minutes: 10)));
+
   test('installing the process tools fills in the process table', () async {
     if (await skipWithoutDocker()) return;
     // The monitor reports processes by shelling out to `ps`, and degrades to an

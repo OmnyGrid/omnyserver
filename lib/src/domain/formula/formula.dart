@@ -2,6 +2,7 @@ import '../entities/formula_spec.dart';
 import 'formula_action.dart';
 import 'formula_context.dart';
 import 'formula_result.dart';
+import 'formula_status.dart';
 
 /// An operational procedure that manages a piece of software on a node
 /// (install / update / start / stop / restart / uninstall / verify).
@@ -34,6 +35,36 @@ abstract class Formula {
 
   /// Validates that the managed software is present and healthy.
   Future<ValidationResult> validate(FormulaContext context);
+
+  /// Reports what this formula manages, as it currently stands on the node.
+  ///
+  /// Answered from [validate] by default, which is all a formula that installs
+  /// a command can honestly say: it is there or it is not. A formula that
+  /// manages a *service* overrides this — "installed" is a poor answer about a
+  /// daemon that is not running, and the dashboard shows this verbatim.
+  ///
+  /// A probe that throws is [FormulaStatus.unknown], never
+  /// [FormulaStatus.absent]: a check that could not run has said nothing about
+  /// whether the software is there, and the two are acted on differently.
+  Future<FormulaStatusReport> status(FormulaContext context) async {
+    try {
+      final result = await validate(context);
+      return FormulaStatusReport(
+        formula: spec.id,
+        status: result.valid ? FormulaStatus.installed : FormulaStatus.absent,
+        version: result.detectedVersion,
+        message: result.message,
+        checkedAt: context.now(),
+      );
+    } on Object catch (e) {
+      return FormulaStatusReport(
+        formula: spec.id,
+        status: FormulaStatus.unknown,
+        message: 'status check failed: $e',
+        checkedAt: context.now(),
+      );
+    }
+  }
 
   /// Dispatches the given [action] to the matching method.
   Future<FormulaResult> run(FormulaAction action, FormulaContext context) {

@@ -18,6 +18,10 @@ typedef CapabilityProvider = Future<NodeCapabilities> Function();
 /// Handles a Hub formula-run request on the node.
 typedef FormulaHandler = Future<FormulaResult> Function(FormulaRun request);
 
+/// Handles a Hub formula-status request on the node.
+typedef FormulaStatusHandler =
+    Future<FormulaStatusResult> Function(FormulaStatusRequest request);
+
 /// Handles a Hub preset-apply request on the node.
 typedef PresetHandler = Future<PresetApplyResult> Function(PresetApply request);
 
@@ -85,6 +89,9 @@ class NodeAgentConfig {
   /// Handles formula-run requests (null ⇒ unsupported).
   final FormulaHandler? formulaHandler;
 
+  /// Reports the state of the node's formulas (null ⇒ nothing to report).
+  final FormulaStatusHandler? formulaStatusHandler;
+
   /// Handles preset-apply requests (null ⇒ unsupported).
   final PresetHandler? presetHandler;
 
@@ -119,6 +126,7 @@ class NodeAgentConfig {
     this.statusProvider,
     this.capabilityProvider,
     this.formulaHandler,
+    this.formulaStatusHandler,
     this.presetHandler,
     this.serviceHandler,
     this.nodeControlHandler,

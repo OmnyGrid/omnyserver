@@ -7,6 +7,39 @@ own monitor depends on.
 
 ### Added
 
+- **A formula can say what state it is in, and the dashboard shows it.** The
+  Hub could say what it had *dispatched* to a node — installed Docker at
+  14:02, and it succeeded. It could not say whether Docker was still there at
+  15:00, or whether the daemon an operator stopped over SSH was running. An
+  operation history is a record of intentions, and a node is a machine other
+  people also touch.
+
+  A formula now answers for itself. `Formula.status()` reports `absent`,
+  `installed`, `running`, `stopped`, `failed` or `unknown`, defaulting to what
+  `validate` already knew — so a formula that installs a command keeps working
+  with nothing added. One that manages a *service* supplies a second probe:
+  `DockerFormula` asks `docker info`, which has to reach the daemon, because
+  `docker --version` answers from the client binary and reports a version
+  perfectly happily on a host whose daemon is dead.
+
+  Present is checked before running, deliberately. A stopped daemon and an
+  uninstalled one both fail the running probe, and calling the second one
+  "stopped" sends an operator to a start button for software that is not there.
+  A probe that could not *run* is `unknown` and never `absent`, for the same
+  reason in the other direction: "not installed" invites an install, and an
+  install over a working one is how a failed probe becomes an outage.
+
+  `GET /api/v1/nodes/<id>/formulas` asks the node and returns a row per
+  formula (`?formulas=a,b` narrows it). One round trip for the whole registry,
+  not one per formula, and it is the *node's* registry — a site-registered
+  formula the Hub's catalogue has never heard of still reports. The dashboard
+  gains a **Software** card on each node, refreshed when a run finishes, since
+  that is the panel an operator is watching to find out whether the install
+  worked.
+
+  This is distinct from `GET /api/v1/formulas`, which is unchanged: that is the
+  catalogue of what a node *can* run.
+
 - **A formula's output is reported while it runs, and kept afterwards.** The
   node service has always accepted an `onLog` sink for formula output, and
   nothing ever passed one — so every line a formula produced, including each

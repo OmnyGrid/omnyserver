@@ -101,6 +101,23 @@ Map<String, dynamic> openApiDocument() => {
         },
       },
     },
+    '/nodes/{id}/formulas': {
+      'get': {
+        'summary': 'What state each of a node\'s formulas is in',
+        'description':
+            'Asked of the node, not answered from the Hub\'s records: each '
+            'formula probes what it manages and reports `absent`, `installed`, '
+            '`running`, `stopped`, `failed` or `unknown`. `?formulas=a,b` '
+            'narrows it to those ids; the default is everything the node '
+            'carries.',
+        'parameters': [_pathId],
+        'responses': {
+          '200': _ok('Array of formula status reports'),
+          '404': _err,
+          '502': _err,
+        },
+      },
+    },
     '/formulas': {
       'get': {
         'summary':

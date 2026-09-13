@@ -1,6 +1,8 @@
 @TestOn('vm')
 library;
 
+import 'dart:io';
+
 import 'package:omnyserver/omnyserver_node.dart';
 import 'package:test/test.dart';
 
@@ -10,7 +12,7 @@ import 'package:test/test.dart';
 /// That dependency is easy to acquire by accident: `DockerFormula` has no
 /// Windows step, so a service test written against it captured nothing there
 /// and passed everywhere else.
-class TalkativeFormula implements Formula {
+class TalkativeFormula extends Formula {
   TalkativeFormula(this.id, this.lines);
 
   final String id;
@@ -24,7 +26,10 @@ class TalkativeFormula implements Formula {
   );
 
   @override
-  Future<FormulaResult> run(FormulaAction action, FormulaContext context) async {
+  Future<FormulaResult> run(
+    FormulaAction action,
+    FormulaContext context,
+  ) async {
     for (final line in lines) {
       context.log(line);
     }
@@ -65,6 +70,16 @@ class TalkativeFormula implements Formula {
   @override
   Future<ValidationResult> validate(FormulaContext context) async =>
       ValidationResult.fail('$id is never already present');
+}
+
+/// A formula whose probe cannot run at all — a node with no shell, a binary
+/// that is there but not executable, a device that is full.
+class _ThrowingFormula extends TalkativeFormula {
+  _ThrowingFormula() : super('broken', const []);
+
+  @override
+  Future<ValidationResult> validate(FormulaContext context) async =>
+      throw const ProcessException('sh', ['-c'], 'no such file');
 }
 
 /// A fake executor that records invocations and returns scripted results.
@@ -605,6 +620,148 @@ void main() {
       // heap.
       expect(streamed.any((l) => l.startsWith('[docker install]')), isTrue);
       expect(streamed.any((l) => l.startsWith('[dart install]')), isTrue);
+    });
+  });
+
+  // "Did the install succeed" and "is it working now" are different questions,
+  // and the Hub's operation history only ever answered the first. A daemon that
+  // died an hour later, or one somebody stopped over SSH, left that history
+  // saying everything was fine.
+  group('what a formula reports about itself', () {
+    FormulaContext ctx({String osName = 'linux'}) => _context(osName: osName);
+
+    test('a command formula is installed, or it is absent', () async {
+      final present = FakeExecutor(
+        scripted: {
+          'nmap --version': const ExecResult(
+            exitCode: 0,
+            stdout: 'Nmap version 7.95',
+          ),
+        },
+      );
+      final report = await NmapFormula(executor: present).status(ctx());
+      expect(report.formula.value, 'nmap');
+      expect(report.status, FormulaStatus.installed);
+      expect(report.version, '7.95');
+
+      // Not "stopped": a command has nothing to stop.
+      final missing = FakeExecutor(
+        fallback: const ExecResult(exitCode: 127, stderr: 'not found'),
+      );
+      final gone = await NmapFormula(executor: missing).status(ctx());
+      expect(gone.status, FormulaStatus.absent);
+    });
+
+    test('a service formula distinguishes installed from running', () async {
+      // `docker --version` answers from the client binary alone, so a host with
+      // a dead daemon reports a version perfectly happily. The status probe has
+      // to reach the daemon, which is what `docker info` does.
+      final up = FakeExecutor(
+        scripted: {
+          'docker --version': const ExecResult(
+            exitCode: 0,
+            stdout: 'Docker version 24.0.7',
+          ),
+          'docker info --format {{.ServerVersion}}': const ExecResult(
+            exitCode: 0,
+            stdout: '24.0.7',
+          ),
+        },
+      );
+      final running = await DockerFormula(executor: up).status(ctx());
+      expect(running.status, FormulaStatus.running);
+      expect(running.message, '24.0.7');
+
+      final down = FakeExecutor(
+        scripted: {
+          'docker --version': const ExecResult(
+            exitCode: 0,
+            stdout: 'Docker version 24.0.7',
+          ),
+          'docker info --format {{.ServerVersion}}': const ExecResult(
+            exitCode: 1,
+            stderr: 'Cannot connect to the Docker daemon',
+          ),
+        },
+      );
+      final stopped = await DockerFormula(executor: down).status(ctx());
+      expect(stopped.status, FormulaStatus.stopped);
+      expect(stopped.message, contains('Cannot connect'));
+    });
+
+    test('an uninstalled service is absent, not stopped', () async {
+      // Both probes fail on a host with no Docker at all, and the running one
+      // fails *because* of the missing one. Calling that "stopped" would send
+      // an operator to a start button for software that is not there.
+      final none = FakeExecutor(
+        fallback: const ExecResult(exitCode: 127, stderr: 'not found'),
+      );
+      final report = await DockerFormula(executor: none).status(ctx());
+      expect(report.status, FormulaStatus.absent);
+      expect(none.calls, [
+        'docker --version',
+      ], reason: 'no point asking a missing daemon whether it is running');
+    });
+
+    test('a probe that cannot run is unknown, never absent', () async {
+      // The distinction that matters: "not installed" invites an install, and
+      // an install over a working one is how a probe failure becomes an outage.
+      final report = await _ThrowingFormula().status(ctx());
+      expect(report.status, FormulaStatus.unknown);
+      expect(report.status.isPresent, isFalse);
+      expect(report.message, contains('status check failed'));
+    });
+  });
+
+  group('NodeFormulaService.reportStatus', () {
+    test('an empty request reports everything the node carries', () async {
+      final exec = FakeExecutor(
+        fallback: const ExecResult(exitCode: 127, stderr: 'not found'),
+      );
+      final service = NodeFormulaService(
+        registry: FormulaRegistry.standard(executor: exec),
+      );
+      final result = await service.reportStatus(
+        const FormulaStatusRequest(requestId: 'r'),
+      );
+
+      expect([
+        for (final r in result.reports) r.formula.value,
+      ], containsAll(['docker', 'dart', 'nmap']));
+      expect(
+        result.reports.every((r) => r.status == FormulaStatus.absent),
+        isTrue,
+      );
+      // Sorted, so a dashboard's rows do not reshuffle between refreshes.
+      final ids = [for (final r in result.reports) r.formula.value];
+      expect(ids, orderedEquals([...ids]..sort()));
+    });
+
+    test('a formula the node does not have is answered, not omitted', () async {
+      // A caller that asked by name is owed a row; a silently missing one reads
+      // as "still loading".
+      final service = NodeFormulaService(registry: FormulaRegistry());
+      final result = await service.reportStatus(
+        const FormulaStatusRequest(requestId: 'r', formulas: ['ghost']),
+      );
+
+      expect(result.reports, hasLength(1));
+      expect(result.reports.single.status, FormulaStatus.unknown);
+      expect(result.reports.single.message, contains('no formula "ghost"'));
+    });
+
+    test('the wire form survives a round trip', () async {
+      final service = NodeFormulaService(
+        registry: FormulaRegistry()..register(TalkativeFormula('talker', [])),
+      );
+      final sent = await service.reportStatus(
+        const FormulaStatusRequest(requestId: 'r'),
+      );
+      final back = FormulaStatusResult.fromJson(sent.toJson());
+
+      expect(back.requestId, 'r');
+      expect(back.reports.single.formula.value, 'talker');
+      expect(back.reports.single.status, sent.reports.single.status);
     });
   });
 

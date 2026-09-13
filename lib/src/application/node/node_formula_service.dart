@@ -2,6 +2,8 @@ import '../../domain/entities/platform_info.dart';
 import '../../domain/formula/formula_action.dart';
 import '../../domain/formula/formula_context.dart';
 import '../../domain/formula/formula_result.dart';
+import '../../domain/formula/formula_status.dart';
+import '../../domain/value_objects/formula_id.dart';
 import '../../protocol/operations.dart';
 import '../../shared/utils/clock.dart';
 import '../../version.dart';
@@ -89,6 +91,46 @@ class NodeFormulaService {
       ),
     );
     return result.withLogs(log.lines);
+  }
+
+  /// Reports what each formula finds when it looks at itself.
+  ///
+  /// Sequential, not concurrent: these probes shell out, and a node with a
+  /// dozen formulas firing a dozen processes at once on a small box is a
+  /// noticeable spike for a panel refresh. They are quick — a version flag and
+  /// an `info` — so in order is fast enough.
+  ///
+  /// A formula the node does not have is reported as
+  /// [FormulaStatus.unknown] rather than omitted: a caller that asked about it
+  /// by name is owed an answer, and a silently missing row reads as "still
+  /// loading".
+  Future<FormulaStatusResult> reportStatus(FormulaStatusRequest request) async {
+    final wanted = request.formulas.isEmpty
+        ? [for (final formula in registry.formulas) formula.spec.id.value]
+        : request.formulas;
+
+    final reports = <FormulaStatusReport>[];
+    for (final id in wanted) {
+      final formula = registry.byId(id);
+      if (formula == null) {
+        reports.add(
+          FormulaStatusReport(
+            formula: FormulaId(id),
+            status: FormulaStatus.unknown,
+            message: 'this node has no formula "$id"',
+            checkedAt: clock.now(),
+          ),
+        );
+        continue;
+      }
+      reports.add(await formula.status(_context()));
+    }
+
+    return FormulaStatusResult(
+      requestId: request.requestId,
+      reports: reports
+        ..sort((a, b) => a.formula.value.compareTo(b.formula.value)),
+    );
   }
 
   /// Applies a preset by running its steps in order; success requires every

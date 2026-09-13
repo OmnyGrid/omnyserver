@@ -275,6 +275,21 @@ class OmnyServerService {
         .toList(),
   );
 
+  /// What state each of a node's formulas is in, asked of the node itself.
+  ///
+  /// Distinct from [formulas], which is the Hub's catalogue of what a node
+  /// *could* run. This is what one node reports it actually has, and whether
+  /// what it manages is running — so a node that has never been asked to
+  /// install anything answers with a list of absences.
+  Future<List<FormulaStatusReport>> formulaStatus(String id) => _guard(
+    () async => ((await client.get('/nodes/$id/formulas')) as List)
+        .map(
+          (r) =>
+              FormulaStatusReport.fromJson((r as Map).cast<String, dynamic>()),
+        )
+        .toList(),
+  );
+
   /// The presets saved on the Hub.
   Future<List<Preset>> presets() => _guard(
     () async => ((await client.get('/presets')) as List)

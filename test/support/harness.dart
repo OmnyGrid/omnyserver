@@ -126,6 +126,7 @@ class TestCluster {
     StatusProvider? statusProvider,
     CapabilityProvider? capabilityProvider,
     FormulaHandler? formulaHandler,
+    FormulaStatusHandler? formulaStatusHandler,
     PresetHandler? presetHandler,
     NodeControlHandler? nodeControlHandler,
   }) async {
@@ -144,6 +145,7 @@ class TestCluster {
         statusProvider: statusProvider,
         capabilityProvider: capabilityProvider,
         formulaHandler: formulaHandler,
+        formulaStatusHandler: formulaStatusHandler,
         presetHandler: presetHandler,
         nodeControlHandler: nodeControlHandler,
       ),
