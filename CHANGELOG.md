@@ -103,16 +103,26 @@ own monitor depends on.
   `stdin.readLineSync`, which is a deliberate blocking read of a terminal; and
   `Sha256().toSync()`, which is the cryptography package's sync API, not I/O.
 
-- **[omnyshell](https://pub.dev/packages/omnyshell) `^1.57.1`** (from `^1.56.1`),
-  which fixes a shell on a node that runs as a service: it had no `$HOME`.
-  systemd hands a system unit `PATH`, `LANG` and even `USER`, but sets `HOME`
-  only if the unit asks — and a session inherits the node's environment, so
-  there was nothing to inherit. Quietly, too: `cd ~` went nowhere and said
-  nothing, `~/…` stopped expanding, and git, ssh and package managers wrote
-  somewhere other than the user's home. A session now gets a `HOME` resolved
-  from the password database when the node has none.
+- **[omnyshell](https://pub.dev/packages/omnyshell) `^1.57.2`** (from `^1.56.1`),
+  which makes a shell on a node that runs as a service behave like a shell.
+  Two fixes, and both of them showed up here first:
 
-  That matters here because `service install` is how a node is meant to run.
+  **It had no `$HOME`** (1.57.1). systemd hands a system unit `PATH`, `LANG` and
+  even `USER`, but sets `HOME` only if the unit asks — and a session inherits
+  the node's environment, so there was nothing to inherit. Quietly, too: `cd ~`
+  went nowhere and said nothing, `~/…` stopped expanding, and git, ssh and
+  package managers wrote somewhere other than the user's home. A session now
+  gets a `HOME` resolved from the password database when the node has none.
+
+  **It opened in the wrong directory** (1.57.2). Sessions started wherever the
+  node process was standing, which for an agent installed as a service is where
+  its binary lives — `/usr/local/bin`. They now start in the user's home, and
+  `exec` follows the same rule as an interactive shell.
+
+  Both matter here because `service install` is how a node is meant to run. In
+  the example fleet, `omnyshell exec worker-1 pwd` and `echo $HOME` now answer
+  `/root`; they answered `/usr/local/bin` and nothing at all.
+
   1.57.0 along the way added the standalone `omnyshell ide [path]` command,
   which OmnyServer does not use — it embeds OmnyShell for its shell broker
   (`AiConfig` / `AiConfigIo` / `HttpProxyService`) and never launches the IDE.
