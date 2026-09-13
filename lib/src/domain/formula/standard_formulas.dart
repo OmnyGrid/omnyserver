@@ -48,6 +48,46 @@ final FormulaSpec procpsSpec = FormulaSpec(
   },
 );
 
+/// What the network-tools formula manages: `netstat` and `route`.
+final FormulaSpec netToolsSpec = FormulaSpec(
+  id: FormulaId('net-tools'),
+  name: 'Network tools',
+  description: 'The netstat and route commands.',
+  actions: _toolActions,
+);
+
+/// What the DNS-tools formula manages: `nslookup`.
+final FormulaSpec dnsUtilsSpec = FormulaSpec(
+  id: FormulaId('dns-utils'),
+  name: 'DNS tools',
+  description: 'The nslookup command, for resolving names from the node.',
+  actions: _toolActions,
+);
+
+/// What the build-tools formula manages: `gcc` and `make`.
+final FormulaSpec buildToolsSpec = FormulaSpec(
+  id: FormulaId('build-tools'),
+  name: 'Build tools',
+  description: 'A C toolchain: the gcc compiler and make.',
+  actions: _toolActions,
+);
+
+/// What the nmap formula manages.
+final FormulaSpec nmapSpec = FormulaSpec(
+  id: FormulaId('nmap'),
+  name: 'Nmap',
+  description: 'The nmap network scanner, for the view from inside the fleet.',
+  actions: _toolActions,
+);
+
+/// What a formula that installs commands can do: no service to start or stop.
+const Set<FormulaAction> _toolActions = {
+  FormulaAction.install,
+  FormulaAction.update,
+  FormulaAction.uninstall,
+  FormulaAction.verify,
+};
+
 /// The formulas every node ships with.
 ///
 /// These specs live in the domain, not on the `Formula` implementations that
@@ -62,4 +102,8 @@ final List<FormulaSpec> standardFormulaSpecs = [
   dockerSpec,
   dartSpec,
   procpsSpec,
+  netToolsSpec,
+  dnsUtilsSpec,
+  buildToolsSpec,
+  nmapSpec,
 ];

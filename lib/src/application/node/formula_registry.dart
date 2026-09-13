@@ -1,7 +1,11 @@
 import '../../domain/formula/formula.dart';
 import '../../infrastructure/formulas/command_executor.dart';
+import '../../infrastructure/formulas/build_tools_formula.dart';
 import '../../infrastructure/formulas/dart_formula.dart';
+import '../../infrastructure/formulas/dns_utils_formula.dart';
 import '../../infrastructure/formulas/docker_formula.dart';
+import '../../infrastructure/formulas/net_tools_formula.dart';
+import '../../infrastructure/formulas/nmap_formula.dart';
 import '../../infrastructure/formulas/procps_formula.dart';
 
 /// A catalogue of [Formula]s available on a node, keyed by formula id.
@@ -22,7 +26,11 @@ class FormulaRegistry {
     registry
       ..register(DockerFormula(executor: executor))
       ..register(DartFormula(executor: executor))
-      ..register(ProcpsFormula(executor: executor));
+      ..register(ProcpsFormula(executor: executor))
+      ..register(NetToolsFormula(executor: executor))
+      ..register(DnsUtilsFormula(executor: executor))
+      ..register(BuildToolsFormula(executor: executor))
+      ..register(NmapFormula(executor: executor));
     return registry;
   }
 

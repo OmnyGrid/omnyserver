@@ -29,6 +29,31 @@ own monitor depends on.
   Batching means "live" is a second or two granular, not instant — that is
   `LogShipper`'s existing 2s/50-line cadence, unchanged.
 
+- **Four formulas for the commands a bare host turns out not to have.** A slim
+  image ships almost nothing, and the absence is discovered at the worst moment
+  — reaching for `netstat` on a server that is not answering, or watching a
+  build fail deep inside someone else's output.
+
+  | Formula | Commands | Why it is worth a formula |
+  | --- | --- | --- |
+  | `net-tools` | `netstat`, `route` | The first two questions asked of a silent server. Debian dropped both from the default install. |
+  | `dns-utils` | `nslookup` | Whether a node can resolve the Hub's name separates a DNS problem from a network one — and only the node's own resolver can answer. |
+  | `build-tools` | `gcc`, `make` | Anything that builds rather than downloads. |
+  | `nmap` | `nmap` | The view of the network from inside the fleet. |
+
+  `nmap` is deliberately not installed by default: a port scanner is a tool an
+  intruder is glad to find, and on some networks running one is itself an
+  event. That it takes an explicit `formula run`, recorded in the audit trail
+  with the principal who asked, is the right shape for it.
+
+  Each distribution names these differently — `procps-ng`, `bind-tools`,
+  `build-base` — so a new `PackageFormula` base holds the package name per
+  manager and writes the apt/apk/dnf switch once. `procps` moved onto it, which
+  removed the copy it had. On macOS, `nmap` comes from Homebrew; `netstat`,
+  `route` and `nslookup` ship with the system, and `gcc`/`make` come from the
+  Xcode tools, whose installer opens a dialog — so that one declines rather
+  than half-starting something nobody is there to click through.
+
 - **`procps` formula — the `ps` and `top` commands.** Less cosmetic than it
   sounds: the agent reports its process table by shelling out to `ps`, and
   degrades to an empty list when it is missing. A node on a slim image — which

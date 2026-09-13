@@ -154,6 +154,117 @@ void main() {
     });
   });
 
+  // Four formulas whose whole job is "make these commands exist". What differs
+  // between them is a verify probe and a package name — the rest is
+  // PackageFormula, so the apt/apk/dnf switch is written once rather than
+  // five times.
+  group('the command formulas a node ships with', () {
+    final tools = <String, (PackageFormula, List<String>)>{
+      'net-tools': (NetToolsFormula(), ['netstat', 'route']),
+      'dns-utils': (DnsUtilsFormula(), ['nslookup']),
+      'build-tools': (BuildToolsFormula(), ['gcc', 'make']),
+      'nmap': (NmapFormula(), ['nmap']),
+    };
+
+    test('every one is registered under the id it declares', () {
+      final registry = FormulaRegistry.standard();
+      for (final entry in tools.entries) {
+        expect(registry.byId(entry.key), isNotNull, reason: entry.key);
+        expect(entry.value.$1.spec.id.value, entry.key);
+      }
+    });
+
+    test('each verifies by looking for the commands it promises', () async {
+      for (final entry in tools.entries) {
+        final (formula, commands) = entry.value;
+        final probe = [
+          formula.verifyStep.executable,
+          ...formula.verifyStep.args,
+        ].join(' ');
+        for (final command in commands) {
+          expect(probe, contains(command), reason: entry.key);
+        }
+      }
+    });
+
+    test('each names its package for every manager it claims', () {
+      // A package called the same thing everywhere is the exception, not the
+      // rule: procps-ng, bind-tools, build-base. A formula that only knows
+      // Debian's name only works on Debian.
+      for (final entry in tools.entries) {
+        final (formula, _) = entry.value;
+        final install = formula
+            .stepFor(FormulaAction.install, 'linux')!
+            .args
+            .join(' ');
+        final packages = formula.packages;
+
+        expect(install, contains('set -e'), reason: entry.key);
+        for (final (manager, name) in [
+          ('apt-get', packages.apt),
+          ('apk', packages.apk),
+          ('dnf', packages.dnf),
+        ]) {
+          if (name == null) continue;
+          expect(install, contains('command -v $manager'), reason: entry.key);
+          expect(install, contains(name), reason: '${entry.key} on $manager');
+        }
+        expect(
+          install,
+          contains('no supported package manager'),
+          reason: '${entry.key} should say so rather than fail obscurely',
+        );
+      }
+    });
+
+    test('a host with none of the tools it knows is told so', () async {
+      final exec = FakeExecutor(fallback: const ExecResult(exitCode: 1));
+      final result = await NmapFormula(
+        executor: exec,
+      ).install(_context(osName: 'plan9'));
+
+      expect(result.success, isFalse);
+      expect(result.message, contains('not supported on plan9'));
+    });
+
+    test('macOS gets brew only where a brew package is the answer', () {
+      // nmap is Homebrew's to install. netstat, route and nslookup ship with
+      // macOS; gcc and make come from the Xcode tools, whose installer opens a
+      // dialog — a formula that cannot finish unattended should decline rather
+      // than half-start something nobody is there to click.
+      expect(NmapFormula().stepFor(FormulaAction.install, 'macos')?.args, [
+        'install',
+        'nmap',
+      ]);
+      for (final id in ['net-tools', 'dns-utils', 'build-tools']) {
+        final (formula, _) = tools[id]!;
+        expect(
+          formula.stepFor(FormulaAction.install, 'macos'),
+          isNull,
+          reason: id,
+        );
+      }
+    });
+
+    test('none of them offers to start or stop a service', () {
+      // Installing `netstat` does not give a node anything to restart, and a
+      // client offering the button would be offering nonsense.
+      for (final entry in tools.entries) {
+        final (formula, _) = entry.value;
+        expect(
+          formula.spec.actions,
+          isNot(contains(FormulaAction.restart)),
+          reason: entry.key,
+        );
+        expect(
+          formula.stepFor(FormulaAction.start, 'linux'),
+          isNull,
+          reason: entry.key,
+        );
+      }
+    });
+  });
+
   // The node's own monitor reports its process table by shelling out to `ps`,
   // so on a host without it the table is empty rather than wrong. This is the
   // formula that puts it there.

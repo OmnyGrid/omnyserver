@@ -92,7 +92,18 @@ void main() {
 
       final formulas = (body as List).cast<Map>();
       final ids = [for (final f in formulas) f['id']];
-      expect(ids, containsAll(['docker', 'dart', 'procps']));
+      expect(
+        ids,
+        containsAll([
+          'docker',
+          'dart',
+          'procps',
+          'net-tools',
+          'dns-utils',
+          'build-tools',
+          'nmap',
+        ]),
+      );
 
       final docker = formulas.firstWhere((f) => f['id'] == 'docker');
       expect(docker['name'], 'Docker');
