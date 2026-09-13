@@ -26,10 +26,7 @@ class DockerFormula extends CommandFormula {
       case 'linux':
         switch (action) {
           case FormulaAction.install:
-            return const CommandStep('sh', [
-              '-c',
-              'curl -fsSL https://get.docker.com | sh',
-            ]);
+            return const CommandStep('sh', ['-c', _installScript]);
           case FormulaAction.update:
             return const CommandStep('sh', [
               '-c',
@@ -64,4 +61,29 @@ class DockerFormula extends CommandFormula {
         return null;
     }
   }
+
+  /// Fetches Docker's install script and runs it — in two steps, deliberately.
+  ///
+  /// `curl -fsSL https://get.docker.com | sh` reports the exit status of `sh`,
+  /// not of `curl`. On a host with no curl — a slim image, most of them — that
+  /// pipeline printed `curl: not found` and **exited 0**: `sh` read an empty
+  /// script and succeeded. The formula then reported Docker installed, the Hub
+  /// recorded it, and drift reconciliation agreed there was nothing to do. A
+  /// network failure or a 404 looked exactly the same.
+  ///
+  /// Fetching to a file first means a failed download fails the step, and a
+  /// host with no downloader is told so instead of being congratulated.
+  static const String _installScript = '''
+set -e
+script=\$(mktemp)
+trap 'rm -f "\$script"' EXIT
+if command -v curl >/dev/null 2>&1; then
+  curl -fsSL https://get.docker.com -o "\$script"
+elif command -v wget >/dev/null 2>&1; then
+  wget -qO "\$script" https://get.docker.com
+else
+  echo "docker install needs curl or wget to fetch https://get.docker.com" >&2
+  exit 1
+fi
+sh "\$script"''';
 }

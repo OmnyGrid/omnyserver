@@ -30,6 +30,37 @@ own monitor depends on.
 
 ### Fixed
 
+- **`formula run dart install` could never have worked.** The Linux step was
+  `apt-get update && apt-get install -y dart`, and neither Debian nor Ubuntu
+  carries a `dart` package — the SDK lives in Google's own apt repository. Every
+  attempt answered `E: Unable to locate package dart`. The step now adds that
+  repository (key, source list, refresh) before installing, once and
+  idempotently, and `update` does the same.
+
+  Worth saying plainly, because it is a real act on a node: this installs
+  Google's signing key into the host's trusted keyring, which everything apt
+  installs afterwards trusts too. It is what dart.dev documents.
+
+- **`formula run docker install` reported success while installing nothing.**
+  The step was `curl -fsSL https://get.docker.com | sh`, whose exit status is
+  `sh`'s — and `sh` reading an empty script succeeds. On a host with no curl
+  (most slim images) it printed `curl: not found` and **exited 0**; a network
+  failure or a 404 looked the same. The Hub then recorded Docker as installed
+  and drift reconciliation agreed there was nothing left to do.
+
+  The script is fetched to a file and then run, so a failed download fails the
+  step, and a host with neither curl nor wget is told so. The same reasoning
+  removed the `wget … | gpg` pipe from the Dart step: dearmoring an empty
+  download produces a keyring that verifies nothing and fails much later,
+  somewhere else.
+
+  Audited the rest while there. The remaining steps name packages that exist
+  (`procps`, `procps-ng`, `docker-ce`) and fail honestly — `systemctl start
+  docker` on a host without systemd, `brew` on a Mac without Homebrew — and
+  `brew install dart-sdk` and the `docker` cask are both still real. A test now
+  walks every scripted step and fails any multi-command one that would run on
+  after a failure.
+
 - **`restart` and `shutdown` did nothing, and reported success.** The node's
   control handler acted on `update` and answered everything else with
   `acknowledged <action>` — so the Hub replied `{"status":"restarting"}`, the

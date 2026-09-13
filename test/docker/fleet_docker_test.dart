@@ -257,6 +257,65 @@ void main() {
     }
   }, timeout: const Timeout(Duration(minutes: 5)));
 
+  test('the dart formula installs a Dart SDK that then runs', () async {
+    if (await skipWithoutDocker()) return;
+    // A formula step can name a package that does not exist and nothing will
+    // say so until someone tries it on a real host: `apt-get install -y dart`
+    // answered "E: Unable to locate package dart" on every Debian and Ubuntu
+    // there has ever been, because the SDK lives in Google's own repository.
+    // Only an actual install catches that, so this does one.
+    await fleet.startHub();
+    await fleet.startNode(id: 'bare-01');
+
+    final client = fleet.apiClient();
+    try {
+      await fleet.eventually(
+        () async => (await client.get('/nodes') as List).length,
+        (count) => count == 1,
+        what: 'the node to register',
+      );
+
+      final before =
+          await client.post('/nodes/bare-01/formula', {
+                'formula': 'dart',
+                'action': 'verify',
+              })
+              as Map;
+      expect((before['result'] as Map)['success'], isFalse);
+
+      final installed =
+          await client.post('/nodes/bare-01/formula', {
+                'formula': 'dart',
+                'action': 'install',
+              })
+              as Map;
+      final result = installed['result'] as Map;
+      expect(result['success'], isTrue, reason: '${result['message']}');
+      expect(result['changed'], isTrue);
+
+      // Installed, and the node can now prove it — the claim the Hub records.
+      final after =
+          await client.post('/nodes/bare-01/formula', {
+                'formula': 'dart',
+                'action': 'verify',
+              })
+              as Map;
+      expect((after['result'] as Map)['success'], isTrue);
+
+      // And asking again changes nothing, rather than re-adding the repository.
+      final again =
+          await client.post('/nodes/bare-01/formula', {
+                'formula': 'dart',
+                'action': 'install',
+              })
+              as Map;
+      expect((again['result'] as Map)['changed'], isFalse);
+      expect((again['result'] as Map)['message'], contains('already'));
+    } finally {
+      client.close();
+    }
+  }, timeout: const Timeout(Duration(minutes: 10)));
+
   test('installing the process tools fills in the process table', () async {
     if (await skipWithoutDocker()) return;
     // The monitor reports processes by shelling out to `ps`, and degrades to an

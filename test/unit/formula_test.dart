@@ -78,6 +78,82 @@ void main() {
     });
   });
 
+  // Two faults that a formula can have without anyone noticing: asking for a
+  // package that does not exist, and a command that cannot report failure.
+  // Both were live, and the second is the worse one.
+  group('what the install steps actually run', () {
+    String linuxStep(CommandFormula formula, FormulaAction action) =>
+        formula.stepFor(action, 'linux')!.args.join(' ');
+
+    test('dart adds the repository the SDK actually lives in', () {
+      // Neither Debian nor Ubuntu carries a `dart` package, so the old step —
+      // `apt-get install -y dart` — could only ever answer
+      // "E: Unable to locate package dart".
+      final install = linuxStep(DartFormula(), FormulaAction.install);
+      expect(install, contains('download.dartlang.org/linux/debian'));
+      expect(install, contains('signed-by=/usr/share/keyrings/dart.gpg'));
+      expect(install, contains('apt-get install -y dart'));
+
+      // Written once, then only the package lists are refreshed.
+      expect(
+        install,
+        contains('if [ ! -f /etc/apt/sources.list.d/dart_stable.list ]'),
+      );
+
+      // The update path needs the repository just as much as the install does.
+      expect(
+        linuxStep(DartFormula(), FormulaAction.update),
+        stringContainsInOrder([
+          'dart_stable.list',
+          'apt-get install -y --only-upgrade dart',
+        ]),
+      );
+    });
+
+    test('no step fetches through a pipe that swallows the failure', () {
+      // `curl … | sh` exits with the status of `sh`, which happily runs an
+      // empty script — so a missing curl, a dead network or a 404 all reported
+      // a successful install. Fetch to a file, then run the file.
+      final install = linuxStep(DockerFormula(), FormulaAction.install);
+      expect(install, isNot(contains('| sh')));
+      expect(install, contains('set -e'));
+      expect(install, contains('-o "\$script"'));
+      expect(
+        install,
+        contains('needs curl or wget'),
+        reason: 'a host with no downloader should be told, not congratulated',
+      );
+
+      // The key is fetched to a file for the same reason: `wget … | gpg` would
+      // dearmor an empty download into a keyring that verifies nothing.
+      final dart = linuxStep(DartFormula(), FormulaAction.install);
+      expect(dart, isNot(contains('| gpg')));
+      expect(dart, contains('set -e'));
+    });
+
+    test('every scripted step refuses to continue after a failure', () {
+      // A multi-command step that is not `set -e` and not chained with `&&`
+      // runs on after something fails, and reports whatever the last line did.
+      for (final (name, formula) in [
+        ('docker', DockerFormula()),
+        ('dart', DartFormula()),
+        ('procps', ProcpsFormula()),
+      ]) {
+        for (final action in FormulaAction.values) {
+          final step = formula.stepFor(action, 'linux');
+          if (step == null || step.executable != 'sh') continue;
+          final script = step.args.join(' ');
+          if (!script.contains('\n')) continue;
+          expect(
+            script,
+            anyOf(contains('set -e'), contains('if '), contains('&&')),
+            reason: '$name ${action.name} runs on after a failure',
+          );
+        }
+      }
+    });
+  });
+
   // The node's own monitor reports its process table by shelling out to `ps`,
   // so on a host without it the table is empty rather than wrong. This is the
   // formula that puts it there.
