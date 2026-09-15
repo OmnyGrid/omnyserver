@@ -65,6 +65,12 @@ void addHubStartOptions(
     ..addOption('api-token', help: 'Bearer token required by the HTTP API.')
     ..addMultiOption(
       'grant',
+      // The roles are comma-separated *inside* one grant, so the option must
+      // not split on commas itself: with the default, `--grant
+      // alice:s3cr3t:admin,operator` arrived as two grants and the second —
+      // a bare "operator" — was rejected as malformed. The documented
+      // multi-role form was unusable.
+      splitCommas: false,
       help: 'Token grant "principal:token:role1,role2" (repeatable).',
     )
     ..addMultiOption(

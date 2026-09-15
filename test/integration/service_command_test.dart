@@ -3,28 +3,21 @@ library;
 
 import 'dart:io';
 
+import 'package:args/args.dart';
+import 'package:dart_service_manager/dart_service_manager.dart' as svc;
+import 'package:omnyserver/omnyserver_cli.dart';
 import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
-/// Drives the real CLI as a subprocess, with the service registry pointed at an
-/// isolated [home] — `dart_service_manager`'s `StoragePaths` reads `HOME` and
-/// `XDG_DATA_HOME`, so this keeps the tests off the developer's real registry.
-///
-/// Every case here is a `--dry-run` or a validation failure: nothing in this
-/// file ever installs a service for real.
-Future<ProcessResult> _omnyserver(List<String> args, {required String home}) =>
-    Process.run(
-      Platform.resolvedExecutable,
-      ['run', 'bin/omnyserver.dart', ...args],
-      environment: {
-        'HOME': home,
-        'XDG_DATA_HOME': p.join(home, '.local', 'share'),
-        'OMNYSERVER_HOME': p.join(home, '.omnyserver'),
-      },
-      // Keep the parent's PATH etc.; only the home-ish vars are overridden.
-      includeParentEnvironment: true,
-    );
+import '../support/captured_stdout.dart';
 
+/// `omnyserver service …` installs the CLI as an OS service by reconstructing
+/// its own `<role> start …` command line.
+///
+/// Every case here is a `--dry-run`, a read, or a validation failure, and the
+/// manager's registry is pointed at a temp directory throughout — so nothing in
+/// this file installs, starts or removes a service, or touches the developer's
+/// real registry.
 void main() {
   late Directory home;
   late String certPath;
@@ -38,29 +31,55 @@ void main() {
     // paths must exist for the reconstruction to be realistic.
     File(certPath).writeAsStringSync('cert');
     File(keyPath).writeAsStringSync('key');
+
+    serviceStoragePaths = svc.StoragePaths(
+      environment: {
+        'HOME': home.path,
+        'USERPROFILE': home.path,
+        'XDG_DATA_HOME': p.join(home.path, '.local', 'share'),
+        'LOCALAPPDATA': p.join(home.path, 'AppData', 'Local'),
+      },
+    );
   });
 
-  tearDown(() => home.deleteSync(recursive: true));
+  tearDown(() {
+    serviceStoragePaths = null;
+    home.deleteSync(recursive: true);
+  });
+
+  Future<String> service(List<String> args) =>
+      captureStdout(() => buildRunner().run(['service', ...args]));
+
+  /// The options a Hub needs to pass validation.
+  List<String> hubTls() => ['--cert', certPath, '--key', keyPath];
 
   group('service install --dry-run', () {
     test('renders a hub definition without installing anything', () async {
-      final result = await _omnyserver([
-        'service', 'install', 'hub', '--dry-run', //
-        '--cert', certPath,
-        '--key', keyPath,
+      final out = await service([
+        'install', 'hub', '--dry-run', //
+        ...hubTls(),
         '--port', '9443',
         '--grant', 'alice:s3cr3t:admin',
-      ], home: home.path);
+        '--alert', 'disk>90',
+        '--cors-origin', 'https://dash.example.com',
+        '--shell',
+        '--api-token', 'api-secret',
+      ]);
 
-      expect(result.exitCode, 0, reason: result.stderr as String);
-      final out = result.stdout as String;
-      expect(out, contains('hub'));
-      expect(out, contains('start'));
+      expect(out, stringContainsInOrder(['hub', 'start']));
       expect(out, contains(certPath));
       expect(out, contains('9443'));
       expect(out, contains('alice:s3cr3t:admin'));
-      // The Hub's fleet data lands under the home root, in hub/.
-      expect(out, contains(p.join(home.path, '.omnyserver', 'hub')));
+      // The rule survives into the baked-in command line. How it is spelled is
+      // the platform's business: a launchd plist is XML and escapes the `>`, a
+      // systemd unit is not and does not.
+      expect(out, anyOf(contains('disk>90'), contains('disk&gt;90')));
+      expect(out, contains('--shell'));
+      // The Hub's fleet data lands under the home root, in hub/ — and the root
+      // is pinned in the environment, so a system service with no meaningful
+      // $HOME still finds it.
+      expect(out, contains(hubDataDir(OmnyServerHome.resolve())));
+      expect(out, contains('OMNYSERVER_HOME'));
       // A dry run touches nothing.
       expect(out, isNot(contains('Installed and started')));
 
@@ -80,115 +99,310 @@ void main() {
       }
     });
 
-    test('absolutizes a relative cert against the cwd', () async {
-      final result = await _omnyserver([
-        'service', 'install', 'hub', '--dry-run', //
-        '--cert', 'certs/server.crt',
-        '--key', 'certs/server.key',
-      ], home: home.path);
-
-      expect(result.exitCode, 0, reason: result.stderr as String);
-      expect(result.stdout as String, contains(p.absolute('certs/server.crt')));
-    });
-
-    test('renders a node definition, honouring --no-ship-logs', () async {
-      final result = await _omnyserver([
-        'service', 'install', 'node', '--dry-run', //
+    test('renders a node definition, flags and labels intact', () async {
+      final out = await service([
+        'install', 'node', '--dry-run', //
         '--hub', 'wss://hub:8443',
         '--id', 'web-01',
         '--token', 's3cr3t',
+        '--ca', certPath,
+        '--insecure',
+        '--with-shell',
         '--no-ship-logs',
         '--label', 'env=prod',
-      ], home: home.path);
+        '--shell-label', 'allow-roles=admin',
+      ]);
 
-      expect(result.exitCode, 0, reason: result.stderr as String);
-      final out = result.stdout as String;
-      expect(out, contains('wss://hub:8443'));
+      expect(out, stringContainsInOrder(['node', 'start']));
       expect(out, contains('web-01'));
-      expect(out, contains('env=prod'));
+      expect(out, contains('--insecure'));
+      expect(out, contains('--with-shell'));
+      // A negatable flag is baked in explicitly in both directions, so the
+      // installed service outlives a change to the default.
       expect(out, contains('--no-ship-logs'));
+      expect(out, contains('env=prod'));
+      expect(out, contains('allow-roles=admin'));
+      // A CA is a file, so it is absolutized; a mount path is not a file.
+      expect(out, contains(certPath));
     });
 
-    test('--ephemeral bakes in no data dir', () async {
-      final result = await _omnyserver([
-        'service', 'install', 'hub', '--dry-run', '--ephemeral', //
-        '--cert', certPath,
-        '--key', keyPath,
-      ], home: home.path);
-
-      expect(result.exitCode, 0, reason: result.stderr as String);
-      final out = result.stdout as String;
+    test('--ephemeral bakes in no data dir at all', () async {
+      final out = await service([
+        'install',
+        'hub',
+        '--dry-run',
+        '--ephemeral',
+        ...hubTls(),
+      ]);
       expect(out, contains('--ephemeral'));
       expect(out, isNot(contains('--data-dir')));
-      expect(out, isNot(contains('OMNYSERVER_HOME')));
     });
+
+    test(
+      '--system installs machine-wide, under the machine data root',
+      () async {
+        final out = await service([
+          'install',
+          'hub',
+          '--dry-run',
+          '--system',
+          '--verbose',
+          ...hubTls(),
+        ]);
+        expect(out, contains(p.join(systemDataDir(), 'hub')));
+      },
+    );
+
+    test(
+      'an explicit --data-dir is used as the root, with hub/ under it',
+      () async {
+        final root = p.join(home.path, 'state');
+        final out = await service([
+          'install',
+          'hub',
+          '--dry-run',
+          '--data-dir',
+          root,
+          ...hubTls(),
+        ]);
+        expect(out, contains(p.join(root, 'hub')));
+        expect(out, contains('OMNYSERVER_HOME'));
+      },
+    );
   });
 
   group('validation', () {
-    Future<void> expectFailure(List<String> args, Matcher message) async {
-      final result = await _omnyserver(args, home: home.path);
-      expect(result.exitCode, isNot(0));
-      expect(result.stderr as String, message);
-    }
-
-    test('a hub with no TLS source', () async {
-      await expectFailure([
-        'service',
-        'install',
-        'hub',
-      ], contains('--cert and --key are required'));
+    test('a hub with no TLS source is refused', () async {
+      await expectLater(
+        service(['install', 'hub', '--dry-run']),
+        throwsA(
+          isA<CliError>().having(
+            (e) => e.message,
+            'message',
+            contains('--cert'),
+          ),
+        ),
+      );
     });
 
-    test('a node with no credentials', () async {
-      await expectFailure([
-        'service',
-        'install',
-        'node',
-        '--id',
-        'web-01',
-      ], contains('--hub, --id and --token are required'));
+    test('a node with no credentials is refused', () async {
+      await expectLater(
+        service(['install', 'node', '--dry-run', '--hub', 'wss://hub:8443']),
+        throwsA(
+          isA<CliError>().having(
+            (e) => e.message,
+            'message',
+            contains('--token'),
+          ),
+        ),
+      );
     });
 
-    test('a hub option on the node role', () async {
-      await expectFailure([
-        'service', 'install', 'node', //
-        '--hub', 'wss://hub:8443', '--id', 'a', '--token', 't',
-        '--cert', certPath,
-      ], contains('--cert is a hub option'));
+    test(
+      'a hub option on the node role names the option and the role',
+      () async {
+        await expectLater(
+          service([
+            'install', 'node', '--dry-run', //
+            '--hub', 'wss://hub:8443', '--id', 'web-01', '--token', 's3cr3t',
+            '--cert', certPath,
+          ]),
+          throwsA(
+            isA<CliError>().having(
+              (e) => e.message,
+              'message',
+              allOf(
+                contains('--cert'),
+                contains('hub option'),
+                contains('node'),
+              ),
+            ),
+          ),
+        );
+      },
+    );
+
+    test('several foreign options are listed together, in plural', () async {
+      await expectLater(
+        service([
+          'install', 'hub', '--dry-run', ...hubTls(), //
+          '--id', 'web-01', '--token', 's3cr3t',
+        ]),
+        throwsA(
+          isA<CliError>().having(
+            (e) => e.message,
+            'message',
+            allOf(
+              contains('--id'),
+              contains('--token'),
+              contains('are node options'),
+            ),
+          ),
+        ),
+      );
     });
 
-    test('an unknown role', () async {
-      await expectFailure([
-        'service',
-        'install',
-        'gateway',
-      ], contains('unknown role'));
+    test('--data-dir and --ephemeral together are refused', () async {
+      await expectLater(
+        service([
+          'install', 'hub', '--dry-run', ...hubTls(), //
+          '--ephemeral', '--data-dir', home.path,
+        ]),
+        throwsA(
+          isA<CliError>().having(
+            (e) => e.message,
+            'message',
+            contains('--ephemeral'),
+          ),
+        ),
+      );
     });
 
-    test('no role at all', () async {
-      await expectFailure(['service', 'status'], contains('specify a role'));
+    test('an unknown role says which ones exist', () async {
+      await expectLater(
+        service(['install', 'gateway']),
+        throwsA(
+          isA<CliError>().having(
+            (e) => e.message,
+            'message',
+            contains('hub or node'),
+          ),
+        ),
+      );
+    });
+
+    test('no role at all asks for one', () async {
+      await expectLater(
+        service(['status']),
+        throwsA(
+          isA<CliError>().having(
+            (e) => e.message,
+            'message',
+            contains('specify a role'),
+          ),
+        ),
+      );
+    });
+
+    test('an extra positional is refused rather than ignored', () async {
+      await expectLater(
+        service(['status', 'hub', 'and-then-some']),
+        throwsA(
+          isA<CliError>().having(
+            (e) => e.message,
+            'message',
+            contains('and-then-some'),
+          ),
+        ),
+      );
     });
   });
 
   group('against an empty registry', () {
     test('info reports the service is not installed', () async {
-      final result = await _omnyserver([
-        'service',
-        'info',
-        'node',
-      ], home: home.path);
-      expect(result.exitCode, 0, reason: result.stderr as String);
-      expect(result.stdout as String, contains('node: not installed'));
+      expect(await service(['info', 'hub']), contains('hub: not installed'));
     });
 
-    test('a bare reinstall has no config to reuse', () async {
-      final result = await _omnyserver([
-        'service',
-        'reinstall',
+    test('a bare reinstall has no config to reuse, and says so', () async {
+      await expectLater(
+        service(['reinstall', 'node']),
+        throwsA(
+          isA<CliError>().having(
+            (e) => e.message,
+            'message',
+            contains('not installed'),
+          ),
+        ),
+      );
+    });
+
+    test('reinstall with options builds a fresh descriptor instead', () async {
+      final out = await service([
+        'reinstall', 'node', '--dry-run', //
+        '--hub', 'wss://hub:8443', '--id', 'web-01', '--token', 's3cr3t',
+      ]);
+      expect(out, contains('web-01'));
+    });
+
+    test(
+      'the lifecycle commands fail with a message, not a stack trace',
+      () async {
+        for (final name in [
+          'start',
+          'stop',
+          'restart',
+          'status',
+          'uninstall',
+        ]) {
+          await expectLater(
+            service([name, 'hub']),
+            throwsA(isA<CliError>()),
+            reason: name,
+          );
+        }
+      },
+    );
+  });
+
+  group('service info', () {
+    test('prints the recorded config and the native definition', () async {
+      // Seed the registry rather than install for real: `info` is a read, and
+      // what it reads is the registry entry an install would have written.
+      await svc.JsonServiceRegistry(serviceStoragePaths!.registryFile).upsert(
+        svc.RegistryEntry(
+          packageName: servicePackage,
+          serviceName: 'hub',
+          platform: Platform.operatingSystem,
+          scope: svc.ServiceScope.user,
+          binaryPath: p.join(home.path, 'omnyserver'),
+          installedAt: DateTime.utc(2026, 1, 1),
+          arguments: const ['hub', 'start', '--ephemeral'],
+          environment: {'OMNYSERVER_HOME': home.path},
+          restart: svc.RestartPolicy.onFailure,
+        ),
+      );
+
+      final out = await service(['info', 'hub']);
+      expect(out, contains('Service "hub" (omnyserver:hub)'));
+      expect(out, contains('scope:       user'));
+      expect(out, contains('restart:     onFailure'));
+      expect(out, contains('hub start --ephemeral'));
+      expect(out, contains('OMNYSERVER_HOME=${home.path}'));
+      expect(out, contains('definition (${Platform.operatingSystem}):'));
+    });
+  });
+
+  group('the reconstructed command line', () {
+    /// Parses [args] the way the `service` parser does, without running it.
+    ArgResults parse(List<String> args) =>
+        ServiceInstallCommand().argParser.parse(args);
+
+    test('a URL mount point is never absolutized into a file path', () {
+      final out = serviceStartArgs(
         'hub',
-      ], home: home.path);
-      expect(result.exitCode, isNot(0));
-      expect(result.stderr as String, contains('is not installed'));
+        parse([
+          '--cert', certPath, '--key', keyPath, //
+          '--node-path', '/node', '--ephemeral',
+        ]),
+      );
+      expect(out, containsAllInOrder(['--node-path', '/node']));
+    });
+
+    test('a node carries no --data-dir; its state rides in the home', () {
+      final out = serviceStartArgs(
+        'node',
+        parse([
+          '--hub',
+          'wss://hub:8443',
+          '--id',
+          'web-01',
+          '--token',
+          's3cr3t',
+        ]),
+      );
+      expect(out, isNot(contains('--data-dir')));
+      expect(out.first, 'node');
+      expect(out[1], 'start');
     });
   });
 }

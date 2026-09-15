@@ -21,7 +21,66 @@ class _RecordingExecutor implements CommandExecutor {
   }
 }
 
+/// An executor whose commands always fail, with [stderr] as the reason.
+class _FailingExecutor implements CommandExecutor {
+  final String stderr;
+
+  _FailingExecutor(this.stderr);
+
+  @override
+  Future<ExecResult> run(
+    String executable,
+    List<String> args, {
+    Map<String, String>? environment,
+  }) async => ExecResult(exitCode: 100, stderr: '$stderr\n');
+}
+
 void main() {
+  group('ProcessCommandExecutor', () {
+    test('captures stdout and the exit code of a real command', () async {
+      const executor = ProcessCommandExecutor();
+      final result = await executor.run('echo', const ['hello']);
+
+      expect(result.ok, isTrue);
+      expect(result.exitCode, 0);
+      expect(result.stdout.trim(), 'hello');
+    });
+
+    test('a non-zero exit is a result, with its stderr', () async {
+      const executor = ProcessCommandExecutor();
+      final result = await executor.run('sh', const [
+        '-c',
+        'echo nope >&2; exit 2',
+      ]);
+
+      expect(result.ok, isFalse);
+      expect(result.exitCode, 2);
+      expect(result.stderr.trim(), 'nope');
+    });
+
+    test('an executable that is not there comes back as 127', () async {
+      const executor = ProcessCommandExecutor();
+      // A formula probing for a tool that is absent is the common case, and it
+      // must read as "not installed", not as a crash partway through a run.
+      final result = await executor.run('definitely-not-a-real-binary-xyz', []);
+
+      expect(result.ok, isFalse);
+      expect(result.exitCode, 127);
+      expect(result.stderr, isNotEmpty);
+    });
+
+    test('the environment is passed through to the command', () async {
+      const executor = ProcessCommandExecutor();
+      final result = await executor.run(
+        'sh',
+        const ['-c', r'printf %s "$OMNY_TEST_VAR"'],
+        environment: const {'OMNY_TEST_VAR': 'passed-through'},
+      );
+
+      expect(result.stdout, 'passed-through');
+    });
+  }, testOn: '!windows');
+
   group('UpdateService', () {
     test(
       'agent self-update is acknowledged without running commands',
@@ -62,6 +121,49 @@ void main() {
         expect(ok, isFalse);
         expect(message, contains('not supported'));
         expect(exec.calls, isEmpty);
+      }
+    });
+
+    test('a named target is a package update, not an OS update', () async {
+      final exec = _RecordingExecutor();
+      final service = UpdateService(executor: exec);
+      final (ok, message) = await service.handle(
+        const NodeControl(
+          requestId: 'r',
+          action: 'update',
+          parameters: {'target': 'curl'},
+        ),
+      );
+
+      if (Platform.isLinux || Platform.isMacOS) {
+        expect(ok, isTrue);
+        expect(message, contains('updated curl'));
+        // The package is named in the command, so it upgrades that one thing
+        // rather than everything the machine has.
+        expect(exec.calls.single, contains('curl'));
+      } else {
+        expect(ok, isFalse);
+        expect(message, contains('not supported'));
+        expect(exec.calls, isEmpty);
+      }
+    });
+
+    test('a failed package update reports the command-s own stderr', () async {
+      final exec = _FailingExecutor('E: Unable to locate package nosuchpkg');
+      final service = UpdateService(executor: exec);
+      final (ok, message) = await service.handle(
+        const NodeControl(
+          requestId: 'r',
+          action: 'update',
+          parameters: {'target': 'nosuchpkg'},
+        ),
+      );
+
+      expect(ok, isFalse);
+      if (Platform.isLinux || Platform.isMacOS) {
+        // The package manager's reason, not a generic "update failed" — that
+        // reason is the only thing that tells an operator what to do next.
+        expect(message, contains('Unable to locate package'));
       }
     });
 
