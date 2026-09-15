@@ -44,6 +44,11 @@ void main() {
       expect(result.stderr.trim(), 'bad');
     });
 
+    // `echo` and `sh` are POSIX executables; on Windows the first is a shell
+    // builtin and the second is absent, so `Process.run` cannot reach either.
+  }, testOn: '!windows');
+
+  group('running a command on a node', () {
     test('a command that does not exist comes back as 127, with why', () async {
       await cluster.startNode(id: 'worker-01');
 
