@@ -74,6 +74,7 @@ class TestCluster {
     AuditRepository? auditRepository,
     MetricRepository? metricRepository,
     List<String> corsOrigins = const [],
+    List<AlertRule> alertRules = const [],
     void Function(String message)? logger,
   }) async {
     final grants =
@@ -102,6 +103,7 @@ class TestCluster {
         ]),
         grantRepository: grantStore,
         corsOrigins: corsOrigins,
+        alertRules: alertRules,
         heartbeatInterval: heartbeatInterval,
         heartbeatTimeout: heartbeatTimeout,
         clock: clock ?? const SystemClock(),

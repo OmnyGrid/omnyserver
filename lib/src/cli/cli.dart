@@ -310,8 +310,17 @@ class HubMetricsCommand extends Command<void> {
 
 /// `omnyserver hub start`
 class HubStartCommand extends Command<void> {
+  /// What the command waits on before closing the Hub down.
+  final Future<void> Function() _untilStopped;
+
   /// Creates the hub-start command.
-  HubStartCommand() {
+  ///
+  /// [untilStopped] is what "stop" means: Ctrl-C in production. A test passes a
+  /// future of its own so the whole configure/serve/close path runs to the end
+  /// without a signal — the alternative is a subprocess, whose coverage the VM
+  /// collector never sees.
+  HubStartCommand({Future<void> Function()? untilStopped})
+    : _untilStopped = untilStopped ?? _awaitSignal {
     addHubStartOptions(argParser);
   }
 
@@ -480,7 +489,7 @@ class HubStartCommand extends Command<void> {
       );
     }
     stdout.writeln('Press Ctrl-C to stop.');
-    await _awaitSignal();
+    await _untilStopped();
     await hub.close();
   }
 
@@ -531,8 +540,24 @@ class NodeCommand extends Command<void> {
 
 /// `omnyserver node start`
 class NodeStartCommand extends Command<void> {
+  /// What the command waits on before shutting the agent down.
+  final Future<void> Function() _untilStopped;
+
+  /// How the command leaves — see the note on [run] about why it is an
+  /// [exit] rather than a return.
+  final void Function(int code) _leave;
+
   /// Creates the node-start command.
-  NodeStartCommand() {
+  ///
+  /// [untilStopped] and [leave] are seams: Ctrl-C and [exit] in production, and
+  /// in a test a future it can complete and a recorder for the exit code — so
+  /// the agent's whole lifecycle runs in-process, where coverage is collected
+  /// and where `exit` would otherwise take the test runner with it.
+  NodeStartCommand({
+    Future<void> Function()? untilStopped,
+    void Function(int code)? leave,
+  }) : _untilStopped = untilStopped ?? _awaitSignal,
+       _leave = leave ?? exit {
     addNodeStartOptions(argParser);
     argParser.addFlag(
       'verbose',
@@ -608,7 +633,7 @@ class NodeStartCommand extends Command<void> {
       onBadCertificate: (args['insecure'] as bool)
           ? (cert, host, port) => true
           : null,
-      labels: _parseLabels(args['label'] as List<String>),
+      labels: _parseLabels(args['label'] as List<String>, 'label'),
       statusProvider: monitor.snapshot,
       capabilityProvider: scanner.scan,
       formulaHandler: formulaService.runFormula,
@@ -643,7 +668,10 @@ class NodeStartCommand extends Command<void> {
             token: token,
             securityContext: context,
             insecure: args['insecure'] as bool,
-            labels: _parseLabels(args['shell-label'] as List<String>),
+            labels: _parseLabels(
+              args['shell-label'] as List<String>,
+              'shell-label',
+            ),
           )
         : null;
 
@@ -651,7 +679,7 @@ class NodeStartCommand extends Command<void> {
     // Ctrl-C, or the Hub asking this agent to restart or stop. Either way the
     // same orderly shutdown runs; only the exit code differs.
     final code = await Future.any([
-      _awaitSignal().then((_) => 0),
+      _untilStopped().then((_) => 0),
       stopped.future,
     ]);
     if (code != 0) log('Stopping: the Hub asked this agent to restart.');
@@ -662,7 +690,7 @@ class NodeStartCommand extends Command<void> {
     // long-running agent holds handles that outlive the work — the signal
     // watcher above among them — and the exit code is the whole contract here:
     // non-zero asks a supervisor for the agent back, zero leaves it stopped.
-    exit(code);
+    _leave(code);
   }
 
   /// Starts an OmnyShell node alongside the OmnyServer agent.
@@ -716,12 +744,15 @@ class NodeStartCommand extends Command<void> {
           );
   }
 
-  Map<String, String> _parseLabels(List<String> raw) {
+  /// Parses `key=value` labels, naming [option] in the error — the agent's own
+  /// `--label` and the shell node's `--shell-label` come through here, and an
+  /// operator who mistyped one should not be sent to look at the other.
+  Map<String, String> _parseLabels(List<String> raw, String option) {
     final labels = <String, String>{};
     for (final entry in raw) {
       final i = entry.indexOf('=');
       if (i <= 0) {
-        throw CliError('invalid --shell-label "$entry" (want key=value)');
+        throw CliError('invalid --$option "$entry" (want key=value)');
       }
       labels[entry.substring(0, i)] = entry.substring(i + 1);
     }

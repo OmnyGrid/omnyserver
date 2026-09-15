@@ -132,8 +132,17 @@ Future<void> runService(Future<void> Function() action) async {
   }
 }
 
+/// Where the service registry and the compiled service binaries live.
+///
+/// `null` is the platform's own location — the only value production ever uses.
+/// A test points it at a temp directory, so exercising these commands never
+/// reads, writes or uninstalls anything in the developer's real registry.
+@visibleForTesting
+svc.StoragePaths? serviceStoragePaths;
+
 svc.DartServiceManager _serviceManager({bool verbose = false}) =>
     svc.DartServiceManager.forCurrentPlatform(
+      storagePaths: serviceStoragePaths,
       logger: svc.ConsoleServiceLogger(
         minLevel: verbose ? svc.LogLevel.debug : svc.LogLevel.info,
       ),

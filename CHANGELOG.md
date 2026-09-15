@@ -1,3 +1,47 @@
+## 0.16.2
+
+A coverage release, and what it turned up.
+
+Line coverage of `lib/` went from 82.4% to 95.5%. Most of the gap was not
+untested behaviour so much as *unreachable* testing: the CLI's two largest
+commands run until a signal and then call `exit`, and the `ai` and `service`
+suites drove a subprocess, whose coverage the VM collector never sees. Both are
+now exercised in-process, against a real TLS listener and a real agent.
+
+Pulling on that found two things that were simply broken, both of them in
+documented behaviour nobody had run.
+
+### Fixed
+
+- **`--grant "alice:s3cr3t:admin,operator"` could never have worked.** The
+  option's own help text documents the multi-role form, and `--grant` was
+  declared as a comma-splitting multi-option — so the shell handed the Hub two
+  grants, `alice:s3cr3t:admin` and a bare `operator`, and it rejected the second
+  as malformed. Any grant with more than one role failed to start the Hub. The
+  option no longer splits on commas; the roles belong to the grant.
+
+- **A mistyped `--label` on `node start` sent you to `--shell-label`.** Both
+  options parse through the same helper, and the error message named the wrong
+  one. An operator who wrote `--label prod` was told to look at a flag they had
+  not passed.
+
+### Changed
+
+- `hub start` and `node start` take what "stop" means as a constructor
+  argument — Ctrl-C and `exit` in production, and in a test a future it can
+  complete and a recorder for the exit code. `service` commands take their
+  registry location the same way (`serviceStoragePaths`), so exercising them
+  never reads or writes the real one. All three default to the production
+  behaviour; nothing about running the CLI changes.
+
+### Notes
+
+The new tests are mostly about what the CLI *says*, which had been the thinnest
+part of the suite: the fan-out tally, the empty-fleet answers, the metrics
+table, the live SSE streams, and the refusals — a label that matches nothing, a
+selector that was left out, a stream the Hub turned down. Output is what an
+operator acts on, and "applied to 0 nodes" reads like success.
+
 ## 0.16.1
 
 Most of this release came from putting a fleet in front of a browser and a
