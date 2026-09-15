@@ -70,7 +70,10 @@ void main() {
       expect(out, contains(certPath));
       expect(out, contains('9443'));
       expect(out, contains('alice:s3cr3t:admin'));
-      expect(out, contains('disk&gt;90'));
+      // The rule survives into the baked-in command line. How it is spelled is
+      // the platform's business: a launchd plist is XML and escapes the `>`, a
+      // systemd unit is not and does not.
+      expect(out, anyOf(contains('disk>90'), contains('disk&gt;90')));
       expect(out, contains('--shell'));
       // The Hub's fleet data lands under the home root, in hub/ — and the root
       // is pinned in the environment, so a system service with no meaningful
