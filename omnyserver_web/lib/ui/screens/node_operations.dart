@@ -44,7 +44,18 @@ class NodeOperations {
           'div',
           classes: 'card stack',
           children: [
-            el('h3', text: 'Declared state'),
+            el(
+              'div',
+              classes: 'row',
+              children: [
+                el('h3', classes: 'grow', text: 'Declared state'),
+                button(
+                  'Refresh',
+                  className: 'ghost',
+                  onClick: () => unawaited(_refreshDeclared()),
+                ),
+              ],
+            ),
             _driftBody,
           ],
         ),
@@ -180,6 +191,28 @@ class NodeOperations {
   }
 
   // --- Declared state and drift ---------------------------------------------
+
+  /// Re-reads the declaration, and the libraries the card offers to declare
+  /// from.
+  ///
+  /// Both, because the two reasons to press this are the two things that go
+  /// stale while the page sits open: somebody changed the machine, or somebody
+  /// saved a blueprint in the Library that is not in this dropdown yet. Asking
+  /// for the second and getting only the first is the kind of refresh that
+  /// teaches people to reload the page instead.
+  Future<void> _refreshDeclared() async {
+    try {
+      _presets = await ctx.service.presets();
+      _blueprints = await ctx.service.blueprints();
+      if (_disposed) return;
+      // The Run card offers presets from the same list.
+      _renderRun();
+    } on AppError {
+      // Keep whatever the catalogue already held. The drift below is what was
+      // actually asked for, and it reports its own failures.
+    }
+    await _loadDrift();
+  }
 
   Future<void> _loadDrift() async {
     clearChildren(_driftBody);
