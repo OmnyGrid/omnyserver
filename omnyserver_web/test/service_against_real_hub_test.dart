@@ -6,6 +6,8 @@ import 'dart:io';
 // The VM transport, standing in for the browser's `fetch` — the one seam this
 // test swaps. Everything else is what the app itself runs.
 import 'package:omnyserver/omnyserver_cli.dart' show IoApiTransport;
+// The browser's own blueprint parser, which the editor calls before saving.
+import 'package:omnyserver/omnyserver_client_web.dart' show parseBlueprint;
 import 'package:omnyserver/omnyserver_hub.dart';
 import 'package:omnyserver_web/core/omnyserver_service.dart';
 import 'package:omnyshell_web/foundation.dart' show AppError, AppErrorKind;
@@ -41,6 +43,12 @@ void main() {
           'node-token': TokenGrant(
             principal: PrincipalId('node-account'),
             roles: const {'node'},
+          ),
+          // Can sign in and read the fleet, and nothing else — the role the
+          // library screen has to hide its editor from.
+          'viewer-token': TokenGrant(
+            principal: PrincipalId('vera'),
+            roles: const {'viewer'},
           ),
         }),
       ),
@@ -219,6 +227,55 @@ void main() {
       );
     });
 
+    test('a blueprint saved on the Hub decodes, includes and all', () async {
+      // The dashboard renders what it decodes here. A field the Hub names
+      // differently, or a nested list that does not survive the trip, shows up
+      // as an empty panel rather than as an error — so it is worth asserting
+      // against a real Hub rather than a fixture.
+      await signIn();
+      expect(await service.blueprints(), isEmpty);
+
+      await hub.savePreset(
+        Preset(
+          id: PresetId('dev-tools'),
+          name: 'Dev tools',
+          steps: [PresetStep(formula: FormulaId('dart'))],
+        ),
+      );
+      await hub.saveBlueprint(
+        Blueprint(
+          id: BlueprintId('builder'),
+          name: 'Build host',
+          includes: [PresetId('dev-tools')],
+          resources: [
+            Resource(
+              id: ResourceId('formula', 'nmap'),
+              ensure: Ensure.installed,
+            ),
+          ],
+        ),
+      );
+
+      final blueprints = await service.blueprints();
+      expect(blueprints.single.id.value, 'builder');
+      expect(blueprints.single.includes.single.value, 'dev-tools');
+      expect(blueprints.single.resources.single.ensure, Ensure.installed);
+    });
+
+    test('assigning to a node nobody has registered is a usable error', () async {
+      // What the panel shows in a banner. An exception dropped on the floor
+      // would leave the operator looking at a control that silently did nothing.
+      await signIn();
+      await hub.saveBlueprint(Blueprint(id: BlueprintId('bare'), name: 'Bare'));
+
+      await expectLater(
+        service.assignBlueprint('ghost', 'bare'),
+        throwsA(
+          isA<AppError>().having((e) => e.kind, 'kind', AppErrorKind.notFound),
+        ),
+      );
+    });
+
     test('a preset saved on the Hub comes back', () async {
       await signIn();
       expect(await service.presets(), isEmpty);
@@ -273,6 +330,397 @@ void main() {
         expect(await service.grants(), isEmpty);
       },
     );
+  });
+
+  /// The library screen's whole surface. Every one of these methods existed on
+  /// `HubApiClient` and was unreachable from the dashboard until the Library
+  /// screen needed it, so none of them had ever been driven end to end.
+  group('the library screen', () {
+    Future<void> signIn() => service
+        .connect(hubUri: baseUrl(), principal: 'alice', token: 'admin-token')
+        .then((_) {});
+
+    const yaml =
+        '# Everything a build host needs.\n'
+        'blueprint: builder\n'
+        'name: Build host\n'
+        'includes: [dev-tools]\n'
+        'resources:\n'
+        '  - { type: formula, name: nmap, ensure: installed }\n';
+
+    test('a blueprint authored in the browser round-trips verbatim', () async {
+      // The editor's entire premise: what somebody typed comes back as what
+      // they typed. A Hub that re-rendered the document from its parse would
+      // lose the comment on the first line, and the file in the editor and the
+      // thing on the Hub would be two documents that happen to agree.
+      await signIn();
+      await hub.savePreset(Preset(id: PresetId('dev-tools'), name: 'Dev'));
+
+      await service.saveBlueprint(
+        parseBlueprint(yaml, BlueprintFormat.yaml, origin: 'the editor'),
+      );
+
+      final saved = await service.blueprint('builder');
+      expect(saved.name, 'Build host');
+      expect(saved.source?.format, BlueprintFormat.yaml);
+      expect(saved.source?.text, yaml);
+      expect(saved.includes.single.value, 'dev-tools');
+    });
+
+    test('the resolved view names where each resource came from', () async {
+      await signIn();
+      await hub.savePreset(
+        Preset(
+          id: PresetId('dev-tools'),
+          name: 'Dev',
+          steps: [PresetStep(formula: FormulaId('dart'))],
+        ),
+      );
+      await service.saveBlueprint(
+        parseBlueprint(yaml, BlueprintFormat.yaml, origin: 'the editor'),
+      );
+
+      final resolved = await service.resolvedBlueprint('builder');
+
+      // The include is flattened in and the blueprint's own resource follows
+      // it, each carrying the provenance the screen renders.
+      expect(resolved.hash, isNotEmpty);
+      expect(
+        [for (final r in resolved.resources) r.id.toString()],
+        ['formula:dart', 'formula:nmap'],
+      );
+      expect(resolved.resources.first.origin, contains('dev-tools'));
+      expect(resolved.resources.last.origin, 'local');
+    });
+
+    test('a blueprint the Hub cannot resolve is refused on save', () async {
+      // The reason the editor does not validate includes itself: only the Hub
+      // knows what is saved on it. The message has to arrive intact, because it
+      // is the only thing the author is shown.
+      await signIn();
+      await expectLater(
+        service.saveBlueprint(
+          parseBlueprint(
+            'blueprint: orphan\nincludes: [nobody-saved-this]\nresources: []\n',
+            BlueprintFormat.yaml,
+          ),
+        ),
+        throwsA(
+          isA<AppError>().having(
+            (e) => e.message,
+            'message',
+            contains('nobody-saved-this'),
+          ),
+        ),
+      );
+    });
+
+    test('a preset round-trips through the editor, then deletes', () async {
+      await signIn();
+      await service.savePreset(
+        Preset(
+          id: PresetId('base-tools'),
+          name: 'Base tools',
+          description: 'What every machine gets',
+          steps: [
+            PresetStep(formula: FormulaId('git')),
+            PresetStep(
+              formula: FormulaId('docker'),
+              action: FormulaAction.start,
+            ),
+          ],
+        ),
+      );
+
+      final saved = await service.preset('base-tools');
+      expect(saved.description, 'What every machine gets');
+      expect(saved.steps.last.action, FormulaAction.start);
+
+      await service.deletePreset('base-tools');
+      expect(await service.presets(), isEmpty);
+    });
+
+    test('deleting a blueprint takes it out of the list', () async {
+      await signIn();
+      await hub.saveBlueprint(Blueprint(id: BlueprintId('bare'), name: 'Bare'));
+      expect(await service.blueprints(), hasLength(1));
+
+      await service.deleteBlueprint('bare');
+      expect(await service.blueprints(), isEmpty);
+    });
+
+    test('reading a blueprint nobody saved is a notFound, not a crash', () {
+      return signIn().then(
+        (_) => expectLater(
+          service.blueprint('ghost'),
+          throwsA(
+            isA<AppError>().having(
+              (e) => e.kind,
+              'kind',
+              AppErrorKind.notFound,
+            ),
+          ),
+        ),
+      );
+    });
+
+    test('a viewer is refused the editor by the Hub, not just the UI', () async {
+      // The screen hides Save from a viewer, but hiding a button is a courtesy
+      // and not a control. This is the one that matters: a viewer who reaches
+      // the endpoint anyway is refused, and the service reports it as an
+      // authorization failure so the toast says so.
+      await service.connect(
+        hubUri: baseUrl(),
+        principal: 'vera',
+        token: 'viewer-token',
+      );
+
+      await expectLater(
+        service.saveBlueprint(
+          parseBlueprint(
+            'blueprint: sneaky\nresources: []\n',
+            BlueprintFormat.yaml,
+          ),
+        ),
+        throwsA(
+          isA<AppError>().having(
+            (e) => e.kind,
+            'kind',
+            AppErrorKind.authorization,
+          ),
+        ),
+      );
+      // Reading is a viewer's whole job, and must still work.
+      expect(await service.blueprints(), isEmpty);
+    });
+
+    test('an unusable label selector is reported, not silently ignored', () {
+      // The assign panel sends whatever was typed. A selector the Hub cannot
+      // parse must come back as an error the panel can show — assigning to the
+      // *whole fleet* because a selector was dropped is the failure worth
+      // preventing.
+      return signIn().then(
+        (_) => expectLater(
+          service.listNodes(labels: const ['role']),
+          throwsA(isA<AppError>()),
+        ),
+      );
+    });
+  });
+
+  /// The rest of the service's surface, driven end to end.
+  ///
+  /// No node is attached in this suite, and most of these need one to do
+  /// anything — but *reaching the endpoint* and *classifying what came back*
+  /// are exactly the two things a mocked test cannot check, and the two that
+  /// break when the Hub renames a field or changes a status code. Every screen
+  /// in the dashboard shows the result of one of these, so a call that answers
+  /// with something unexpected is a panel that fails at the worst moment.
+  group('the rest of the service', () {
+    Future<void> signIn() => service
+        .connect(hubUri: baseUrl(), principal: 'alice', token: 'admin-token')
+        .then((_) {});
+
+    test('a node that has never heartbeated has no status, and that is '
+        'not an error', () async {
+      // Null rather than a throw: "not yet" is the ordinary state of a node
+      // that has only just registered, and a caller made to catch it will
+      // sooner or later catch a real failure by mistake.
+      await signIn();
+      expect(await service.status('ghost'), isNull);
+    });
+
+    test('the Hub-wide lists decode, empty', () async {
+      // Empty is the interesting case: a decoder that only ever saw populated
+      // fixtures throws on `[]` often enough to be worth pinning.
+      await signIn();
+      expect(await service.operations(), isEmpty);
+      expect(await service.operations(nodeId: 'ghost', running: true), isEmpty);
+      expect(await service.alerts(), isEmpty);
+      expect(await service.presets(), isEmpty);
+      expect(await service.blueprints(), isEmpty);
+    });
+
+    test('asking an unknown node for its capabilities is a notFound', () async {
+      await signIn();
+      await expectLater(
+        service.capabilities('ghost'),
+        throwsA(
+          isA<AppError>().having((e) => e.kind, 'kind', AppErrorKind.notFound),
+        ),
+      );
+    });
+
+    test('metrics for a node nobody registered is a notFound', () async {
+      // Not an empty series. "No history yet" and "no such node" are
+      // different answers, and a sparkline would draw nothing for both.
+      await signIn();
+      await expectLater(
+        service.metrics('ghost'),
+        throwsA(
+          isA<AppError>().having((e) => e.kind, 'kind', AppErrorKind.notFound),
+        ),
+      );
+      await expectLater(
+        service.metrics('ghost', since: '24h'),
+        throwsA(isA<AppError>()),
+      );
+    });
+
+    group('the controls that need the node, with no node there', () {
+      // Each of these is behind a button in the dashboard. What matters is that
+      // an unreachable node produces an AppError the panel can show, rather
+      // than an exception dropped into a click handler where nothing catches
+      // it and the operator sees a control that silently did nothing.
+      setUp(signIn);
+
+      test('restart', () {
+        expect(service.restart('ghost'), throwsA(isA<AppError>()));
+      });
+
+      test('shutdown', () {
+        expect(service.shutdown('ghost'), throwsA(isA<AppError>()));
+      });
+
+      test('update', () {
+        expect(service.update('ghost'), throwsA(isA<AppError>()));
+        expect(
+          service.update('ghost', target: 'agent'),
+          throwsA(isA<AppError>()),
+        );
+      });
+
+      test('running a formula', () {
+        expect(
+          service.runFormula(
+            'ghost',
+            formula: 'docker',
+            action: FormulaAction.install,
+            version: '24.0',
+          ),
+          throwsA(isA<AppError>()),
+        );
+      });
+
+      test('applying a preset, saved or inline', () async {
+        await hub.savePreset(Preset(id: PresetId('tools'), name: 'Tools'));
+        expect(
+          service.applySavedPreset('ghost', 'tools'),
+          throwsA(isA<AppError>()),
+        );
+        expect(
+          service.applyPreset(
+            'ghost',
+            Preset(id: PresetId('tools'), name: 'Tools'),
+          ),
+          throwsA(isA<AppError>()),
+        );
+      });
+
+      test('reading the log tail', () {
+        expect(service.logs('ghost'), throwsA(isA<AppError>()));
+        expect(service.logs('ghost', tail: 10), throwsA(isA<AppError>()));
+      });
+
+      test('reconciling, dry or otherwise', () {
+        expect(service.reconcile('ghost'), throwsA(isA<AppError>()));
+        expect(
+          service.reconcile('ghost', dryRun: true),
+          throwsA(isA<AppError>()),
+        );
+      });
+    });
+
+    group('declaring', () {
+      // No node is attached in this suite, and a declaration is refused for a
+      // node the Hub has never met — so what these pin is the *refusal*. That
+      // is worth pinning on its own: each one is a control on the node page,
+      // and each must come back as something a panel can put in a banner. The
+      // happy paths run against real containers in
+      // `test/integration/blueprint_test.dart` and `example/docker_blueprints`.
+      test('declaring for a node nobody registered is a notFound', () async {
+        await signIn();
+        await expectLater(
+          service.declare(
+            'worker-01',
+            Preset(
+              id: PresetId('tools'),
+              name: 'Tools',
+              steps: [PresetStep(formula: FormulaId('docker'))],
+            ),
+          ),
+          throwsA(
+            isA<AppError>().having(
+              (e) => e.kind,
+              'kind',
+              AppErrorKind.notFound,
+            ),
+          ),
+        );
+      });
+
+      test('undeclaring a node with nothing declared says so', () async {
+        // Not silence. The Undeclare button would otherwise report success for
+        // having done nothing, on a node that may well still be carrying
+        // software somebody wants taken off it.
+        await signIn();
+        await expectLater(
+          service.undeclare('worker-01'),
+          throwsA(
+            isA<AppError>().having(
+              (e) => e.kind,
+              'kind',
+              AppErrorKind.notFound,
+            ),
+          ),
+        );
+      });
+
+      test('unassigning a node with no blueprint says so', () async {
+        // Distinct from undeclare, and it fails loudly rather than quietly
+        // succeeding: unassign exists to take software back off a machine, and
+        // "there was nothing to take" is worth hearing.
+        await signIn();
+        await expectLater(
+          service.unassign('worker-01'),
+          throwsA(isA<AppError>()),
+        );
+        await expectLater(
+          service.unassign('worker-01', purgeAdopted: true),
+          throwsA(isA<AppError>()),
+        );
+      });
+    });
+
+    test('a viewer may read the fleet and change nothing', () async {
+      // The roles the dashboard hides controls for. Hiding a button is a
+      // courtesy; this is the control.
+      await service.connect(
+        hubUri: baseUrl(),
+        principal: 'vera',
+        token: 'viewer-token',
+      );
+
+      expect(await service.presets(), isEmpty);
+      expect(await service.audit(), isEmpty);
+
+      for (final refused in [
+        service.savePreset(Preset(id: PresetId('x'), name: 'X')),
+        service.declare('worker-01', Preset(id: PresetId('x'), name: 'X')),
+        service.undeclare('worker-01'),
+      ]) {
+        await expectLater(
+          refused,
+          throwsA(
+            isA<AppError>().having(
+              (e) => e.kind,
+              'kind',
+              AppErrorKind.authorization,
+            ),
+          ),
+        );
+      }
+    });
   });
 
   group('normalizeHubUri', () {

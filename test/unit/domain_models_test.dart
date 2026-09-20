@@ -2,6 +2,8 @@
 library;
 
 import 'package:omnyserver/omnyserver.dart';
+// The API's own reply shapes, which the CLI and the dashboard both decode.
+import 'package:omnyserver/omnyserver_client_web.dart' show ConvergeResult;
 import 'package:test/test.dart';
 
 void main() {
@@ -268,6 +270,45 @@ void main() {
       expect(back.actions.single.formula, FormulaId('docker'));
       expect(back.notes, ['docker is absent']);
 
+      // A step-declared node has no hashes at all, and the pair is elided from
+      // the wire rather than sent empty.
+      expect(drift.toJson().containsKey('appliedHash'), isFalse);
+      expect(drift.toJson().containsKey('expectedHash'), isFalse);
+      expect(back.stale, isFalse);
+    });
+
+    test('Drift, for a node declared by a blueprint', () {
+      Drift withHashes(String applied, String expected) => Drift(
+        nodeId: 'worker-01',
+        converged: true,
+        blueprint: 'builder',
+        appliedHash: applied,
+        expectedHash: expected,
+      );
+
+      final stale = Drift.fromJson(
+        withHashes('sha256:old', 'sha256:new').toJson(),
+      );
+      expect(stale.blueprint, 'builder');
+      expect(stale.appliedHash, 'sha256:old');
+      expect(stale.expectedHash, 'sha256:new');
+      expect(
+        stale.stale,
+        isTrue,
+        reason: 'the document changed since this node last applied it',
+      );
+      expect(
+        stale.converged,
+        isTrue,
+        reason:
+            'and it is still converged against what it did apply — the '
+            'two are different questions',
+      );
+
+      expect(withHashes('sha256:same', 'sha256:same').stale, isFalse);
+      // Never applied is "nothing has run here", not "something older has".
+      expect(withHashes('', 'sha256:new').stale, isFalse);
+
       // A converged node is the useful answer: nothing to run.
       final converged = Drift.fromJson({'nodeId': 'w', 'converged': true});
       expect(converged.actions, isEmpty);
@@ -373,6 +414,97 @@ void main() {
       final point = MetricPoint.fromStatus(statusWith(const []));
       expect(point.toJson(), isNot(contains('loadAverage')));
       expect(MetricPoint.fromJson(point.toJson()).loadAverage, isNull);
+    });
+  });
+
+  group('ConvergeResult', () {
+    // `POST /reconcile` answers in one of two shapes, because a node is
+    // declared in one of two ways. Both reduce to the same three questions —
+    // did it work, how much moved, is there anything left — which every caller
+    // asks and none should have to derive for itself.
+    test('a blueprint reply is read from the counts the Hub sent', () {
+      final result = ConvergeResult.fromJson({
+        'success': true,
+        'changed': 2,
+        'skipped': 1,
+        'changes': [
+          {
+            'resource': 'formula:nmap',
+            'kind': 'create',
+            'reason': 'installed',
+            'origin': 'local',
+          },
+        ],
+      });
+
+      expect(result.success, isTrue);
+      expect(result.changed, 2);
+      expect(result.skipped, 1);
+      expect(result.changes.single.id.toString(), 'formula:nmap');
+      expect(result.results, isEmpty);
+      // Something was skipped, so there is work outstanding whatever the
+      // change count says.
+      expect(result.converged, isFalse);
+    });
+
+    test('a preset reply has no counts, so they are derived once here', () {
+      final result = ConvergeResult.fromJson({
+        'results': [
+          {
+            'formula': 'docker',
+            'action': 'install',
+            'success': true,
+            'changed': true,
+            'message': 'installed',
+            'finishedAt': '2026-09-20T12:00:00.000Z',
+          },
+          {
+            'formula': 'dart',
+            'action': 'install',
+            'success': true,
+            'changed': false,
+            'message': 'already installed',
+            'finishedAt': '2026-09-20T12:00:00.000Z',
+          },
+        ],
+      });
+
+      expect(result.changed, 1, reason: 'only one step actually changed');
+      expect(result.results, hasLength(2));
+      expect(result.changes, isEmpty);
+      expect(result.success, isTrue);
+      expect(result.converged, isFalse);
+    });
+
+    test('one failed step makes the whole thing a failure', () {
+      // The field is absent on the preset path, so success has to come from
+      // the steps — otherwise a run with a failure in it reports as fine.
+      final result = ConvergeResult.fromJson({
+        'results': [
+          {
+            'formula': 'docker',
+            'action': 'install',
+            'success': false,
+            'changed': false,
+            'message': 'apt-get returned 100',
+            'finishedAt': '2026-09-20T12:00:00.000Z',
+          },
+        ],
+      });
+
+      expect(result.success, isFalse);
+    });
+
+    test('nothing to do is converged, which is what the button reads', () {
+      final result = ConvergeResult.fromJson({
+        'success': true,
+        'changed': 0,
+        'skipped': 0,
+        'notes': ['dry run: nothing was changed'],
+      });
+
+      expect(result.converged, isTrue);
+      expect(result.notes.single, contains('dry run'));
     });
   });
 }

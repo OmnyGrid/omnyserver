@@ -125,6 +125,49 @@ Map<String, dynamic> openApiDocument() => {
         'responses': {'200': _ok('Array of formula specs')},
       },
     },
+    '/blueprints': {
+      'get': {
+        'summary': 'The blueprints saved on the Hub',
+        'responses': {'200': _ok('Array of blueprints')},
+      },
+      'post': {
+        'summary': 'Save a blueprint on the Hub',
+        'description':
+            'Resolved before it is stored, so a dependency cycle, an '
+            'undeclared variable or an include naming a preset nobody saved '
+            'comes back as a 400 rather than as a failure half way through an '
+            'apply on a real machine.',
+        'requestBody': _jsonBody({
+          'blueprint': 'string',
+          'name': 'string',
+          'description': 'string',
+        }),
+        'responses': {'200': _ok('Saved'), '400': _err},
+      },
+    },
+    '/blueprints/{id}': {
+      'get': {
+        'summary': 'One blueprint, as it was authored',
+        'parameters': [_pathId],
+        'responses': {'200': _ok('Blueprint'), '404': _err},
+      },
+      'delete': {
+        'summary': 'Delete a blueprint',
+        'parameters': [_pathId],
+        'responses': {'200': _ok('Deleted'), '404': _err},
+      },
+    },
+    '/blueprints/{id}/resolved': {
+      'get': {
+        'summary': 'A blueprint flattened: what a node is actually sent',
+        'description':
+            'Includes expanded, variables substituted, resources in the order '
+            'they would be settled, and a hash over all of it. Every resource '
+            'names where it came from and what it overrode.',
+        'parameters': [_pathId],
+        'responses': {'200': _ok('Resolved blueprint'), '404': _err},
+      },
+    },
     '/presets': {
       'get': {
         'summary': 'The presets saved on the Hub',
@@ -229,8 +272,17 @@ Map<String, dynamic> openApiDocument() => {
       },
       'put': {
         'summary': 'Declare what a node should be — runs nothing',
+        'description':
+            'Three forms: `blueprint` names a saved blueprint (the one to '
+            'reach for — it composes shared presets and declares states rather '
+            'than actions), `preset` sends one inline, or `steps` sends a bare '
+            'step list.',
         'parameters': [_pathId],
-        'requestBody': _jsonBody({'preset': 'object', 'steps': 'array'}),
+        'requestBody': _jsonBody({
+          'blueprint': 'string',
+          'preset': 'object',
+          'steps': 'array',
+        }),
         'responses': {'200': _ok('Declared'), '404': _err},
       },
       'delete': {
@@ -239,21 +291,72 @@ Map<String, dynamic> openApiDocument() => {
         'responses': {'200': _ok('Cleared'), '404': _err},
       },
     },
+    '/nodes/{id}/unassign': {
+      'post': {
+        'summary': 'Take the blueprint off a node, removing what it installed',
+        'description':
+            'Sends an empty blueprint first, so every resource the node\'s '
+            'ledger holds is removed. Resources the machine already had are '
+            'released rather than removed unless `purgeAdopted`. The node must '
+            'be online; a partial failure answers 200 with `success: false` '
+            'and leaves the blueprint assigned so it can be retried. To forget '
+            'a node that is gone without touching it, DELETE its '
+            'desired-state instead.',
+        'parameters': [_pathId],
+        'requestBody': _jsonBody({
+          'purgeAdopted': 'boolean',
+          'async': 'boolean',
+        }),
+        'responses': {
+          '200': _ok('Apply result'),
+          '202': _ok('Operation handle (async)'),
+          '404': _err,
+          '502': _err,
+        },
+      },
+    },
     '/nodes/{id}/drift': {
       'get': {
         'summary':
             'How far a node has drifted from what it was declared to be '
             '(plans; runs nothing)',
+        'description':
+            'A node assigned a blueprint is asked directly — the Hub resolves '
+            'and the node reads its own resources, answering in `changes`. A '
+            'node declared by steps is planned Hub-side from its advertised '
+            'capabilities, answering in `actions`; that costs nothing and works '
+            'while the node is offline.',
         'parameters': [_pathId],
-        'responses': {'200': _ok('{converged, actions, notes}'), '404': _err},
+        'responses': {
+          '200': _ok(
+            '{converged, actions | changes, blueprint?, appliedHash?, '
+            'expectedHash?, notes}',
+          ),
+          '404': _err,
+          '502': _err,
+        },
       },
     },
     '/nodes/{id}/reconcile': {
       'post': {
         'summary':
             'Run whatever the drift plan says is outstanding (idempotent)',
+        'description':
+            'Applies the assigned blueprint, or runs the outstanding preset '
+            'steps. `dryRun` plans without changing anything; `async` hands '
+            'back an operation handle instead of waiting.',
         'parameters': [_pathId],
-        'responses': {'200': _ok('Apply result'), '404': _err, '502': _err},
+        'requestBody': _jsonBody({
+          'dryRun': 'boolean',
+          'purgeAdopted': 'boolean',
+          'async': 'boolean',
+        }),
+        'responses': {
+          '200': _ok('Apply result'),
+          '202': _ok('Operation handle (async)'),
+          '404': _err,
+          '502': _err,
+        },
       },
     },
     '/grants': {

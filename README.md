@@ -92,6 +92,11 @@ See the [API Documentation][api_doc] for the full list of classes and APIs.
   SSH, CUDA, Metal, OpenCL — detected dynamically.
 - **Formulas & presets** — idempotent, cross-platform install/manage procedures,
   composed into presets, with desired-state reconciliation.
+- **Server Blueprints** — declare what a whole machine *is*, composed from the
+  presets you already share. Each resource says what it should *be*, so applying
+  twice does nothing, drift is the same check with the apply left off, and a
+  resource you delete from the blueprint is removed from the node. See
+  [Blueprints](#blueprints--what-a-server-is).
 - **Runs as an OS service** — `omnyserver service install hub|node` installs the
   Hub or an agent as a systemd unit, a launchd job or a Windows scheduled task,
   so it survives a reboot. See [Run as an OS service](#run-as-an-os-service).
@@ -103,7 +108,7 @@ See the [API Documentation][api_doc] for the full list of classes and APIs.
   and Prometheus/OpenTelemetry-ready `/metrics`, served on the Hub's own TLS port
   beside the node channel — one port to open, one certificate to manage.
 - **Events** — `NodeConnected`, `HeartbeatReceived`, `FormulaFinished`,
-  `PresetApplied`, … with subscriptions and streaming.
+  `PresetApplied`, `BlueprintApplied`, … with subscriptions and streaming.
 - **Remote shell** — the Hub can also broker [OmnyShell][omnyshell] sessions on
   the same port and credentials (`--shell`), and a node can be both an OmnyServer
   agent and an OmnyShell node in one process (`--with-shell`).
@@ -373,6 +378,46 @@ mint itself an admin token.
 > the audit trail, metrics, declared state *and issued credentials* in memory
 > only, and forgets all of it when it stops.
 
+### Blueprints — what a server *is*
+
+A blueprint declares a whole machine, composed from the presets you already
+have. Write it in YAML or JSON; the format is fixed when you author it, so a
+YAML blueprint comes back as the YAML you wrote, comments and all.
+
+```yaml
+# builder.yaml
+blueprint: builder
+name: Build host
+includes: [dev-tools]            # a preset, shared with everything else
+resources:
+  - { type: formula, name: nmap, ensure: installed }
+  - { type: formula, name: docker, ensure: running }
+```
+
+```sh
+omnyserver blueprint save builder.yaml
+omnyserver blueprint assign builder --label role=build   # declare; runs nothing
+omnyserver blueprint plan worker-01                      # what would change?
+omnyserver blueprint apply --label role=build            # make it so
+```
+
+Each resource says what it should **be**, not what to do to it. That one choice
+is why applying twice is a no-op, why drift detection is the same comparison
+with the apply left off, and why uninstalling is `ensure: absent` rather than a
+separate command.
+
+`includes` names presets and does not copy them, so fixing a shared piece
+reaches every machine built on it — the next `plan` on each will say so.
+`blueprint resolved builder` shows the flattened result, every resource naming
+which document it came from and what it overrode.
+
+**The node does the planning**, because that is where the machine is. A plan
+built from what the Hub last heard is a plan built from intentions, and a node
+is something other people also touch.
+
+`blueprint plan` exits **2** when a node has drifted, so it works as a check in
+a pipeline without parsing output.
+
 ### Desired state, and drift
 
 Declare what a node is *supposed* to be, then ask — at any point later — whether
@@ -499,10 +544,17 @@ final client = HubApiClient(
   principal: 'alice',
   token: 'admin-token',
 );
-final nodes = (await client.get('/nodes') as List)
-    .map((n) => NodeDescriptor.fromJson((n as Map).cast()))
-    .toList();
+
+// One method per endpoint, returning what it means.
+final nodes = await client.nodes(labels: ['env=prod']);
+final drift = await client.drift('web-1');          // null if nothing declared
+final result = await client.reconcile('web-1');
+print('${result.changed} changed on ${nodes.length} nodes');
 ```
+
+The raw `get`/`post`/`put`/`delete` are still there for an endpoint the client
+does not model yet — and for a test asserting the wire shape, which a typed
+decoder would paper over.
 
 ### HTTP API
 
@@ -608,15 +660,44 @@ docker compose -f example/docker_fleet/compose.yaml down -v
 ```
 
 The dashboard gives you the fleet, a node's live status, formulas, declared
-state, the audit trail and a terminal on any node. The tour walks the same
-ground over the REST API: label selectors, a formula that succeeds on one host
-and fails on another, desired state and drift, issuing and revoking a
-credential.
+state, the audit trail and a terminal on any node. Its **Library** screen is
+where blueprints and presets are read and written: a blueprint opens on the
+document somebody authored — YAML, comments intact — with a Resolved view
+beside it showing what a node is actually sent and where each resource came
+from, and assignment is by label with every matched node named before anything
+is declared. Nothing runs from the Library; a node is reconciled from its own
+page, where **Dry run** will tell you what that would do first.
+
+The tour walks the same ground over the REST API: label selectors, a formula
+that succeeds on one host and fails on another, desired state and drift,
+issuing and revoking a credential.
 
 `compose.service.yaml` beside it runs the same fleet the way a server does —
 under systemd, installed with `omnyserver service install`, so each role is a
 unit you can `systemctl status`. See its
 [README](example/docker_fleet/README.md).
+
+### Blueprints, in Docker
+
+[`example/docker_blueprints/`](example/docker_blueprints/) starts three *empty*
+containers and turns them into two web servers and a build host, because a
+document said they should be:
+
+```sh
+docker compose -f example/docker_blueprints/compose.yaml up --build -d
+
+open http://localhost:8080                             # watch it happen
+dart run example/docker_blueprints/blueprint_tour.dart
+
+docker compose -f example/docker_blueprints/compose.yaml down -v
+```
+
+One preset shared by two blueprints, assigned by label, planned by each node
+against its own machine, and applied with real `apt-get`. Then the parts that
+only a declarative model can show: applying again changes nothing; dropping a
+resource from a blueprint removes it from the node; dropping a resource the
+machine *already had* leaves it alone; and editing the shared preset drifts
+every machine built on it without either blueprint being touched.
 
 ### The container fleet
 

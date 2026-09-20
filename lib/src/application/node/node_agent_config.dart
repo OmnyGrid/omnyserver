@@ -22,6 +22,14 @@ typedef FormulaHandler = Future<FormulaResult> Function(FormulaRun request);
 typedef FormulaStatusHandler =
     Future<FormulaStatusResult> Function(FormulaStatusRequest request);
 
+/// Works out what applying a blueprint would change on the node.
+typedef BlueprintPlanHandler =
+    Future<BlueprintPlanResult> Function(BlueprintPlanRequest request);
+
+/// Applies a blueprint on the node.
+typedef BlueprintApplyHandler =
+    Future<BlueprintApplyResult> Function(BlueprintApplyRequest request);
+
 /// Handles a Hub preset-apply request on the node.
 typedef PresetHandler = Future<PresetApplyResult> Function(PresetApply request);
 
@@ -92,6 +100,12 @@ class NodeAgentConfig {
   /// Reports the state of the node's formulas (null ⇒ nothing to report).
   final FormulaStatusHandler? formulaStatusHandler;
 
+  /// Plans a blueprint (null ⇒ nothing to plan).
+  final BlueprintPlanHandler? blueprintPlanHandler;
+
+  /// Applies a blueprint (null ⇒ unsupported).
+  final BlueprintApplyHandler? blueprintApplyHandler;
+
   /// Handles preset-apply requests (null ⇒ unsupported).
   final PresetHandler? presetHandler;
 
@@ -127,6 +141,8 @@ class NodeAgentConfig {
     this.capabilityProvider,
     this.formulaHandler,
     this.formulaStatusHandler,
+    this.blueprintPlanHandler,
+    this.blueprintApplyHandler,
     this.presetHandler,
     this.serviceHandler,
     this.nodeControlHandler,

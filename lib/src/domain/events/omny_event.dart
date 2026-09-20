@@ -72,6 +72,12 @@ sealed class OmnyEvent {
         Json.optBool(json, 'success'),
         at,
       ),
+      'blueprint.applied' => BlueprintApplied(
+        node(),
+        Json.requireString(json, 'blueprint'),
+        Json.optBool(json, 'success'),
+        at,
+      ),
       'node.updated' => NodeUpdated(
         node(),
         Json.requireString(json, 'target'),
@@ -251,6 +257,37 @@ final class PresetApplied extends OmnyEvent {
   Map<String, dynamic> payload() => {
     'nodeId': nodeId.value,
     'preset': preset,
+    'success': success,
+  };
+}
+
+/// A blueprint was applied to a node.
+///
+/// Distinct from [PresetApplied] because they answer different questions: a
+/// preset was a bundle of work that ran, a blueprint is a declaration a machine
+/// was moved to. A dashboard showing "this node became a build host" should not
+/// have to infer it from a preset named `reconcile`.
+final class BlueprintApplied extends OmnyEvent {
+  /// The target node.
+  final NodeId nodeId;
+
+  /// The blueprint id.
+  final String blueprint;
+
+  /// Whether every change that was attempted worked.
+  final bool success;
+
+  /// Creates the event.
+  const BlueprintApplied(this.nodeId, this.blueprint, this.success, DateTime at)
+    : super(at);
+
+  @override
+  String get type => 'blueprint.applied';
+
+  @override
+  Map<String, dynamic> payload() => {
+    'nodeId': nodeId.value,
+    'blueprint': blueprint,
     'success': success,
   };
 }

@@ -22,6 +22,15 @@ class _PresentExecutor implements CommandExecutor {
   }) async => const ExecResult(exitCode: 0, stdout: 'version 1.0.0');
 }
 
+/// The preset these tests save, declare and apply.
+final Preset _dockerHost = Preset(
+  id: PresetId('docker-host'),
+  name: 'Docker Host',
+  steps: [
+    PresetStep(formula: FormulaId('docker'), action: FormulaAction.verify),
+  ],
+);
+
 /// The CLI's read commands print and exit; what they must not do is throw on a
 /// well-formed Hub. The mutating ones are checked against the Hub afterwards,
 /// through the API, rather than against what they printed.
@@ -61,13 +70,13 @@ void main() {
   Future<void> waitForStatus(String id) async {
     final deadline = DateTime.now().add(const Duration(seconds: 5));
     while (true) {
-      try {
-        await client.get('/nodes/$id/status');
-        return;
-      } on HubApiException catch (e) {
-        if (e.statusCode != 404 || DateTime.now().isAfter(deadline)) rethrow;
-        await Future<void>.delayed(const Duration(milliseconds: 25));
+      // Null until the first heartbeat lands, which is what is being waited
+      // for — not an error, so it is not caught as one.
+      if (await client.nodeStatus(id) != null) return;
+      if (DateTime.now().isAfter(deadline)) {
+        throw StateError('$id never reported a status');
       }
+      await Future<void>.delayed(const Duration(milliseconds: 25));
     }
   }
 
@@ -127,15 +136,7 @@ void main() {
   });
 
   group('presets', () {
-    setUp(
-      () => client.post('/presets', {
-        'id': 'docker-host',
-        'name': 'Docker Host',
-        'steps': [
-          {'formula': 'docker', 'action': 'verify'},
-        ],
-      }),
-    );
+    setUp(() => client.savePreset(_dockerHost));
 
     test('list and show', () async {
       await cli(['preset', 'list']);
@@ -144,7 +145,7 @@ void main() {
 
     test('delete removes it from the Hub', () async {
       await cli(['preset', 'delete', 'docker-host']);
-      expect(await client.get('/presets'), isEmpty);
+      expect(await client.presets(), isEmpty);
     });
   });
 
@@ -170,11 +171,11 @@ void main() {
     test('add issues a credential that then authenticates', () async {
       await cli(['grant', 'add', 'bob', '--role', 'operator', '--note', 'CI']);
 
-      final grants = (await client.get('/grants') as List).cast<Map>();
-      expect(grants.single['principal'], 'bob');
-      expect(grants.single['roles'], contains('operator'));
-      // The token itself is shown once and never stored.
-      expect(grants.single.containsKey('token'), isFalse);
+      final grants = await client.grants();
+      expect(grants.single.principal.value, 'bob');
+      expect(grants.single.roles, contains('operator'));
+      // The Hub keeps a hash. The token itself was shown once, on stdout.
+      expect(grants.single.tokenHash, isNotEmpty);
     });
 
     test('a grant with no role is refused, not silently useless', () async {
@@ -192,23 +193,18 @@ void main() {
 
     test('list and revoke', () async {
       await cli(['grant', 'add', 'bob', '--role', 'viewer']);
-      final grants = (await client.get('/grants') as List).cast<Map>();
-      final id = grants.single['id'] as String;
+      final id = (await client.grants()).single.id;
 
       await cli(['grant', 'list']);
       await cli(['grant', 'revoke', id]);
-      expect(await client.get('/grants'), isEmpty);
+      expect(await client.grants(), isEmpty);
     });
   });
 
   group('desired state', () {
     setUp(() async {
       await startNode();
-      await client.put('/nodes/worker-01/desired-state', {
-        'steps': [
-          {'formula': 'docker', 'action': 'verify'},
-        ],
-      });
+      await client.declareSteps('worker-01', _dockerHost.steps);
     });
 
     test('show and diff read the declaration', () async {
@@ -222,43 +218,30 @@ void main() {
 
     test('clear withdraws it', () async {
       await cli(['state', 'clear', 'worker-01']);
-      await expectLater(
-        client.get('/nodes/worker-01/desired-state'),
-        throwsA(
-          isA<HubApiException>().having((e) => e.statusCode, 'status', 404),
-        ),
-      );
+      expect(await client.desiredState('worker-01'), isNull);
     });
   });
 
   group('operations', () {
     test('an async apply becomes an operation, listed and shown', () async {
       await startNode();
-      await client.post('/presets', {
-        'id': 'docker-host',
-        'name': 'Docker Host',
-        'steps': [
-          {'formula': 'docker', 'action': 'verify'},
-        ],
-      });
+      await client.savePreset(_dockerHost);
 
       // `--async` is the whole point: the command returns an operation id
       // rather than waiting for the fleet.
       await cli(['preset', 'apply', 'docker-host', 'worker-01', '--async']);
 
-      final ops = (await client.get('/operations') as List).cast<Map>();
+      final ops = await client.operations();
       expect(ops, hasLength(1), reason: 'the apply was recorded as an op');
-      expect(ops.single['kind'], 'preset');
-      expect(ops.single['nodeId'], 'worker-01');
+      expect(ops.single.kind, 'preset');
+      expect(ops.single.nodeId, 'worker-01');
 
       await cli(['ops', 'list']);
       await cli(['ops', 'list', '--node', 'worker-01']);
       // `--wait` blocks until it finishes, which is how a script follows one.
-      await cli(['ops', 'show', ops.single['id'] as String, '--wait']);
+      await cli(['ops', 'show', ops.single.id, '--wait']);
 
-      final finished =
-          await client.get('/operations/${ops.single['id']}') as Map;
-      expect(finished['status'], isNot('running'));
+      expect((await client.operation(ops.single.id)).isRunning, isFalse);
     });
 
     test('an unknown operation id is a 404', () async {

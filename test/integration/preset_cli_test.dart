@@ -81,12 +81,12 @@ void main() {
     test('reads the file and saves what it holds on the Hub', () async {
       await cli(['preset', 'save', presetPath]);
 
-      final saved = (await client.get('/presets') as List).cast<Map>();
-      expect(saved.single['id'], 'docker-host');
+      final saved = await client.presets();
+      expect(saved.single.id.value, 'docker-host');
 
-      final one = await client.get('/presets/docker-host') as Map;
-      expect(one['name'], 'Docker Host');
-      expect((one['steps'] as List).single['formula'], 'docker');
+      final one = await client.preset('docker-host');
+      expect(one.name, 'Docker Host');
+      expect(one.steps.single.formula.value, 'docker');
     });
 
     test('a path that does not exist is a clear error, not a crash', () async {
@@ -181,10 +181,9 @@ void main() {
       await cli(['state', 'set', presetPath, 'edge-01']);
 
       // The preset is flattened into the steps the node is declared to hold.
-      final desired = await client.get('/nodes/edge-01/desired-state') as Map;
-      final steps = (desired['steps'] as List).cast<Map>();
-      expect(steps.single['formula'], 'docker');
-      expect(steps.single['action'], 'verify');
+      final desired = (await client.desiredState('edge-01'))!;
+      expect(desired.steps.single.formula.value, 'docker');
+      expect(desired.steps.single.action, FormulaAction.verify);
     });
 
     test('a path that does not exist is a clear error', () async {

@@ -1,0 +1,166 @@
+# A fleet with roles: two web servers and a build host, each declared by a
+# blueprint rather than configured by hand.
+#
+#   docker compose -f example/docker_blueprints/compose.yaml up --build -d
+#   dart run example/docker_blueprints/blueprint_tour.dart
+#   docker compose -f example/docker_blueprints/compose.yaml down -v
+#
+# Run it from the repository root — the build context is the repo, so the image
+# is built from the checkout rather than from a published release.
+#
+# The containers here are deliberately *empty*. Nothing is installed by the
+# Dockerfile beyond what the agent needs to run, because the point of the
+# example is what a blueprint puts there afterwards — and a machine that
+# arrives with everything already on it demonstrates nothing.
+
+name: omnyserver-blueprints
+
+x-image: &image
+  context: ../..
+  dockerfile: docker/Dockerfile
+  target: runtime
+
+x-node: &node
+  build: *image
+  depends_on:
+    hub:
+      condition: service_healthy
+  restart: on-failure
+  volumes:
+    - certs:/certs:ro
+
+services:
+  hub:
+    build: *image
+    # Issues its own certificate on the way up, once, and keeps it. See the
+    # docker_fleet example for why this is a wrapper script rather than a
+    # one-shot container.
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        test -f /certs/server.crt || omnyserver cert gen --out /certs --host hub
+        exec omnyserver "$@"
+      - omnyserver-hub
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /certs/ca.crt"]
+      interval: 1s
+      timeout: 2s
+      retries: 60
+    command:
+      - hub
+      - start
+      - --host=0.0.0.0
+      - --port=8443
+      - --cert=/certs/server.crt
+      - --key=/certs/server.key
+      - --grant=node-account:node-token:node
+      - --grant=alice:admin-token:admin
+      - --api-token=api-secret
+      # Where the presets and blueprints live. Persisted, so the library
+      # survives a restart of the Hub — a blueprint is a document a team keeps,
+      # not something you re-upload after every deploy.
+      - --data-dir=/data
+      - --shell
+    ports:
+      - "8443:8443"
+    volumes:
+      - certs:/certs
+      - hub-data:/data
+
+  # The fleet in a browser: http://localhost:8080
+  #
+  # Worth opening while the tour runs. A node's **Declared state** card shows
+  # the plan as it stands — each resource, what would change, and which document
+  # asked for it — and the **Log** button on a running apply follows the output
+  # of whichever resource is being installed.
+  dashboard:
+    build:
+      <<: *image
+      target: dashboard
+    depends_on:
+      hub:
+        condition: service_healthy
+    ports:
+      - "8080:80"
+    volumes:
+      # Shared with the docker_fleet example rather than copied: it is the same
+      # proxy doing the same job, and two copies would drift.
+      - ../docker_fleet/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - certs:/certs:ro
+
+  # Two bare hosts that will become web servers, and one that will become a
+  # build host. Identical images; only the labels differ, and the labels are
+  # what a blueprint is assigned by.
+  web-1:
+    <<: *node
+    hostname: web-1
+    volumes:
+      - certs:/certs:ro
+      - web-1-home:/root/.omnyserver
+    command:
+      - node
+      - start
+      - --hub=wss://hub:8443
+      - --id=web-1
+      - --principal=node-account
+      - --token=node-token
+      - --ca=/certs/ca.crt
+      - --with-shell
+      - --label=role=web
+      - --label=env=prod
+
+  web-2:
+    <<: *node
+    hostname: web-2
+    volumes:
+      - certs:/certs:ro
+      - web-2-home:/root/.omnyserver
+    command:
+      - node
+      - start
+      - --hub=wss://hub:8443
+      - --id=web-2
+      - --principal=node-account
+      - --token=node-token
+      - --ca=/certs/ca.crt
+      - --with-shell
+      - --label=role=web
+      - --label=env=prod
+
+  # Built from the SDK image, so this host *already has* a Dart SDK before any
+  # blueprint touches it. Its blueprint declares `formula:dart ensure:
+  # installed`, which is already true — so the node **adopts** it rather than
+  # claiming it, and unassigning the blueprint later will not uninstall a
+  # toolchain this system did not put there.
+  build-1:
+    <<: *node
+    build:
+      <<: *image
+      target: sdk
+    hostname: build-1
+    volumes:
+      - certs:/certs:ro
+      - build-1-home:/root/.omnyserver
+    command:
+      - node
+      - start
+      - --hub=wss://hub:8443
+      - --id=build-1
+      - --principal=node-account
+      - --token=node-token
+      - --ca=/certs/ca.crt
+      - --with-shell
+      - --label=role=build
+      - --label=env=staging
+
+volumes:
+  certs:
+  hub-data:
+  # A node's **ledger** — the record of what a blueprint put on that machine —
+  # lives under its OmnyServer home. On a volume, because a node that forgets
+  # what it owns adopts everything it finds and will never remove anything: the
+  # safe failure, but it means a blueprint could not really be unassigned.
+  web-1-home:
+  web-2-home:
+  build-1-home:

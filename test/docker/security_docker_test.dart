@@ -44,7 +44,7 @@ void main() {
     final client = fleet.apiClient();
     try {
       expect(
-        await client.get('/nodes'),
+        await client.nodes(),
         isEmpty,
         reason: 'an unverified Hub is not a Hub to register with',
       );
@@ -72,7 +72,7 @@ void main() {
 
     final client = fleet.apiClient();
     try {
-      expect(await client.get('/nodes'), isEmpty);
+      expect(await client.nodes(), isEmpty);
     } finally {
       client.close();
     }

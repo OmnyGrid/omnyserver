@@ -6,10 +6,13 @@ import 'package:web/web.dart' as web;
 
 import '../state/auth_controller.dart';
 import '../ui/screens/activity_screen.dart';
+import '../ui/screens/blueprint_screen.dart';
 import '../ui/screens/grants_screen.dart';
+import '../ui/screens/library_screen.dart';
 import '../ui/screens/login_screen.dart';
 import '../ui/screens/node_detail_screen.dart';
 import '../ui/screens/nodes_screen.dart';
+import '../ui/screens/preset_screen.dart';
 import '../ui/screens/shell_screen.dart';
 import '../ui/settings_dialog.dart';
 import 'app_context.dart';
@@ -94,6 +97,13 @@ class App {
       )
       ..appendChild(
         button(
+          'Library',
+          className: 'btn-sm',
+          onClick: () => ctx.router.go(Routes.library),
+        ),
+      )
+      ..appendChild(
+        button(
           'Activity',
           className: 'btn-sm',
           onClick: () => ctx.router.go(Routes.activity),
@@ -157,6 +167,9 @@ class App {
       Routes.nodes => NodesScreen(ctx),
       Routes.node => NodeDetailScreen(ctx, route.params['id']!),
       Routes.shell => ShellScreen(ctx, route.params['id']!),
+      Routes.library => LibraryScreen(ctx),
+      Routes.blueprint => BlueprintScreen(ctx, route.params['id']!),
+      Routes.preset => PresetScreen(ctx, route.params['id']!),
       Routes.activity => ActivityScreen(ctx),
       Routes.grants => GrantsScreen(ctx),
       _ => null,

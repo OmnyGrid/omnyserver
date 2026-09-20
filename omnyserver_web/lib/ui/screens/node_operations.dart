@@ -1,11 +1,12 @@
 import 'dart:async';
 
 import 'package:omnyserver/omnyserver_client_web.dart';
-import 'package:omnyshell_web/foundation.dart' show AppError;
+import 'package:omnyshell_web/foundation.dart' show AppError, AppErrorKind;
 import 'package:omnyshell_web/ui_kit.dart';
 import 'package:web/web.dart' as web;
 
 import '../../app/app_context.dart';
+import '../widgets.dart';
 import 'node_logs.dart';
 
 /// The operational half of a node's screen: what it is declared to be, and what
@@ -33,6 +34,7 @@ class NodeOperations {
 
   List<FormulaSpec> _formulas = const [];
   List<Preset> _presets = const [];
+  List<Blueprint> _blueprints = const [];
 
   /// Builds the panel.
   NodeOperations(this.ctx, this.nodeId) {
@@ -42,7 +44,18 @@ class NodeOperations {
           'div',
           classes: 'card stack',
           children: [
-            el('h3', text: 'Declared state'),
+            el(
+              'div',
+              classes: 'row',
+              children: [
+                el('h3', classes: 'grow', text: 'Declared state'),
+                button(
+                  'Refresh',
+                  className: 'ghost',
+                  onClick: () => unawaited(_refreshDeclared()),
+                ),
+              ],
+            ),
             _driftBody,
           ],
         ),
@@ -179,6 +192,28 @@ class NodeOperations {
 
   // --- Declared state and drift ---------------------------------------------
 
+  /// Re-reads the declaration, and the libraries the card offers to declare
+  /// from.
+  ///
+  /// Both, because the two reasons to press this are the two things that go
+  /// stale while the page sits open: somebody changed the machine, or somebody
+  /// saved a blueprint in the Library that is not in this dropdown yet. Asking
+  /// for the second and getting only the first is the kind of refresh that
+  /// teaches people to reload the page instead.
+  Future<void> _refreshDeclared() async {
+    try {
+      _presets = await ctx.service.presets();
+      _blueprints = await ctx.service.blueprints();
+      if (_disposed) return;
+      // The Run card offers presets from the same list.
+      _renderRun();
+    } on AppError {
+      // Keep whatever the catalogue already held. The drift below is what was
+      // actually asked for, and it reports its own failures.
+    }
+    await _loadDrift();
+  }
+
   Future<void> _loadDrift() async {
     clearChildren(_driftBody);
     _driftBody.appendChild(loadingRow('Checking for drift…'));
@@ -206,16 +241,62 @@ class NodeOperations {
               classes: drift.converged ? 'badge online' : 'badge offline',
               text: drift.converged ? 'converged' : 'drifted',
             ),
-            el(
-              'div',
-              classes: 'grow muted',
-              text: drift.converged
-                  ? 'The node still is what it was declared to be.'
-                  : '${drift.actions.length} step(s) would have to run.',
-            ),
+            el('div', classes: 'grow muted', text: _driftSummary(drift)),
+            // The blueprint is a link, because "what does this document
+            // actually say" is the next question every time.
+            if (drift.blueprint case final blueprint?)
+              el(
+                'span',
+                classes: 'badge link',
+                text: blueprint,
+                onClick: (_) => ctx.router.go('/library/blueprints/$blueprint'),
+              ),
           ],
         ),
       );
+
+      // Edited since this node last applied it. A different fact from having
+      // drifted — nobody touched the machine, the document moved — and the
+      // node may well still be converged against the older revision it has.
+      if (drift.stale) {
+        _driftBody.appendChild(
+          el(
+            'div',
+            classes: 'hint',
+            text:
+                'The blueprint has been edited since this node last applied '
+                'it. Reconcile to move it to the current revision.',
+          ),
+        );
+      }
+
+      // A blueprint answers in resource changes, a preset declaration in steps.
+      // Exactly one is ever filled, so rendering both in turn needs no branch.
+      for (final change in drift.changes) {
+        if (change.kind == ChangeKind.noop) continue;
+        _driftBody.appendChild(
+          el(
+            'div',
+            classes: 'row mono',
+            children: [
+              el(
+                'span',
+                classes: _changeBadge(change.kind),
+                text: change.kind.name,
+              ),
+              el('div', classes: 'grow', text: change.id.toString()),
+              // Where it came from: the first question when a blueprint made of
+              // four presets is not doing what was expected.
+              el('div', classes: 'muted', text: change.origin),
+            ],
+          ),
+        );
+        if (change.reason.isNotEmpty) {
+          _driftBody.appendChild(
+            el('div', classes: 'hint', text: change.reason),
+          );
+        }
+      }
 
       for (final step in drift.actions) {
         _driftBody.appendChild(
@@ -244,7 +325,15 @@ class NodeOperations {
                 primary: !drift.converged,
                 onClick: _reconcile,
               ),
-              button('Undeclare', className: 'ghost', onClick: _undeclare),
+              // Drift is computed from what the node reports; a dry run asks
+              // the node to plan it for real, which is the difference between
+              // "the Hub thinks" and "the node would".
+              button('Dry run', onClick: () => _reconcile(dryRun: true)),
+              button(
+                'Undeclare',
+                className: 'ghost',
+                onClick: () => _undeclare(drift.blueprint),
+              ),
             ],
           ),
         );
@@ -255,70 +344,284 @@ class NodeOperations {
     }
   }
 
-  /// Declaring is done from the preset library: a declaration is "this node is
-  /// one of *these*", and inventing a bespoke one per node is how a fleet stops
-  /// being a fleet.
+  /// What the headline row says, for either kind of declaration.
+  String _driftSummary(Drift drift) {
+    if (drift.converged) return 'The node still is what it was declared to be.';
+    final pending = drift.changes
+        .where((c) => c.kind != ChangeKind.noop)
+        .length;
+    return pending > 0
+        ? '$pending resource(s) would have to change.'
+        : '${drift.actions.length} step(s) would have to run.';
+  }
+
+  /// Green for nothing to do, red for a removal, plain for the rest.
+  ///
+  /// A create is not coloured like a fault: most of a first apply is creates,
+  /// and a wall of red would teach an operator to ignore the colour. A remove
+  /// is, because it is the one that takes something away.
+  String _changeBadge(ChangeKind kind) => switch (kind) {
+    ChangeKind.noop => 'badge online',
+    ChangeKind.remove || ChangeKind.failed => 'badge offline',
+    _ => 'badge',
+  };
+
+  /// Declaring is done from the library, not invented per node: a declaration is
+  /// "this node is one of *these*", and a bespoke one per machine is how a fleet
+  /// stops being a fleet.
+  ///
+  /// Blueprints are offered first. A blueprint is what a *machine* is — it
+  /// composes the shared presets and declares states rather than actions — so a
+  /// preset declaration is the older, narrower choice.
   web.HTMLElement _declareControls() {
     if (!ctx.auth.state.value.canOperate) return div();
-    if (_presets.isEmpty) {
+    if (_blueprints.isEmpty && _presets.isEmpty) {
       return el(
         'div',
         classes: 'hint',
-        text: 'Save a preset on the Hub to declare a state from it.',
+        text:
+            'Save a blueprint or a preset on the Hub to declare a state '
+            'from it.',
       );
     }
 
-    final select = _presetSelect();
-    return el(
-      'div',
-      classes: 'row',
-      children: [
-        select,
-        button(
-          'Declare',
-          onClick: () async {
-            final preset = _presets.firstWhere(
-              (p) => p.id.value == select.value,
-            );
-            try {
-              await ctx.service.declare(nodeId, preset.toJson());
-              // Said explicitly: an operator who expects this to have *done*
-              // something will otherwise wonder why the machine is unchanged.
-              ctx.toasts.success(
-                'Declared. Nothing has run — reconcile to apply.',
-              );
-              await _loadDrift();
-            } on AppError catch (e) {
-              ctx.toasts.error(e.message);
-            }
-          },
+    final rows = <web.HTMLElement>[];
+
+    if (_blueprints.isNotEmpty) {
+      final picker = select(
+        id: 'blueprint',
+        options: [
+          for (final b in _blueprints)
+            (
+              value: b.id.value,
+              label: '${b.name} (${b.resources.length} resources)',
+            ),
+        ],
+      );
+      rows.add(
+        el(
+          'div',
+          classes: 'row',
+          children: [
+            picker,
+            button(
+              'Assign blueprint',
+              primary: true,
+              onClick: () => _assignBlueprint(picker.value),
+            ),
+          ],
         ),
-      ],
-    );
-  }
-
-  Future<void> _reconcile() async {
-    try {
-      final results = await ctx.service.reconcile(nodeId);
-      ctx.toasts.success(
-        results.isEmpty
-            ? 'Already converged — nothing to do.'
-            : 'Ran ${results.length} step(s).',
       );
+    }
+
+    if (_presets.isNotEmpty) {
+      final picker = _presetSelect();
+      rows.add(
+        el(
+          'div',
+          classes: 'row',
+          children: [
+            picker,
+            button(
+              'Declare preset',
+              className: 'ghost',
+              onClick: () => _declarePreset(picker.value),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return el('div', classes: 'stack', children: rows);
+  }
+
+  Future<void> _assignBlueprint(String blueprint) async {
+    try {
+      await ctx.service.assignBlueprint(nodeId, blueprint);
+      // Said explicitly: an operator who expects this to have *done* something
+      // will otherwise wonder why the machine is unchanged.
+      ctx.toasts.success('Assigned. Nothing has run — reconcile to apply.');
       await _loadDrift();
     } on AppError catch (e) {
       ctx.toasts.error(e.message);
     }
   }
 
-  Future<void> _undeclare() async {
+  Future<void> _declarePreset(String presetId) async {
     try {
-      await ctx.service.undeclare(nodeId);
-      ctx.toasts.show('Stopped expecting anything of $nodeId.');
+      final preset = _presets.firstWhere((p) => p.id.value == presetId);
+      await ctx.service.declare(nodeId, preset);
+      ctx.toasts.success('Declared. Nothing has run — reconcile to apply.');
       await _loadDrift();
     } on AppError catch (e) {
       ctx.toasts.error(e.message);
     }
+  }
+
+  /// Converges the node, or — with [dryRun] — asks what converging it would do.
+  ///
+  /// A dry run is the node's own plan, not the Hub's drift calculation: it is
+  /// the answer to "what will happen if I press the other button", and it is
+  /// worth having because a reconcile is not undoable.
+  Future<void> _reconcile({bool dryRun = false}) async {
+    try {
+      final result = await ctx.service.reconcile(nodeId, dryRun: dryRun);
+      if (dryRun) {
+        _showPlan(result);
+      } else if (!result.success) {
+        // Partial failures still return 200 with the outcomes in the body, so
+        // "it responded" is not "it worked".
+        ctx.toasts.error(
+          'Reconciled with failures — ${result.changed} changed, '
+          '${result.skipped} skipped.',
+        );
+      } else {
+        ctx.toasts.success(
+          result.converged
+              ? 'Already converged — nothing to do.'
+              : 'Changed ${result.changed} thing(s).',
+        );
+      }
+      await _loadDrift();
+      // A dry run changed nothing, so the software list cannot have moved.
+      if (!dryRun) await _loadSoftware();
+    } on AppError catch (e) {
+      ctx.toasts.error(e.message);
+    }
+  }
+
+  /// What a dry run would have done, in a modal rather than a toast: a plan is
+  /// a list, and a list does not fit in a line that disappears.
+  void _showPlan(ConvergeResult plan) {
+    final work = plan.changes.where((c) => c.kind.isWork).toList();
+    late final Modal modal;
+    modal = Modal(
+      title: 'Dry run — $nodeId',
+      body: el(
+        'div',
+        classes: 'stack',
+        children: [
+          if (work.isEmpty && plan.results.isEmpty)
+            emptyState('Nothing would change.')
+          else
+            el(
+              'div',
+              classes: 'muted',
+              text:
+                  '${plan.changed} would change, ${plan.skipped} skipped. '
+                  'Nothing has run.',
+            ),
+          for (final change in work)
+            el(
+              'div',
+              classes: 'row mono',
+              children: [
+                el(
+                  'span',
+                  classes: _changeBadge(change.kind),
+                  text: change.kind.name,
+                ),
+                el('div', classes: 'grow', text: change.id.toString()),
+                el('div', classes: 'muted', text: change.origin),
+              ],
+            ),
+          for (final step in plan.results)
+            el(
+              'div',
+              classes: 'row mono',
+              children: [
+                el(
+                  'div',
+                  classes: 'grow',
+                  text: '${step.action.name} ${step.formula}',
+                ),
+              ],
+            ),
+          for (final note in plan.notes) el('div', classes: 'hint', text: note),
+        ],
+      ),
+      actions: [button('Close', primary: true, onClick: () => modal.close())],
+    );
+    modal.show();
+  }
+
+  /// Stops expecting anything of the node, optionally taking back what the
+  /// blueprint put there.
+  ///
+  /// Forgetting the declaration and cleaning the machine are different acts,
+  /// and the destructive one is never the default: plain undeclare is for
+  /// hardware that is gone, where reaching the node is neither possible nor
+  /// wanted.
+  void _undeclare(String? blueprint) {
+    if (blueprint == null) {
+      // A preset declaration has no ledger, so there is nothing to purge — the
+      // Hub only ever recorded an intention.
+      confirmDialog(
+        title: 'Undeclare $nodeId?',
+        detail:
+            'The Hub stops expecting anything of this node. Nothing is '
+            'removed from the machine.',
+        action: () => ctx.service.undeclare(nodeId),
+        onError: ctx.toasts.error,
+        onDone: () async {
+          ctx.toasts.show('Stopped expecting anything of $nodeId.');
+          await _loadDrift();
+        },
+        confirmLabel: 'Undeclare',
+      );
+      return;
+    }
+
+    final purge = checkbox(
+      'Also remove what $blueprint installed',
+      id: 'purge',
+    );
+    // Deliberately a second, separate box. Adopted resources were on the
+    // machine before the blueprint claimed them — something else may well
+    // depend on them — so removing those is a different decision from undoing
+    // this blueprint's own work.
+    final adopted = checkbox(
+      'And what the machine already had (adopted)',
+      id: 'purge-adopted',
+    );
+
+    confirmDialog(
+      title: 'Undeclare $nodeId?',
+      detail:
+          '$blueprint stops being expected of this node. By default the '
+          'machine is left exactly as it is.',
+      extra: [purge.root, adopted.root],
+      action: () async {
+        if (!purge.box.checked) {
+          await ctx.service.undeclare(nodeId);
+          return;
+        }
+        final result = await ctx.service.unassign(
+          nodeId,
+          purgeAdopted: adopted.box.checked,
+        );
+        // A partial failure leaves the blueprint assigned on purpose: the
+        // declaration is the only record of what still needs cleaning up.
+        if (!result.success) {
+          throw AppError(
+            AppErrorKind.unknown,
+            'Removed ${result.changed}, but some resources failed — '
+            '$blueprint is still assigned so it can be retried.',
+          );
+        }
+      },
+      onError: ctx.toasts.error,
+      onDone: () async {
+        ctx.toasts.show(
+          purge.box.checked
+              ? 'Undeclared, and removed what $blueprint installed.'
+              : 'Stopped expecting anything of $nodeId.',
+        );
+        await _loadDrift();
+        if (purge.box.checked) await _loadSoftware();
+      },
+      confirmLabel: 'Undeclare',
+    );
   }
 
   // --- What the node actually has -------------------------------------------
@@ -403,8 +706,9 @@ class NodeOperations {
     try {
       _formulas = await ctx.service.formulas();
       _presets = await ctx.service.presets();
+      _blueprints = await ctx.service.blueprints();
       _renderRun();
-      // The declare controls need the preset list, which has only just arrived.
+      // The declare controls need both libraries, which have only just arrived.
       await _loadDrift();
     } on AppError catch (e) {
       clearChildren(_runBody);
@@ -428,11 +732,11 @@ class NodeOperations {
 
     // A formula and its actions come from the Hub's catalogue, so the UI offers
     // what the node can actually do instead of a text box to get wrong.
-    final formulaSelect = _select(
+    final formulaSelect = select(
       id: 'formula',
       options: [for (final f in _formulas) (value: f.id.value, label: f.name)],
     );
-    final actionSelect = _select(id: 'action', options: const []);
+    final actionSelect = select(id: 'action', options: const []);
 
     void syncActions() {
       final spec = _formulas.firstWhere(
@@ -590,24 +894,11 @@ class NodeOperations {
     }
   }
 
-  web.HTMLSelectElement _presetSelect() => _select(
+  web.HTMLSelectElement _presetSelect() => select(
     id: 'preset',
     options: [
       for (final p in _presets)
         (value: p.id.value, label: '${p.name} (${p.steps.length} steps)'),
     ],
   );
-
-  web.HTMLSelectElement _select({
-    required String id,
-    required List<({String value, String label})> options,
-  }) {
-    final select = el('select', id: id) as web.HTMLSelectElement;
-    for (final option in options) {
-      final node = el('option', text: option.label) as web.HTMLOptionElement;
-      node.value = option.value;
-      select.appendChild(node);
-    }
-    return select;
-  }
 }

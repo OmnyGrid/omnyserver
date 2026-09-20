@@ -8,11 +8,17 @@ library;
 export 'omnyserver.dart';
 
 export 'src/cli/api_client.dart';
+export 'src/cli/api_results.dart';
 // The VM's HTTP transport, and where the TLS knobs live — a browser owns its own
 // TLS stack, so they cannot sit on the client itself.
 export 'src/cli/api_transport.dart';
 export 'src/cli/api_transport_io.dart';
 export 'src/cli/ai_command.dart';
+// Reading a blueprint from a file, and parsing one from a string. The second
+// half is also in the web barrel — the CLI gets both, because anything holding
+// a document should be able to parse it without holding a path.
+export 'src/cli/blueprint_format.dart';
+export 'src/cli/blueprint_source.dart';
 export 'src/cli/cli.dart';
 export 'src/cli/service_commands.dart';
 export 'src/cli/start_options.dart';

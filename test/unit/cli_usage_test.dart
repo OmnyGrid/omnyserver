@@ -31,6 +31,7 @@ void main() {
       'service',
       'ai',
       'preset',
+      'blueprint',
       'formula',
       'state',
       'grant',

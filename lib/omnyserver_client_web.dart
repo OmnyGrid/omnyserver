@@ -34,6 +34,11 @@ library;
 
 // The API client and its transport seam.
 export 'src/cli/api_client.dart';
+export 'src/cli/api_results.dart';
+// Authoring a blueprint, which the dashboard does too. The *file*-reading half
+// (`blueprint_format.dart`) stays out — it reaches `dart:io`, and
+// `web_barrel_dart_io_free_test` is what keeps it out.
+export 'src/cli/blueprint_source.dart';
 export 'src/cli/api_transport.dart';
 
 // Version.
@@ -79,6 +84,15 @@ export 'src/domain/events/omny_event.dart';
 export 'src/domain/formula/formula_action.dart';
 export 'src/domain/formula/formula_result.dart';
 export 'src/domain/formula/formula_status.dart';
+
+// Blueprints. The entities only — `src/cli/blueprint_format.dart` reads files
+// and must never reach this graph; see `web_barrel_dart_io_free_test.dart`.
+export 'src/domain/blueprint/blueprint.dart';
+export 'src/domain/blueprint/ledger.dart';
+export 'src/domain/blueprint/resolved_blueprint.dart';
+export 'src/domain/blueprint/resource.dart';
+export 'src/domain/blueprint/resource_change.dart';
+export 'src/domain/blueprint/resource_state.dart';
 
 // Operation results (`FormulaRunResult`, `PresetApplyResult`).
 export 'src/protocol/operations.dart';

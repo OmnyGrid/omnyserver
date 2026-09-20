@@ -1,3 +1,251 @@
+## 0.17.0
+
+**Server Blueprints.** A blueprint is what a server *is*: a declaration composed
+from the presets you already have, plus whatever that role needs on top.
+Assigning one to a node and applying it turns an unmanaged machine into that,
+and keeps it there.
+
+### Added
+
+- **Blueprints, built from the presets that already exist.**
+
+  The Hub could say what it had *dispatched* to a node — installed Docker at
+  14:02, and it succeeded. It could not say what a node *is*. `Preset` said *do
+  these things*, imperatively; `DesiredState` was declarative in shape but its
+  reconciler compared formula ids against advertised capabilities, so it could
+  only ever answer "is X installed" and never "does this config file have the
+  right contents".
+
+  A blueprint is a flat list of **resources**, each identified as `type:name`
+  (`formula:docker`) and each declaring what it should *be* rather than what to
+  do to it:
+
+  ```yaml
+  blueprint: builder
+  name: Build host
+  includes: [dev-tools]          # a preset, shared with everything else
+  resources:
+    - { type: formula, name: nmap, ensure: installed }
+  ```
+
+  `includes` names presets, and they are not copied — an include follows the
+  preset, so a fix to a shared piece reaches every machine built on it. The one
+  provider in this release is `formula`, so every formula a node already has is
+  a resource, and **every preset ever saved composes with nothing rewritten**:
+  each `FormulaAction` has a state it was reaching for (`install` → `installed`,
+  `start` → `running`, `uninstall` → `absent`), and the mapping is total.
+
+  Declaring states rather than actions is what makes the rest fall out.
+  Applying twice is a no-op, because the second plan is empty. Drift detection
+  is the same comparison with the apply left off. Uninstall is `ensure: absent`.
+  There is no separate update path — save a new version, re-plan, apply.
+
+- **Planning happens on the node, because that is where the machine is.**
+
+  `GET /api/v1/nodes/<id>/drift` asks the node when a blueprint is assigned: the
+  Hub resolves the document and sends it down, and the node reads its own
+  resources and answers. That needs the node online, and it is the difference
+  between checking the machine and checking what the Hub last heard.
+
+  A node declared by preset steps keeps the original path, planned Hub-side from
+  advertised capabilities — which costs nothing and works while the node is
+  away. One endpoint either way, because "how far has this node drifted" is one
+  question however it was declared. `POST /reconcile` likewise, and it takes
+  `dryRun` now.
+
+- **A ledger, so a blueprint can be edited and not only added to.**
+
+  Each node records what this system put there. Delete a resource from a
+  blueprint and the document no longer mentions it — so the document cannot ask
+  for its removal; only the record of what was applied last time can. Without
+  it, removing a line would leave that software running on every server it ever
+  reached, forever.
+
+  A resource that was already correct the **first** time a blueprint saw it is
+  marked **adopted**, and dropping it from the blueprint *releases* it — out of
+  the ledger, and left exactly where it is — rather than removing it. If nginx
+  was on the box a year before anyone wrote a blueprint, no edit to that
+  blueprint should uninstall it. `--purge-adopted` is how you say you meant it.
+
+  Adoption is a fact about history, not about the current run: re-deciding it
+  on every apply would mark everything adopted by the second one, since by then
+  the blueprint's own installs are "already correct" — and nothing could ever be
+  removed again.
+
+- **`omnyserver blueprint save|list|show|resolved|delete|assign|plan|apply`.**
+
+  A blueprint's format is fixed when it is authored: save a `.yaml` and `show`
+  hands back that YAML, comments and all, because the source travels with the
+  parsed form. Save a `.json` and it stays JSON. The two are never mixed in one
+  place; the Hub, the wire and the repositories are JSON throughout, where there
+  is nothing human to mix.
+
+  `blueprint resolved` is the answer to "this is made of four presets and is not
+  doing what I expected" — the flattened list, each resource naming where it
+  came from and what it overrode. `blueprint plan` exits **2** when a node has
+  drifted, so a pipeline can read the result without parsing output.
+
+- **`omnyserver blueprint unassign <node> [--purge-adopted]`, and
+  `POST /api/v1/nodes/<id>/unassign`.**
+
+  `DELETE .../desired-state` forgets the declaration and nothing else, so a
+  blueprint could be added to a machine and never really taken off it: the
+  packages stayed, the node's ledger still listed them, and the only record of
+  what needed cleaning up was the declaration that had just been dropped.
+
+  `unassign` sends an **empty** blueprint first — every ledger entry becomes an
+  orphan and is removed, in reverse order, releasing rather than uninstalling
+  the ones the machine already had — and only then clears the declaration. Both
+  failure modes fail towards *keeping the record*: an offline node fails the
+  call and clears nothing, and a partial failure leaves the blueprint assigned
+  so it can be retried. `DELETE` keeps its exact current meaning, which is the
+  right answer for hardware that is never coming back.
+
+- **The dashboard manages blueprints.**
+
+  It could point a machine at a document nobody using the dashboard could read.
+  A new **Library** screen lists blueprints and presets, and opening one gives
+  you the document itself: **Source** is what somebody wrote — YAML, comments
+  intact — and is the only view that can be edited; **Resolved** is what a node
+  is actually sent, each resource naming where it came from and what it
+  overrode, with the hash beside it. Saving parses in the browser, so a typo is
+  reported against the text in front of you, and the Hub's own refusals arrive
+  as themselves.
+
+  The editor colours the document in whichever language it was written in — a
+  blueprint's YAML, a preset's JSON — from a tokenizer written for those two
+  grammars rather than a highlighting library, since the dashboard ships as one
+  `main.dart.js` with no CDN in front of it and a vendored library would dwarf
+  what it is being asked to do. It is a tokenizer and not a parser: it never
+  fails, and what it emits always reproduces the document exactly, because a
+  document mid-edit is invalid most of the time and a dropped character would
+  slide the colour off everything typed after it.
+
+  Assignment is by label and in two steps: **Preview** names every node it
+  matched, and **Assign** acts on that list rather than on whatever the label
+  box says by then, listing them again on the confirmation with the labels they
+  matched on. Under the input, the selectors the fleet actually carries — the
+  failure worth preventing is not a typo, which matches nothing and is obvious,
+  but `role=web` on a fleet that says `tier=web`.
+
+  At the bottom, **the nodes actually living by this document**: each one's
+  standing against it, a Reconcile beside it, and the row itself a way back to
+  that machine. A node can be both *on an older revision* and *converged* — it
+  already has everything the current document asks for, but its ledger records
+  an older hash — and the card says both, because either alone misleads.
+
+  The Declared state card gains the four things it was missing: a **Dry run**
+  beside Reconcile, the node's blueprint as a **link** to its page, a line
+  saying the blueprint has been **edited since this node applied it** — a
+  different fact from having drifted — and an **Undeclare** that offers to take
+  back what the blueprint installed, with a separate, deliberately separate,
+  checkbox for what the machine already had.
+
+  This is what the blueprint parser was split for: `parseBlueprint` is now
+  web-safe, and reading a *file* is the half that stays out of the browser's
+  import graph.
+
+- **`HubApiClient` has a method per endpoint, returning what it means.**
+
+  It was four verbs and a `dynamic`. Every caller — the CLI, the dashboard's
+  service layer, both examples, the tests — decoded the same replies in its own
+  way, and a field the Hub renamed became a runtime failure in one of them and
+  not the others.
+
+  ```dart
+  final nodes = await client.nodes(labels: ['env=prod']);  // List<NodeDescriptor>
+  final drift = await client.drift('web-1');               // Drift?
+  final result = await client.reconcile('web-1');          // ConvergeResult
+  ```
+
+  Three replies that were not already domain entities get types: `Identity`,
+  `ConvergeResult` and `IssuedGrant`. `ConvergeResult` is the one that earns its
+  keep — `POST /reconcile` answers in two shapes, because a node is declared in
+  one of two ways, and "did it work, and how much moved" is now derived once
+  rather than at every call site.
+
+  **Absence is a return value where absence is ordinary.** `nodeStatus`,
+  `desiredState` and `drift` answer `null` on a `404`: a node that has not
+  heartbeated yet and a node nobody declared anything about are not errors, and
+  a caller made to catch one will sooner or later catch the wrong one.
+
+  The raw verbs stay public, for an endpoint not modelled yet and for a test
+  asserting the *wire shape* — which a typed decoder would paper over.
+
+- **`example/docker_blueprints/`** — three empty containers that become two web
+  servers and a build host. One preset shared by two blueprints, assigned by
+  label, planned by each node against its own machine, applied with real
+  `apt-get`, and then every property that only a declarative model can show:
+  idempotence, removal of what a blueprint has stopped declaring, *release* of
+  what the machine already had, and one edit to a shared preset drifting both
+  kinds of machine at once.
+
+  Worth running before trusting a blueprint with anything you care about — and
+  worth writing, since two mistakes in the adoption rule only became visible
+  once real containers were doing it.
+
+### Three orderings that are load-bearing
+
+- **Present is checked before running.** A stopped daemon and an uninstalled one
+  both fail a running probe; calling the second "stopped" sends an operator to a
+  start button for software that is not there.
+- **A probe that could not run is `unknown`, and `unknown` satisfies nothing.**
+  Not `absent` — "not installed" invites an install, and installing over
+  something that already works is how a failed probe becomes an outage. A plan
+  containing an unknown is never converged, because treating silence as
+  agreement would report a blind node as healthy.
+- **Orphan removal runs in reverse.** Creation order was dependency order, so
+  teardown is that read backwards, or something is removed while something still
+  standing depends on it.
+
+### Refused before a node ever sees it
+
+Saving a blueprint resolves it first, so these come back as a `400` with the
+file still open rather than as a failure half way through changing a real
+machine: a dependency cycle, a `requires` naming nothing, a `${var}` nothing
+declares, an include naming a preset nobody saved, and `ensure: running` on a
+formula that manages no service — that last one could never converge, and would
+report drift forever that applying does not fix.
+
+### Fixed
+
+- **`ProtocolException` reached clients as a `500`.** A malformed id or an
+  unknown enum value is a request the Hub understood well enough to judge wrong,
+  which is a `400`. A `500` says the Hub broke, and sends the caller looking in
+  the wrong logs.
+
+- **A removal that failed dropped out of the ledger while still installed.** The
+  ledger was rebuilt from the blueprint being applied, so a resource the
+  blueprint had stopped declaring left the record whether or not its removal
+  actually worked. The software stayed on the machine with nothing tracking it,
+  and the next apply saw it as "already correct the first time we looked" —
+  marking it adopted, and putting it permanently beyond removal. Entries whose
+  removal did not succeed are now retained, so the next apply retries them.
+
+### Changed
+
+- `DesiredState` gains an optional `blueprint` binding beside its `steps`, and
+  `Drift` gains `changes` beside `actions`. Additive: exactly one is ever
+  filled, and a client written against the preset shape keeps working.
+- `Drift` also gains `expectedHash` — what the Hub currently resolves the
+  blueprint to, beside the `appliedHash` the node's ledger reports. `stale` is
+  the two disagreeing, which is "this node is on an older revision", not "this
+  machine has been tampered with". It was already known where the drift was
+  computed and merely not passed along, so reading it cost a second request.
+- `DefaultStateReconciler` is **untouched**. It is synchronous and runs Hub-side
+  against cached capabilities, which is exactly what makes it work on an offline
+  node — worth keeping rather than widening.
+- New dependency: `yaml ^3.1.4`, for reading a blueprint authored as YAML. The
+  parsing half is web-safe and exported from the browser barrel, so the
+  dashboard's editor reads the same documents the CLI does; reading a *file*
+  stays in `blueprint_format.dart`, out of that import graph and kept out by
+  `web_barrel_dart_io_free_test`. The dashboard bundle grows from 739 KB to
+  832 KB — mostly `yaml` and its scanner now actually being reachable, plus
+  the Library screens and 6 KB of syntax highlighting.
+- `omnyserver_web` 0.3.1 → **0.4.0**.
+
+---
+
 ## 0.16.2
 
 A coverage release, and what it turned up.

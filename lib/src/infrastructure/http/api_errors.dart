@@ -50,6 +50,11 @@ Middleware apiErrorMapper() => mapErrors((error, _) {
     OperationException e => ApiErrors.upstream(e.message),
     OmnyServerTimeoutException e => ApiErrors.upstream(e.message),
     FormatException e => ApiErrors.badRequest('invalid JSON: ${e.message}'),
+    // A malformed document: a bad id, an unknown `ensure`, a blueprint with a
+    // dependency cycle. The request reached the right place and was understood
+    // well enough to be judged wrong, which is a 400 — a 500 would say the Hub
+    // broke, and send the caller looking in the wrong logs.
+    ProtocolException e => ApiErrors.badRequest(e.message),
     // No route matched at all. omnyhub would answer its own 404; re-render it in
     // the v1 envelope so every error on this API has one shape.
     RoutingException() => ApiErrors.notFound('unknown route'),

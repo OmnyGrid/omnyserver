@@ -1,3 +1,6 @@
+import '../domain/blueprint/resolved_blueprint.dart';
+import '../domain/blueprint/resource_change.dart';
+import '../domain/blueprint/resource_state.dart';
 import '../domain/entities/node_status.dart';
 import '../domain/entities/preset.dart';
 import '../domain/entities/service_descriptor.dart';
@@ -32,6 +35,12 @@ class Operations {
 
   /// Hub → node: apply a preset.
   static const String preset = 'op.preset.apply';
+
+  /// Hub → node: work out what applying a blueprint would change.
+  static const String blueprintPlan = 'op.blueprint.plan';
+
+  /// Hub → node: apply a blueprint.
+  static const String blueprintApply = 'op.blueprint.apply';
 
   /// Hub → node: control an OS service.
   static const String service = 'op.service.control';
@@ -310,6 +319,248 @@ final class PresetApplyResult {
           d,
           'results',
         ).map(FormulaResult.fromJson).toList(),
+      );
+}
+
+/// Hub → node: work out what applying this blueprint would change.
+///
+/// The Hub sends a **resolved** blueprint — includes flattened, variables
+/// substituted, resources ordered — so the node never learns what a preset is
+/// or what a variable was. Planning happens here, on the machine, because that
+/// is the only place the current state actually is: a plan built from what the
+/// Hub last heard is a plan built from intentions.
+final class BlueprintPlanRequest {
+  /// Correlation id.
+  final String requestId;
+
+  /// What the node should be.
+  final ResolvedBlueprint blueprint;
+
+  /// Creates a plan request.
+  const BlueprintPlanRequest({
+    required this.requestId,
+    required this.blueprint,
+  });
+
+  /// Encodes to JSON.
+  Map<String, dynamic> toJson() => {
+    'requestId': requestId,
+    'blueprint': blueprint.toJson(),
+  };
+
+  /// Decodes from JSON.
+  static BlueprintPlanRequest fromJson(Map<String, dynamic> d) =>
+      BlueprintPlanRequest(
+        requestId: Json.requireString(d, 'requestId'),
+        blueprint: ResolvedBlueprint.fromJson(
+          Json.asObject(d['blueprint'], 'blueprint'),
+        ),
+      );
+}
+
+/// Node → Hub: what the node would have to change, or did.
+///
+/// One type for both the plan and the report, because they are the same
+/// statement at two times — "create formula:docker", then whether it worked.
+final class BlueprintPlanResult {
+  /// Correlation id.
+  final String requestId;
+
+  /// The changes, in the order they would be (or were) made.
+  final List<ResourceChange> changes;
+
+  /// What the node read, per resource.
+  ///
+  /// Carried alongside the changes so the Hub can show an operator what a node
+  /// *is*, not only what would move — a converged blueprint with an empty plan
+  /// would otherwise report nothing at all.
+  final List<ResourceState> states;
+
+  /// The resolved hash the node has recorded as applied, if any.
+  ///
+  /// Empty when the node has never applied this blueprint.
+  final String appliedHash;
+
+  /// The hash of the resolution this plan was made against.
+  ///
+  /// Echoed from the request, and reported alongside [appliedHash] so the two
+  /// are directly comparable: a difference says the node is on an older
+  /// revision of the blueprint, which is a different thing from having drifted
+  /// away from the current one, and wants a different sentence in front of an
+  /// operator.
+  ///
+  /// The node is the right place to answer this, even though the Hub knows the
+  /// same number: both hashes then come from one place, and neither can be a
+  /// stale copy of the other.
+  final String expectedHash;
+
+  /// Notes worth showing: a provider the node does not have, a skipped branch.
+  final List<String> notes;
+
+  /// Creates a plan result.
+  const BlueprintPlanResult({
+    required this.requestId,
+    this.changes = const [],
+    this.states = const [],
+    this.appliedHash = '',
+    this.expectedHash = '',
+    this.notes = const [],
+  });
+
+  /// Whether the node has applied a different resolution than this plan was
+  /// made against.
+  ///
+  /// False when the node has never applied one at all — that is "nothing has
+  /// been applied here", not "something older has".
+  bool get stale =>
+      appliedHash.isNotEmpty &&
+      expectedHash.isNotEmpty &&
+      appliedHash != expectedHash;
+
+  /// Whether the node already matches: nothing left that would change it.
+  ///
+  /// A `ChangeKind.unknown` is deliberately **not** converged. A resource whose
+  /// state could not be read has not agreed to anything, and a plan that called
+  /// that convergence would report a blind node as healthy.
+  bool get converged =>
+      !changes.any((c) => c.kind.isWork || c.kind == ChangeKind.unknown);
+
+  /// Encodes to JSON.
+  Map<String, dynamic> toJson() => {
+    'requestId': requestId,
+    'converged': converged,
+    'changes': [for (final c in changes) c.toJson()],
+    'states': [for (final s in states) s.toJson()],
+    if (appliedHash.isNotEmpty) 'appliedHash': appliedHash,
+    if (expectedHash.isNotEmpty) 'expectedHash': expectedHash,
+    if (notes.isNotEmpty) 'notes': notes,
+  };
+
+  /// Decodes from JSON.
+  ///
+  /// `converged` is written for a reader but never read back: it is derived, and
+  /// trusting a transmitted copy would let a node claim convergence its own
+  /// changes contradict.
+  static BlueprintPlanResult fromJson(Map<String, dynamic> d) =>
+      BlueprintPlanResult(
+        requestId: Json.requireString(d, 'requestId'),
+        changes: Json.optObjectList(
+          d,
+          'changes',
+        ).map(ResourceChange.fromJson).toList(),
+        states: Json.optObjectList(
+          d,
+          'states',
+        ).map(ResourceState.fromJson).toList(),
+        appliedHash: Json.optString(d, 'appliedHash') ?? '',
+        expectedHash: Json.optString(d, 'expectedHash') ?? '',
+        notes: Json.optStringList(d, 'notes'),
+      );
+}
+
+/// Hub → node: make it so.
+final class BlueprintApplyRequest {
+  /// Correlation id.
+  final String requestId;
+
+  /// What the node should be.
+  final ResolvedBlueprint blueprint;
+
+  /// Whether to plan without touching anything.
+  ///
+  /// A dry run runs the *same* code as a real one and stops before the writes.
+  /// A dry run that ran different code would be a dry run that lies.
+  final bool dryRun;
+
+  /// Whether to remove resources that were already correct before this system
+  /// first ran.
+  ///
+  /// Off by default. If nginx was on this box a year before anyone wrote a
+  /// blueprint, unassigning must not uninstall it.
+  final bool purgeAdopted;
+
+  /// Creates an apply request.
+  const BlueprintApplyRequest({
+    required this.requestId,
+    required this.blueprint,
+    this.dryRun = false,
+    this.purgeAdopted = false,
+  });
+
+  /// Encodes to JSON.
+  Map<String, dynamic> toJson() => {
+    'requestId': requestId,
+    'blueprint': blueprint.toJson(),
+    if (dryRun) 'dryRun': true,
+    if (purgeAdopted) 'purgeAdopted': true,
+  };
+
+  /// Decodes from JSON.
+  static BlueprintApplyRequest fromJson(Map<String, dynamic> d) =>
+      BlueprintApplyRequest(
+        requestId: Json.requireString(d, 'requestId'),
+        blueprint: ResolvedBlueprint.fromJson(
+          Json.asObject(d['blueprint'], 'blueprint'),
+        ),
+        dryRun: Json.optBool(d, 'dryRun'),
+        purgeAdopted: Json.optBool(d, 'purgeAdopted'),
+      );
+}
+
+/// Node → Hub: what the apply did.
+final class BlueprintApplyResult {
+  /// Correlation id.
+  final String requestId;
+
+  /// Whether every change that was attempted worked.
+  final bool success;
+
+  /// What happened, per resource, in the order it was attempted.
+  final List<ResourceChange> changes;
+
+  /// The hash now recorded in the node's ledger.
+  final String appliedHash;
+
+  /// Notes worth showing.
+  final List<String> notes;
+
+  /// Creates an apply result.
+  const BlueprintApplyResult({
+    required this.requestId,
+    required this.success,
+    this.changes = const [],
+    this.appliedHash = '',
+    this.notes = const [],
+  });
+
+  /// What was actually changed — the count worth reporting to an operator.
+  int get changed => changes.where((c) => c.kind.isWork).length;
+
+  /// What was not attempted because something it required failed.
+  int get skipped => changes.where((c) => c.kind == ChangeKind.skipped).length;
+
+  /// Encodes to JSON.
+  Map<String, dynamic> toJson() => {
+    'requestId': requestId,
+    'success': success,
+    'changed': changed,
+    'skipped': skipped,
+    'changes': [for (final c in changes) c.toJson()],
+    if (appliedHash.isNotEmpty) 'appliedHash': appliedHash,
+    if (notes.isNotEmpty) 'notes': notes,
+  };
+
+  /// Decodes from JSON.
+  static BlueprintApplyResult fromJson(Map<String, dynamic> d) =>
+      BlueprintApplyResult(
+        requestId: Json.requireString(d, 'requestId'),
+        success: Json.optBool(d, 'success'),
+        changes: Json.optObjectList(
+          d,
+          'changes',
+        ).map(ResourceChange.fromJson).toList(),
+        appliedHash: Json.optString(d, 'appliedHash') ?? '',
+        notes: Json.optStringList(d, 'notes'),
       );
 }
 

@@ -12,6 +12,7 @@ import '../../omnyserver_node.dart';
 import 'ai_command.dart';
 import 'api_client.dart';
 import 'api_transport_io.dart';
+import 'blueprint_format.dart';
 import 'cli_error.dart';
 import 'service_commands.dart';
 import 'start_options.dart';
@@ -38,6 +39,7 @@ CommandRunner<void> buildRunner() {
         ..addCommand(AiCliCommand())
         ..addCommand(NodesCommand())
         ..addCommand(PresetCommand())
+        ..addCommand(BlueprintCommand())
         ..addCommand(FormulaCommand())
         ..addCommand(StateCommand())
         ..addCommand(GrantCommand())
@@ -165,13 +167,8 @@ Future<List<String>> _selectNodes(
   // Explicit ids are taken at face value; the Hub will say if one is unknown.
   if (ids.isNotEmpty && labels.isEmpty && !all) return ids.toList()..sort();
 
-  final query = [
-    for (final label in labels) 'label=${Uri.encodeQueryComponent(label)}',
-  ].join('&');
-  final nodes =
-      (await client.get('/nodes${query.isEmpty ? '' : '?$query'}')) as List;
   final matched = [
-    for (final n in nodes.cast<Map>()) n['nodeId'] as String,
+    for (final node in await client.nodes(labels: labels)) node.id.value,
     ...ids,
   ];
 
@@ -377,6 +374,9 @@ class HubStartCommand extends Command<void> {
         grantRepository: grantStore,
         nodeRepository: persistent ? JsonNodeRepository(dataDir) : null,
         presetRepository: persistent ? JsonPresetRepository(dataDir) : null,
+        blueprintRepository: persistent
+            ? JsonBlueprintRepository(dataDir)
+            : null,
         formulaRepository: persistent ? JsonFormulaRepository(dataDir) : null,
         auditRepository: persistent ? JsonAuditRepository(dataDir) : null,
         metricRepository: persistent ? JsonMetricRepository(dataDir) : null,
@@ -622,6 +622,17 @@ class NodeStartCommand extends Command<void> {
     // lines were produced and dropped: nothing was listening.
     final formulaService = NodeFormulaService(registry: registry, onLog: log);
 
+    // Blueprints run over the same formulas, through a provider. The ledger goes
+    // on disk, under the node's own home: an in-memory one would forget what the
+    // node owns on every restart, and a node that has forgotten what it owns can
+    // never really have a blueprint unassigned from it — it would adopt
+    // everything it found and remove nothing.
+    final blueprintService = NodeBlueprintService(
+      providers: ProviderRegistry.of([FormulaProvider(registry: registry)]),
+      ledgers: FileLedgerStore(OmnyServerHome.ensure().path),
+      onLog: log,
+    );
+
     final agentConfig = NodeAgentConfig(
       hubUri: Uri.parse(hub),
       nodeId: id,
@@ -638,6 +649,8 @@ class NodeStartCommand extends Command<void> {
       capabilityProvider: scanner.scan,
       formulaHandler: formulaService.runFormula,
       formulaStatusHandler: formulaService.reportStatus,
+      blueprintPlanHandler: blueprintService.plan,
+      blueprintApplyHandler: blueprintService.apply,
       presetHandler: formulaService.applyPreset,
       nodeControlHandler: updateService.handle,
       logger: log,
@@ -779,8 +792,14 @@ class NodeStatusCommand extends Command<void> {
     if (rest.isEmpty) throw CliError('usage: node status <id>');
     final client = _apiClientFrom(argResults!);
     try {
-      final status = await client.get('/nodes/${rest.first}/status');
-      stdout.writeln(const JsonEncoder.withIndent('  ').convert(status));
+      final status = await client.nodeStatus(rest.first);
+      if (status == null) {
+        stdout.writeln('no status yet — the node has not heartbeated');
+        return;
+      }
+      stdout.writeln(
+        const JsonEncoder.withIndent('  ').convert(status.toJson()),
+      );
     } finally {
       client.close();
     }
@@ -801,7 +820,11 @@ class NodeShowCommand extends Command<void> {
   String get description => 'Show a node descriptor (via the Hub API).';
 
   @override
-  Future<void> run() => _getAndPrint(argResults!, 'show', (id) => '/nodes/$id');
+  Future<void> run() => _showJson(
+    argResults!,
+    'node show',
+    (client, id) async => (await client.node(id)).toJson(),
+  );
 }
 
 /// `omnyserver node capabilities <id>`
@@ -819,10 +842,10 @@ class NodeCapabilitiesCommand extends Command<void> {
       "Show a node's advertised capabilities (via the Hub API).";
 
   @override
-  Future<void> run() => _getAndPrint(
+  Future<void> run() => _showJson(
     argResults!,
-    'capabilities',
-    (id) => '/nodes/$id/capabilities',
+    'node capabilities',
+    (client, id) async => (await client.capabilities(id)).toJson(),
   );
 }
 
@@ -860,19 +883,22 @@ class NodeMetricsCommand extends Command<void> {
     final rest = args.rest;
     if (rest.isEmpty) throw CliError('usage: node metrics <id> [--since 1h]');
     final since = args['since'] as String?;
-    final query = [
-      'limit=${Uri.encodeQueryComponent(args['limit'] as String)}',
-      if (since != null) 'since=${Uri.encodeQueryComponent(since)}',
-    ].join('&');
 
     final client = _apiClientFrom(args);
     try {
-      final series = await client.get('/nodes/${rest.first}/metrics?$query');
+      final points = await client.metrics(
+        rest.first,
+        since: since ?? '1h',
+        limit: int.tryParse(args['limit'] as String) ?? 200,
+      );
       if (args['json'] as bool) {
-        stdout.writeln(const JsonEncoder.withIndent('  ').convert(series));
+        stdout.writeln(
+          const JsonEncoder.withIndent(
+            '  ',
+          ).convert([for (final p in points) p.toJson()]),
+        );
         return;
       }
-      final points = (series as List).cast<Map>();
       if (points.isEmpty) {
         stdout.writeln('no samples (the node may not have heartbeated yet)');
         return;
@@ -880,13 +906,11 @@ class NodeMetricsCommand extends Command<void> {
       stdout.writeln('AT                        CPU%    MEM%   DISK%');
       // Newest first from the API; print oldest first so it reads as a timeline.
       for (final p in points.reversed) {
-        final at = DateTime.parse(p['at'] as String).toLocal();
-        final cpu = (p['cpuPercent'] as num).toDouble();
-        final mem = _pct(p['memoryUsedBytes'], p['memoryTotalBytes']);
-        final disk = _pct(p['storageUsedBytes'], p['storageCapacityBytes']);
+        final mem = _pct(p.memoryUsedBytes, p.memoryTotalBytes);
+        final disk = _pct(p.storageUsedBytes, p.storageCapacityBytes);
         stdout.writeln(
-          '${at.toString().padRight(26)}'
-          '${cpu.toStringAsFixed(1).padLeft(5)}  '
+          '${p.at.toLocal().toString().padRight(26)}'
+          '${p.cpuPercent.toStringAsFixed(1).padLeft(5)}  '
           '${mem.padLeft(6)}  ${disk.padLeft(6)}',
         );
       }
@@ -895,11 +919,9 @@ class NodeMetricsCommand extends Command<void> {
     }
   }
 
-  static String _pct(Object? used, Object? total) {
-    final u = (used as num?)?.toDouble() ?? 0;
-    final t = (total as num?)?.toDouble() ?? 0;
-    if (t <= 0) return '—';
-    return '${(u / t * 100).toStringAsFixed(0)}%';
+  static String _pct(int used, int total) {
+    if (total <= 0) return '—';
+    return '${(used / total * 100).toStringAsFixed(0)}%';
   }
 }
 
@@ -935,9 +957,10 @@ class NodeLogsCommand extends Command<void> {
 
     final client = _apiClientFrom(args);
     try {
-      final tail = Uri.encodeQueryComponent(args['tail'] as String);
-      final lines = (await client.get('/nodes/$node/logs?tail=$tail') as List)
-          .cast<Map>();
+      final lines = await client.logs(
+        node,
+        tail: int.tryParse(args['tail'] as String) ?? 200,
+      );
       if (lines.isEmpty && !(args['follow'] as bool)) {
         stdout.writeln(
           'no logs from $node yet '
@@ -946,26 +969,29 @@ class NodeLogsCommand extends Command<void> {
         return;
       }
       for (final line in lines) {
-        stdout.writeln(_format(line));
+        stdout.writeln(_render(line));
       }
     } finally {
       client.close();
     }
 
     if (args['follow'] as bool) {
+      // The stream is raw SSE frames, not the typed client — there is no
+      // typed streaming yet, and a follow that decoded differently from the
+      // tail above would print two formats in one run.
       await _streamSse(
         args,
         '/api/v1/nodes/$node/logs/stream',
-        onEvent: (payload) => stdout.writeln(_format(payload)),
+        onEvent: (payload) => stdout.writeln(
+          _render(LogLine.fromJson(payload.cast<String, dynamic>())),
+        ),
       );
     }
   }
 
-  static String _format(Map<dynamic, dynamic> line) {
-    final at = DateTime.parse(
-      line['at'] as String,
-    ).toLocal().toString().split('.');
-    return '${at.first}  ${line['source']}  ${line['message']}';
+  static String _render(LogLine line) {
+    final at = line.at.toLocal().toString().split('.');
+    return '${at.first}  ${line.source}  ${line.message}';
   }
 }
 
@@ -989,7 +1015,7 @@ class NodeRestartCommand extends Command<void> {
     if (rest.isEmpty) throw CliError('usage: node restart <id>');
     final client = _apiClientFrom(argResults!);
     try {
-      await client.post('/nodes/${rest.first}/restart');
+      await client.restartAgent(rest.first);
       stdout.writeln('agent restart requested on ${rest.first}');
     } finally {
       client.close();
@@ -1018,7 +1044,7 @@ class NodeShutdownCommand extends Command<void> {
     if (rest.isEmpty) throw CliError('usage: node shutdown <id>');
     final client = _apiClientFrom(argResults!);
     try {
-      await client.post('/nodes/${rest.first}/shutdown');
+      await client.stopAgent(rest.first);
       stdout.writeln('agent shutdown requested on ${rest.first}');
     } finally {
       client.close();
@@ -1053,7 +1079,7 @@ class NodeUpdateCommand extends Command<void> {
     final client = _apiClientFrom(argResults!);
     try {
       final target = argResults!['target'] as String;
-      await client.post('/nodes/${rest.first}/update', {'target': target});
+      await client.update(rest.first, target: target);
       stdout.writeln('update ($target) requested for ${rest.first}');
     } finally {
       client.close();
@@ -1061,18 +1087,23 @@ class NodeUpdateCommand extends Command<void> {
   }
 }
 
-/// GETs [path] for the node named in the first positional argument and prints
-/// the JSON — the shape every read-only node command shares.
-Future<void> _getAndPrint(
+/// Reads one entity for the id in the first positional argument and prints it
+/// as JSON — the shape every read-only `show` command shares.
+///
+/// [fetch] returns the decoded entity, so a field the Hub renamed fails here
+/// rather than printing a document with a hole in it. `null` means the thing is
+/// not there, which every caller reports the same way.
+Future<void> _showJson(
   ArgResults args,
   String usage,
-  String Function(String id) path,
+  Future<Map<String, dynamic>?> Function(HubApiClient client, String id) fetch,
 ) async {
   final rest = args.rest;
-  if (rest.isEmpty) throw CliError('usage: node $usage <id>');
+  if (rest.isEmpty) throw CliError('usage: $usage <id>');
   final client = _apiClientFrom(args);
   try {
-    final body = await client.get(path(rest.first));
+    final body = await fetch(client, rest.first);
+    if (body == null) throw CliError('nothing found for ${rest.first}');
     stdout.writeln(const JsonEncoder.withIndent('  ').convert(body));
   } finally {
     client.close();
@@ -1127,37 +1158,28 @@ class NodesListCommand extends Command<void> {
   @override
   Future<void> run() async {
     final args = argResults!;
-    final query = <String>[
-      for (final label in args['label'] as List<String>)
-        'label=${Uri.encodeQueryComponent(label)}',
-      if (args['offline'] as bool)
-        'online=false'
-      else if (args.wasParsed('online'))
-        'online=${args['online']}',
-    ].join('&');
+    final labels = args['label'] as List<String>;
+    final online = (args['offline'] as bool)
+        ? false
+        : (args.wasParsed('online') ? args['online'] as bool : null);
+    final narrowed = labels.isNotEmpty || online != null;
 
     final client = _apiClientFrom(args);
     try {
-      final nodes =
-          (await client.get('/nodes${query.isEmpty ? '' : '?$query'}') as List)
-              .cast<Map>();
+      final nodes = await client.nodes(labels: labels, online: online);
       if (nodes.isEmpty) {
-        stdout.writeln(
-          query.isEmpty ? 'no nodes registered' : 'no node matches',
-        );
+        stdout.writeln(narrowed ? 'no node matches' : 'no nodes registered');
         return;
       }
       stdout.writeln('NODE                 ONLINE  PLATFORM   LABELS');
       for (final n in nodes) {
-        final id = (n['nodeId'] as String).padRight(20);
-        final online = (n['online'] as bool? ?? false) ? 'yes   ' : 'no    ';
-        final platform = '${(n['platform'] as Map?)?['osName'] ?? '?'}'
-            .padRight(10);
-        final labels = (n['labels'] as Map?) ?? const {};
-        final rendered = labels.entries
+        final rendered = n.labels.entries
             .map((l) => '${l.key}=${l.value}')
             .join(' ');
-        stdout.writeln('$id $online  $platform $rendered');
+        stdout.writeln(
+          '${n.id.value.padRight(20)} ${n.online ? 'yes   ' : 'no    '}  '
+          '${n.platform.osName.padRight(10)} $rendered',
+        );
       }
     } finally {
       client.close();
@@ -1224,12 +1246,12 @@ class PresetApplyCommand extends Command<void> {
     // caller happens to have, while an id is the one everybody agrees on.
     final source = rest.first;
     final file = File(source);
-    final body = <String, Object?>{
-      if (await file.exists())
-        'preset': jsonDecode(await file.readAsString())
-      else
-        'presetId': source,
-    };
+    final inline = await file.exists()
+        ? Preset.fromJson(
+            (jsonDecode(await file.readAsString()) as Map)
+                .cast<String, dynamic>(),
+          )
+        : null;
 
     final client = _apiClientFrom(args);
     try {
@@ -1240,20 +1262,24 @@ class PresetApplyCommand extends Command<void> {
       );
       final async = args['async'] as bool;
       await _fanOut(nodes, (node) async {
-        final reply =
-            await client.post('/presets/apply', {
-                  'nodeId': node,
-                  ...body,
-                  if (async) 'async': true,
-                })
-                as Map;
-        if (async) return 'dispatched — ops show ${reply['id']}';
-        final results = (reply['results'] as List).cast<Map>();
-        final failed = results.where((r) => r['success'] != true).length;
-        final changed = results.where((r) => r['changed'] == true).length;
+        if (async) {
+          final operation = await client.applyPresetAsync(
+            node,
+            presetId: inline == null ? source : null,
+            preset: inline,
+          );
+          return 'dispatched — ops show ${operation.id}';
+        }
+        final reply = await client.applyPreset(
+          node,
+          presetId: inline == null ? source : null,
+          preset: inline,
+        );
+        final failed = reply.results.where((r) => !r.success).length;
+        final changed = reply.results.where((r) => r.changed).length;
         return failed == 0
-            ? 'applied ${results.length} steps ($changed changed)'
-            : 'FAILED $failed/${results.length} steps';
+            ? 'applied ${reply.results.length} steps ($changed changed)'
+            : 'FAILED $failed/${reply.results.length} steps';
       });
     } finally {
       client.close();
@@ -1283,14 +1309,16 @@ class PresetSaveCommand extends Command<void> {
     if (!await file.exists()) {
       throw CliError('preset file not found: ${rest.first}');
     }
-    final preset = jsonDecode(await file.readAsString());
+    final preset = Preset.fromJson(
+      (jsonDecode(await file.readAsString()) as Map).cast<String, dynamic>(),
+    );
 
     final client = _apiClientFrom(argResults!);
     try {
-      final saved = await client.post('/presets', preset) as Map;
+      await client.savePreset(preset);
       stdout.writeln(
-        'saved "${saved['id']}" (${saved['steps']} steps) — apply it anywhere '
-        'with: preset apply ${saved['id']} --label …',
+        'saved "${preset.id}" (${preset.steps.length} steps) — apply it '
+        'anywhere with: preset apply ${preset.id} --label …',
       );
     } finally {
       client.close();
@@ -1315,16 +1343,17 @@ class PresetListCommand extends Command<void> {
   Future<void> run() async {
     final client = _apiClientFrom(argResults!);
     try {
-      final presets = (await client.get('/presets') as List).cast<Map>();
+      final presets = await client.presets();
       if (presets.isEmpty) {
         stdout.writeln('no presets are saved (try: preset save <file>)');
         return;
       }
       stdout.writeln('ID              STEPS  NAME');
       for (final p in presets) {
-        final id = '${p['id']}'.padRight(15);
-        final steps = '${(p['steps'] as List).length}'.padLeft(5);
-        stdout.writeln('$id $steps  ${p['name']}');
+        stdout.writeln(
+          '${p.id.value.padRight(15)} '
+          '${'${p.steps.length}'.padLeft(5)}  ${p.name}',
+        );
       }
     } finally {
       client.close();
@@ -1346,8 +1375,11 @@ class PresetShowCommand extends Command<void> {
   String get description => 'Show a saved preset.';
 
   @override
-  Future<void> run() =>
-      _getAndPrint(argResults!, 'show', (id) => '/presets/$id');
+  Future<void> run() => _showJson(
+    argResults!,
+    'preset show',
+    (client, id) async => (await client.preset(id)).toJson(),
+  );
 }
 
 /// `omnyserver preset delete <id>`
@@ -1369,8 +1401,404 @@ class PresetDeleteCommand extends Command<void> {
     if (rest.isEmpty) throw CliError('usage: preset delete <id>');
     final client = _apiClientFrom(argResults!);
     try {
-      await client.delete('/presets/${rest.first}');
+      await client.deletePreset(rest.first);
       stdout.writeln('deleted ${rest.first}');
+    } finally {
+      client.close();
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// blueprint
+// ---------------------------------------------------------------------------
+
+/// `omnyserver blueprint …`
+class BlueprintCommand extends Command<void> {
+  /// Creates the blueprint command group.
+  BlueprintCommand() {
+    addSubcommand(BlueprintSaveCommand());
+    addSubcommand(BlueprintListCommand());
+    addSubcommand(BlueprintShowCommand());
+    addSubcommand(BlueprintResolvedCommand());
+    addSubcommand(BlueprintDeleteCommand());
+    addSubcommand(BlueprintAssignCommand());
+    addSubcommand(BlueprintUnassignCommand());
+    addSubcommand(BlueprintPlanCommand());
+    addSubcommand(BlueprintApplyCommand());
+  }
+
+  @override
+  String get name => 'blueprint';
+
+  @override
+  String get description => 'Declare what a server should be, and make it so.';
+}
+
+/// `omnyserver blueprint save <file.yaml|file.json>`
+class BlueprintSaveCommand extends Command<void> {
+  /// Creates the blueprint-save command.
+  BlueprintSaveCommand() {
+    _addApiOptions(argParser);
+  }
+
+  @override
+  String get name => 'save';
+
+  @override
+  String get description =>
+      'Save a blueprint on the Hub, from a YAML or JSON file.';
+
+  @override
+  Future<void> run() async {
+    final rest = argResults!.rest;
+    if (rest.isEmpty) {
+      throw CliError('usage: blueprint save <file.yaml|file.json>');
+    }
+
+    // Parsed here so a malformed file is a local error naming the file, rather
+    // than a 400 from a Hub that only ever saw the bytes.
+    final blueprint = await BlueprintFile.read(rest.first);
+
+    final client = _apiClientFrom(argResults!);
+    try {
+      await client.saveBlueprint(blueprint);
+      stdout
+        ..writeln(
+          'saved "${blueprint.id}" (${blueprint.includes.length} includes, '
+          '${blueprint.resources.length} resources)',
+        )
+        ..writeln('assign it with: blueprint assign ${blueprint.id} <node>');
+    } finally {
+      client.close();
+    }
+  }
+}
+
+/// `omnyserver blueprint list`
+class BlueprintListCommand extends Command<void> {
+  /// Creates the blueprint-list command.
+  BlueprintListCommand() {
+    _addApiOptions(argParser);
+  }
+
+  @override
+  String get name => 'list';
+
+  @override
+  String get description => 'List the blueprints saved on the Hub.';
+
+  @override
+  Future<void> run() async {
+    final client = _apiClientFrom(argResults!);
+    try {
+      final blueprints = await client.blueprints();
+      if (blueprints.isEmpty) {
+        stdout.writeln('no blueprints are saved (try: blueprint save <file>)');
+        return;
+      }
+      stdout.writeln('ID              INCLUDES  RESOURCES  NAME');
+      for (final b in blueprints) {
+        stdout.writeln(
+          '${b.id.value.padRight(15)} '
+          '${'${b.includes.length}'.padLeft(8)}  '
+          '${'${b.resources.length}'.padLeft(9)}  ${b.name}',
+        );
+      }
+    } finally {
+      client.close();
+    }
+  }
+}
+
+/// `omnyserver blueprint show <id>`
+class BlueprintShowCommand extends Command<void> {
+  /// Creates the blueprint-show command.
+  BlueprintShowCommand() {
+    _addApiOptions(argParser);
+  }
+
+  @override
+  String get name => 'show';
+
+  @override
+  String get description =>
+      'Show a saved blueprint, in the format it was written in.';
+
+  @override
+  Future<void> run() async {
+    final rest = argResults!.rest;
+    if (rest.isEmpty) throw CliError('usage: blueprint show <id>');
+
+    final client = _apiClientFrom(argResults!);
+    try {
+      final blueprint = await client.blueprint(rest.first);
+      // A blueprint authored as YAML comes back as that YAML, comments intact.
+      // Printing the parsed JSON instead would hand back a different document
+      // from the one in the author's editor.
+      if (blueprint.source case final source?) {
+        stdout.write(source.text);
+        return;
+      }
+      stdout.writeln(
+        const JsonEncoder.withIndent('  ').convert(blueprint.toJson()),
+      );
+    } finally {
+      client.close();
+    }
+  }
+}
+
+/// `omnyserver blueprint resolved <id>`
+class BlueprintResolvedCommand extends Command<void> {
+  /// Creates the blueprint-resolved command.
+  BlueprintResolvedCommand() {
+    _addApiOptions(argParser);
+  }
+
+  @override
+  String get name => 'resolved';
+
+  @override
+  String get description =>
+      'Show a blueprint flattened: what a node is actually sent.';
+
+  @override
+  Future<void> run() async {
+    final rest = argResults!.rest;
+    if (rest.isEmpty) throw CliError('usage: blueprint resolved <id>');
+
+    final client = _apiClientFrom(argResults!);
+    try {
+      final resolved = await client.resolvedBlueprint(rest.first);
+
+      stdout.writeln(resolved.hash);
+      stdout.writeln('RESOURCE                       ENSURE     FROM');
+      for (final r in resolved.resources) {
+        final from = r.overrides == null
+            ? r.origin
+            : '${r.origin} (overrides ${r.overrides})';
+        stdout.writeln(
+          '${r.id.toString().padRight(30)} '
+          '${r.ensure.name.padRight(10)} $from',
+        );
+      }
+      for (final note in resolved.notes) {
+        stdout.writeln('note: $note');
+      }
+    } finally {
+      client.close();
+    }
+  }
+}
+
+/// `omnyserver blueprint delete <id>`
+class BlueprintDeleteCommand extends Command<void> {
+  /// Creates the blueprint-delete command.
+  BlueprintDeleteCommand() {
+    _addApiOptions(argParser);
+  }
+
+  @override
+  String get name => 'delete';
+
+  @override
+  String get description => 'Delete a saved blueprint.';
+
+  @override
+  Future<void> run() async {
+    final rest = argResults!.rest;
+    if (rest.isEmpty) throw CliError('usage: blueprint delete <id>');
+    final client = _apiClientFrom(argResults!);
+    try {
+      await client.deleteBlueprint(rest.first);
+      stdout.writeln('deleted ${rest.first}');
+    } finally {
+      client.close();
+    }
+  }
+}
+
+/// `omnyserver blueprint assign <id> <node>`
+class BlueprintAssignCommand extends Command<void> {
+  /// Creates the blueprint-assign command.
+  BlueprintAssignCommand() {
+    _addApiOptions(argParser);
+    _addSelectorOptions(argParser);
+  }
+
+  @override
+  String get name => 'assign';
+
+  @override
+  String get description =>
+      'Say a node should be this blueprint — runs nothing.';
+
+  @override
+  Future<void> run() async {
+    final args = argResults!;
+    final rest = args.rest;
+    if (rest.isEmpty) {
+      throw CliError(
+        'usage: blueprint assign <id> [<node>] [--label env=prod | --all]',
+      );
+    }
+    final blueprint = rest.first;
+
+    final client = _apiClientFrom(args);
+    try {
+      final nodes = await _selectNodes(
+        client,
+        args,
+        positional: rest.skip(1).toList(),
+      );
+      await _fanOut(nodes, (node) async {
+        await client.assignBlueprint(node, blueprint);
+        return 'assigned $blueprint';
+      });
+      // Said plainly: an operator who expects this to have *done* something will
+      // otherwise wonder why the machine is unchanged.
+      stdout.writeln('nothing has run — blueprint apply <node> to make it so');
+    } finally {
+      client.close();
+    }
+  }
+}
+
+/// `omnyserver blueprint unassign <node>`
+class BlueprintUnassignCommand extends Command<void> {
+  /// Creates the blueprint-unassign command.
+  BlueprintUnassignCommand() {
+    _addApiOptions(argParser);
+    _addSelectorOptions(argParser);
+    argParser.addFlag(
+      'purge-adopted',
+      negatable: false,
+      help:
+          'Also remove what the machine already had before this blueprint '
+          'touched it. Off by default, and deliberately.',
+    );
+  }
+
+  @override
+  String get name => 'unassign';
+
+  @override
+  String get description =>
+      'Take the blueprint off a node, removing what it installed.';
+
+  @override
+  Future<void> run() async {
+    final args = argResults!;
+    final purgeAdopted = args['purge-adopted'] as bool;
+
+    final client = _apiClientFrom(args);
+    try {
+      final nodes = await _selectNodes(client, args, positional: args.rest);
+      await _fanOut(nodes, (node) async {
+        final result = await client.unassign(node, purgeAdopted: purgeAdopted);
+        if (!result.success) {
+          // Still assigned, on purpose: the declaration is the only record of
+          // what is left to clean up.
+          return 'FAILED — ${result.changed} removed, still assigned';
+        }
+        return 'unassigned — ${result.changed} removed';
+      });
+    } finally {
+      client.close();
+    }
+  }
+}
+
+/// `omnyserver blueprint plan <node>`
+class BlueprintPlanCommand extends Command<void> {
+  /// Creates the blueprint-plan command.
+  BlueprintPlanCommand() {
+    _addApiOptions(argParser);
+  }
+
+  @override
+  String get name => 'plan';
+
+  @override
+  String get description =>
+      'Ask a node what would change — exits 2 when it has drifted.';
+
+  @override
+  Future<void> run() async {
+    final rest = argResults!.rest;
+    if (rest.isEmpty) throw CliError('usage: blueprint plan <node>');
+
+    final client = _apiClientFrom(argResults!);
+    try {
+      final drift = await client.drift(rest.first);
+      if (drift == null) {
+        throw CliError('nothing is declared for ${rest.first}');
+      }
+
+      if (drift.converged) {
+        stdout.writeln('${rest.first} is converged (${drift.blueprint})');
+        return;
+      }
+
+      stdout.writeln('${rest.first} has drifted from ${drift.blueprint}:');
+      for (final c in drift.changes) {
+        if (c.kind == ChangeKind.noop) continue;
+        stdout.writeln('  ${c.kind.name.padRight(8)} ${c.id}  — ${c.reason}');
+      }
+      // A distinct code, so this is usable in CI and on a timer without anyone
+      // having to parse the output.
+      exitCode = 2;
+    } finally {
+      client.close();
+    }
+  }
+}
+
+/// `omnyserver blueprint apply <node>`
+class BlueprintApplyCommand extends Command<void> {
+  /// Creates the blueprint-apply command.
+  BlueprintApplyCommand() {
+    _addApiOptions(argParser);
+    _addSelectorOptions(argParser);
+    argParser
+      ..addFlag('dry-run', negatable: false, help: 'Plan, and change nothing.')
+      ..addFlag(
+        'async',
+        negatable: false,
+        help: 'Do not wait. Prints an operation id to ask about later.',
+      );
+  }
+
+  @override
+  String get name => 'apply';
+
+  @override
+  String get description =>
+      'Make a node what its blueprint says it should be (idempotent).';
+
+  @override
+  Future<void> run() async {
+    final args = argResults!;
+    final dryRun = args['dry-run'] as bool;
+    final async = args['async'] as bool;
+
+    final client = _apiClientFrom(args);
+    try {
+      final nodes = await _selectNodes(client, args, positional: args.rest);
+      await _fanOut(nodes, (node) async {
+        if (async) {
+          final operation = await client.reconcileAsync(node, dryRun: dryRun);
+          return 'dispatched — ops show ${operation.id}';
+        }
+        final reply = await client.reconcile(node, dryRun: dryRun);
+        if (!reply.success) {
+          return 'FAILED — ${reply.changed} changed, ${reply.skipped} skipped';
+        }
+        return dryRun
+            ? 'would change ${reply.changed}'
+            : 'applied — ${reply.changed} changed';
+      });
     } finally {
       client.close();
     }
@@ -1414,13 +1842,13 @@ class FormulaListCommand extends Command<void> {
   Future<void> run() async {
     final client = _apiClientFrom(argResults!);
     try {
-      final formulas = (await client.get('/formulas') as List).cast<Map>();
+      final formulas = await client.formulas();
       stdout.writeln('FORMULA     NAME              ACTIONS');
       for (final f in formulas) {
-        final id = '${f['id']}'.padRight(11);
-        final name = '${f['name']}'.padRight(17);
-        final actions = (f['actions'] as List).join(', ');
-        stdout.writeln('$id $name $actions');
+        final actions = [for (final a in f.actions) a.name].join(', ');
+        stdout.writeln(
+          '${f.id.value.padRight(11)} ${f.name.padRight(17)} $actions',
+        );
       }
     } finally {
       client.close();
@@ -1475,26 +1903,30 @@ class FormulaRunCommand extends Command<void> {
         positional: rest.skip(1).toList(),
       );
       final async = args['async'] as bool;
+      final parsed = FormulaAction.parse(action);
       await _fanOut(nodes, (node) async {
-        final reply = await client.post('/nodes/$node/formula', {
-          'formula': formula,
-          'action': action,
-          'version': ?version,
-          if (async) 'async': true,
-        });
         if (async) {
-          final op = reply as Map;
-          return 'dispatched — ops show ${op['id']}';
+          final operation = await client.runFormulaAsync(
+            node,
+            formula: formula,
+            action: parsed,
+            version: version,
+          );
+          return 'dispatched — ops show ${operation.id}';
         }
-        final result = (reply as Map)['result'] as Map;
-        final ok = result['success'] == true;
-        final changed = result['changed'] == true;
-        final message = '${result['message'] ?? ''}';
+        final result = (await client.runFormula(
+          node,
+          formula: formula,
+          action: parsed,
+          version: version,
+        )).result;
         // The formula's own message is worth showing when it says something the
         // verdict does not — a failure's reason, or a version. "ok  ok" is not.
-        final detail = (message.isEmpty || message == 'ok') ? '' : '  $message';
-        return '$formula $action: ${ok ? 'ok' : 'FAILED'}'
-            '${changed ? ' (changed)' : ''}$detail';
+        final detail = (result.message.isEmpty || result.message == 'ok')
+            ? ''
+            : '  ${result.message}';
+        return '$formula $action: ${result.success ? 'ok' : 'FAILED'}'
+            '${result.changed ? ' (changed)' : ''}$detail';
       });
     } finally {
       client.close();
@@ -1559,20 +1991,18 @@ class GrantAddCommand extends Command<void> {
 
     final client = _apiClientFrom(args);
     try {
-      final grant =
-          await client.post('/grants', {
-                'principal': rest.first,
-                'roles': roles,
-                'note': args['note'] ?? '',
-              })
-              as Map;
+      final issued = await client.issueGrant(
+        principal: rest.first,
+        roles: roles.toSet(),
+        note: '${args['note'] ?? ''}',
+      );
 
       stdout
-        ..writeln('principal: ${grant['principal']}')
-        ..writeln('roles:     ${(grant['roles'] as List).join(', ')}')
-        ..writeln('grant id:  ${grant['id']}   (revoke it with this)')
+        ..writeln('principal: ${issued.grant.principal.value}')
+        ..writeln('roles:     ${issued.grant.roles.join(', ')}')
+        ..writeln('grant id:  ${issued.id}   (revoke it with this)')
         ..writeln('')
-        ..writeln('token:     ${grant['token']}')
+        ..writeln('token:     ${issued.token}')
         ..writeln('')
         // Said out loud, because a Hub that stores a hash genuinely cannot show
         // it again — and an operator who assumes otherwise finds out too late.
@@ -1603,19 +2033,16 @@ class GrantListCommand extends Command<void> {
   Future<void> run() async {
     final client = _apiClientFrom(argResults!);
     try {
-      final grants = (await client.get('/grants') as List).cast<Map>();
+      final grants = await client.grants();
       if (grants.isEmpty) {
         stdout.writeln('no credentials have been issued');
         return;
       }
       stdout.writeln('ID                        PRINCIPAL     ROLES');
       for (final g in grants) {
-        final id = '${g['id']}'.padRight(25);
-        final principal = '${g['principal']}'.padRight(13);
-        final roles = (g['roles'] as List).join(',');
-        final note = '${g['note'] ?? ''}';
         stdout.writeln(
-          '$id $principal$roles${note.isEmpty ? '' : '   # $note'}',
+          '${g.id.padRight(25)} ${g.principal.value.padRight(13)}'
+          '${g.roles.join(',')}${g.note.isEmpty ? '' : '   # ${g.note}'}',
         );
       }
     } finally {
@@ -1644,7 +2071,7 @@ class GrantRevokeCommand extends Command<void> {
     if (rest.isEmpty) throw CliError('usage: grant revoke <grant-id>');
     final client = _apiClientFrom(argResults!);
     try {
-      await client.delete('/grants/${rest.first}');
+      await client.revokeGrant(rest.first);
       stdout.writeln('revoked ${rest.first}');
     } finally {
       client.close();
@@ -1702,7 +2129,9 @@ class StateSetCommand extends Command<void> {
     if (!await file.exists()) {
       throw CliError('preset file not found: ${rest.first}');
     }
-    final preset = jsonDecode(await file.readAsString());
+    final preset = Preset.fromJson(
+      (jsonDecode(await file.readAsString()) as Map).cast<String, dynamic>(),
+    );
 
     final client = _apiClientFrom(args);
     try {
@@ -1712,12 +2141,10 @@ class StateSetCommand extends Command<void> {
         positional: rest.skip(1).toList(),
       );
       await _fanOut(nodes, (node) async {
-        final reply =
-            await client.put('/nodes/$node/desired-state', {'preset': preset})
-                as Map;
+        await client.declarePreset(node, preset);
         // Said plainly, because "declared" and "applied" are easy to confuse and
         // the difference is the whole feature.
-        return 'declared ${reply['steps']} steps (nothing has run yet)';
+        return 'declared ${preset.steps.length} steps (nothing has run yet)';
       });
     } finally {
       client.close();
@@ -1739,8 +2166,11 @@ class StateShowCommand extends Command<void> {
   String get description => 'Show what a node is declared to be.';
 
   @override
-  Future<void> run() =>
-      _getAndPrint(argResults!, 'show', (id) => '/nodes/$id/desired-state');
+  Future<void> run() => _showJson(
+    argResults!,
+    'state show',
+    (client, id) async => (await client.desiredState(id))?.toJson(),
+  );
 }
 
 /// `omnyserver state diff [<node>] [--label …]`
@@ -1768,18 +2198,28 @@ class StateDiffCommand extends Command<void> {
       var drifted = 0;
       for (final node in nodes) {
         try {
-          final plan = await client.get('/nodes/$node/drift') as Map;
-          if (plan['converged'] == true) {
+          final plan = await client.drift(node);
+          if (plan == null) {
+            stderr.writeln('${node.padRight(20)} nothing declared');
+            continue;
+          }
+          if (plan.converged) {
             stdout.writeln('${node.padRight(20)} converged');
             continue;
           }
           drifted++;
-          final actions = (plan['actions'] as List).cast<Map>();
+          // A node declared by a blueprint answers in resource changes; one
+          // declared by steps answers in actions. Exactly one is filled.
+          final pending = [
+            for (final c in plan.changes)
+              if (c.kind != ChangeKind.noop) '${c.kind.name} ${c.id}',
+            for (final s in plan.actions) '${s.action.name} ${s.formula.value}',
+          ];
           stdout.writeln(
-            '${node.padRight(20)} DRIFTED — ${actions.length} to run',
+            '${node.padRight(20)} DRIFTED — ${pending.length} to run',
           );
-          for (final step in actions) {
-            stdout.writeln('  ${step['action']} ${step['formula']}');
+          for (final line in pending) {
+            stdout.writeln('  $line');
           }
         } on HubApiException catch (e) {
           stderr.writeln('${node.padRight(20)} ${e.message}');
@@ -1823,18 +2263,20 @@ class StateReconcileCommand extends Command<void> {
       final nodes = await _selectNodes(client, args, positional: args.rest);
       final async = args['async'] as bool;
       await _fanOut(nodes, (node) async {
-        final reply =
-            await client.post('/nodes/$node/reconcile', {
-                  if (async) 'async': true,
-                })
-                as Map;
-        if (async) return 'dispatched — ops show ${reply['id']}';
-        final results = (reply['results'] as List).cast<Map>();
-        if (results.isEmpty) return 'already converged — nothing to do';
-        final failed = results.where((r) => r['success'] != true).length;
-        return failed == 0
-            ? 'converged (${results.length} steps ran)'
-            : 'FAILED $failed/${results.length} steps';
+        if (async) {
+          final operation = await client.reconcileAsync(node);
+          return 'dispatched — ops show ${operation.id}';
+        }
+        final reply = await client.reconcile(node);
+        // A node declared by preset steps reports per-step results; one
+        // declared by a blueprint reports counted changes. `ConvergeResult`
+        // answers both the same way.
+        final ran = reply.results.isEmpty
+            ? reply.changed
+            : reply.results.length;
+        if (ran == 0) return 'already converged — nothing to do';
+        final failed = reply.results.where((r) => !r.success).length;
+        return reply.success ? 'converged ($ran ran)' : 'FAILED $failed/$ran';
       });
     } finally {
       client.close();
@@ -1861,7 +2303,7 @@ class StateClearCommand extends Command<void> {
     if (rest.isEmpty) throw CliError('usage: state clear <node>');
     final client = _apiClientFrom(argResults!);
     try {
-      await client.delete('/nodes/${rest.first}/desired-state');
+      await client.undeclare(rest.first);
       stdout.writeln('cleared the desired state of ${rest.first}');
     } finally {
       client.close();
@@ -1899,13 +2341,13 @@ class EventsCommand extends Command<void> {
 
     final client = _apiClientFrom(args);
     try {
-      final events = (await client.get('/events') as List).cast<Map>();
+      final events = await client.events();
       if (events.isEmpty) {
         stdout.writeln('no events yet');
         return;
       }
       for (final e in events) {
-        stdout.writeln(_format(e));
+        stdout.writeln(_format(e.toJson()));
       }
     } finally {
       client.close();
@@ -1970,18 +2412,13 @@ class OpsListCommand extends Command<void> {
   @override
   Future<void> run() async {
     final args = argResults!;
-    final query = [
-      if (args['node'] != null)
-        'node=${Uri.encodeQueryComponent(args['node'] as String)}',
-      if (args['running'] as bool) 'running=true',
-    ].join('&');
 
     final client = _apiClientFrom(args);
     try {
-      final ops =
-          (await client.get('/operations${query.isEmpty ? '' : '?$query'}')
-                  as List)
-              .cast<Map>();
+      final ops = await client.operations(
+        nodeId: args['node'] as String?,
+        running: args['running'] as bool,
+      );
       if (ops.isEmpty) {
         stdout.writeln('no operations');
         return;
@@ -1990,10 +2427,10 @@ class OpsListCommand extends Command<void> {
         'ID                                    NODE        STATUS     WHAT',
       );
       for (final op in ops) {
-        final id = '${op['id']}'.padRight(37);
-        final node = '${op['nodeId']}'.padRight(11);
-        final status = '${op['status']}'.padRight(10);
-        stdout.writeln('$id $node $status ${op['kind']} ${op['summary']}');
+        stdout.writeln(
+          '${op.id.padRight(37)} ${op.nodeId.padRight(11)} '
+          '${op.status.name.padRight(10)} ${op.kind} ${op.summary}',
+        );
       }
     } finally {
       client.close();
@@ -2027,18 +2464,18 @@ class OpsShowCommand extends Command<void> {
 
     final client = _apiClientFrom(args);
     try {
-      var op = await client.get('/operations/${rest.first}') as Map;
+      var op = await client.operation(rest.first);
 
       // Polling, deliberately, and only when asked: an operation announces itself
       // finished on the event stream, so a *watcher* has no need to poll — but a
       // script that wants to block on one line does.
-      while ((args['wait'] as bool) && op['status'] == 'running') {
+      while ((args['wait'] as bool) && op.isRunning) {
         await Future<void>.delayed(const Duration(seconds: 1));
-        op = await client.get('/operations/${rest.first}') as Map;
+        op = await client.operation(rest.first);
       }
 
-      stdout.writeln(const JsonEncoder.withIndent('  ').convert(op));
-      if (op['status'] == 'failed') exitCode = 1;
+      stdout.writeln(const JsonEncoder.withIndent('  ').convert(op.toJson()));
+      if (op.status == OperationStatus.failed) exitCode = 1;
     } finally {
       client.close();
     }
@@ -2062,16 +2499,15 @@ class AlertsCommand extends Command<void> {
   Future<void> run() async {
     final client = _apiClientFrom(argResults!);
     try {
-      final alerts = (await client.get('/alerts') as List).cast<Map>();
+      final alerts = await client.alerts();
       if (alerts.isEmpty) {
         stdout.writeln('nothing is alerting');
         return;
       }
       final now = DateTime.now();
       for (final alert in alerts) {
-        final since = DateTime.parse(alert['since'] as String).toLocal();
-        final held = now.difference(since);
-        stdout.writeln('${alert['message']}  (for ${_humanize(held)})');
+        final held = now.difference(alert.since.toLocal());
+        stdout.writeln('${alert.message}  (for ${_humanize(held)})');
       }
       // Non-zero while anything is alerting, so this works as a health check in a
       // pipeline or a supervision script.
@@ -2106,7 +2542,7 @@ class AuditCommand extends Command<void> {
   Future<void> run() async {
     final client = _apiClientFrom(argResults!);
     try {
-      final entries = (await client.get('/audit') as List).cast<Map>();
+      final entries = await client.audit();
       if (entries.isEmpty) {
         stdout.writeln('no audited actions yet');
         return;
@@ -2115,14 +2551,11 @@ class AuditCommand extends Command<void> {
       // characters of mostly noise, and it ran into the next column.
       stdout.writeln('AT                   PRINCIPAL     ACTION');
       for (final e in entries) {
-        final at = DateTime.parse(
-          e['at'] as String,
-        ).toLocal().toString().split('.').first;
-        final target = e['target'] == null ? '' : ' ${e['target']}';
+        final at = e.at.toLocal().toString().split('.').first;
+        final target = e.target == null ? '' : ' ${e.target}';
         stdout.writeln(
-          '${at.padRight(20)} '
-          '${'${e['principal']}'.padRight(13)}'
-          '${e['action']}$target  (${e['outcome']})',
+          '${at.padRight(20)} ${e.principal.padRight(13)}'
+          '${e.action}$target  (${e.outcome.name})',
         );
       }
     } finally {
@@ -2153,13 +2586,12 @@ class WhoamiCommand extends Command<void> {
   Future<void> run() async {
     final client = _apiClientFrom(argResults!);
     try {
-      final me = await client.get('/whoami') as Map;
-      final roles = (me['roles'] as List).cast<String>();
-      stdout.writeln('principal: ${me['principal']}');
+      final me = await client.whoami();
+      stdout.writeln('principal: ${me.principal}');
       stdout.writeln(
-        'roles:     ${roles.isEmpty ? '(none)' : roles.join(', ')}',
+        'roles:     ${me.roles.isEmpty ? '(none)' : me.roles.join(', ')}',
       );
-      if (me['authenticated'] != true) {
+      if (!me.authenticated) {
         stdout.writeln('note:      the API is not gated (no --api-token).');
       }
     } finally {

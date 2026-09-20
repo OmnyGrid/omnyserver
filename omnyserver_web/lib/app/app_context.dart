@@ -92,6 +92,26 @@ abstract final class Routes {
   /// Issued credentials (admin only).
   static const String grants = '/credentials';
 
-  /// Every pattern, most specific first.
-  static const List<String> all = [shell, node, nodes, activity, grants, login];
+  /// Saved blueprints and presets.
+  static const String library = '/library';
+
+  /// One blueprint.
+  static const String blueprint = '/library/blueprints/:id';
+
+  /// One preset.
+  static const String preset = '/library/presets/:id';
+
+  /// Every pattern, most specific first — a literal segment before the
+  /// parameterised pattern that would otherwise swallow it.
+  static const List<String> all = [
+    shell,
+    node,
+    nodes,
+    blueprint,
+    preset,
+    library,
+    activity,
+    grants,
+    login,
+  ];
 }

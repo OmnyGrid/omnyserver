@@ -129,6 +129,8 @@ class TestCluster {
     CapabilityProvider? capabilityProvider,
     FormulaHandler? formulaHandler,
     FormulaStatusHandler? formulaStatusHandler,
+    BlueprintPlanHandler? blueprintPlanHandler,
+    BlueprintApplyHandler? blueprintApplyHandler,
     PresetHandler? presetHandler,
     NodeControlHandler? nodeControlHandler,
   }) async {
@@ -148,6 +150,8 @@ class TestCluster {
         capabilityProvider: capabilityProvider,
         formulaHandler: formulaHandler,
         formulaStatusHandler: formulaStatusHandler,
+        blueprintPlanHandler: blueprintPlanHandler,
+        blueprintApplyHandler: blueprintApplyHandler,
         presetHandler: presetHandler,
         nodeControlHandler: nodeControlHandler,
       ),

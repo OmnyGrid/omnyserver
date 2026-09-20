@@ -29,7 +29,23 @@ the two apps read as one product and the hard parts are solved once.
   *verified* rather than one a caller claimed.
 - **Declared state and drift.** What a node is *supposed* to be, whether it still
   is, and a one-click reconcile. Declaring runs nothing, and the UI says so —
-  confusing "declared" with "applied" is the easiest mistake here.
+  confusing "declared" with "applied" is the easiest mistake here. **Dry run**
+  asks the node what reconciling would do and changes nothing; a node whose
+  blueprint was edited after it last applied is told it is on an older revision,
+  which is a different fact from having drifted; and **Undeclare** offers to
+  take back what the blueprint installed, with a separate checkbox for what the
+  machine already had.
+- **Library.** Blueprints and presets, read and written here. A blueprint opens
+  on **Source** — the document somebody authored, comments intact, syntax
+  coloured, parsed in the browser so a typo is reported against the text in
+  front of you — with **Resolved** beside it: the includes flattened, each
+  resource naming where it came from and what it overrode, and the hash a node
+  is compared against. Assigning is by label in two steps, Preview naming every
+  node before Assign touches any of them, and the selectors the fleet actually
+  carries listed under the box. At the bottom, the nodes living by this
+  document — each one's standing against it, a Reconcile beside it, and the
+  row a way back to the machine. Presets are edited as JSON, because that is
+  what `preset save` on the CLI takes.
 - **Run.** Formulas and their actions come from the Hub's catalogue, so the UI
   offers what a node can actually do instead of a text box to get wrong; presets
   are applied from the Hub's library by id.
@@ -101,7 +117,11 @@ core/    OmnyServerService — the only thing that touches the Hub. Owns the
 state/   Auth and fleet controllers, over Observable/AsyncState.
                                                               [VM-testable]
 app/     bootstrap (wiring), AppContext, App (route guard + screen mounting)
-ui/      screens: login, fleet, node detail, activity, shell
+ui/      screens: login, fleet, node detail, library, blueprint, preset,
+         activity, credentials, shell — plus widgets.dart, the few the
+         shared kit has no opinion about (textarea, select, confirm, the
+         code editor), and code_tokens.dart, the YAML/JSON syntax
+         scanners.                            [code_tokens: VM-testable]
 ```
 
 The service and state layers import `omnyshell_web/foundation.dart` — the DOM-free

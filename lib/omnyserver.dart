@@ -17,6 +17,7 @@ export 'src/shared/utils/id_generator.dart';
 export 'src/shared/utils/omnyserver_home.dart';
 
 // Value objects.
+export 'src/domain/value_objects/blueprint_id.dart';
 export 'src/domain/value_objects/ed25519_public_key.dart';
 export 'src/domain/value_objects/formula_id.dart';
 export 'src/domain/value_objects/node_id.dart';
@@ -41,6 +42,15 @@ export 'src/domain/entities/operation.dart';
 export 'src/domain/entities/preset.dart';
 export 'src/domain/entities/resource_metrics.dart';
 export 'src/domain/entities/service_descriptor.dart';
+
+// Blueprints: what a server should be, and how a node reports on it.
+export 'src/domain/blueprint/blueprint.dart';
+export 'src/domain/blueprint/ledger.dart';
+export 'src/domain/blueprint/resolved_blueprint.dart';
+export 'src/domain/blueprint/resource.dart';
+export 'src/domain/blueprint/resource_change.dart';
+export 'src/domain/blueprint/resource_provider.dart';
+export 'src/domain/blueprint/resource_state.dart';
 
 // Auth contracts.
 export 'src/domain/auth/authenticator.dart';

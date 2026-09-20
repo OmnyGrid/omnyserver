@@ -1,3 +1,4 @@
+import 'package:omnyserver/omnyserver_client_web.dart' show Identity;
 import 'package:omnyshell_web/foundation.dart'
     show AppError, Observable, SettingsStore;
 

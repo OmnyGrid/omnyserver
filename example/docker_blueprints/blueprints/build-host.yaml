@@ -1,0 +1,30 @@
+# What a build host in this fleet is.
+#
+# Shares `base-tools` with the web servers — the same preset, not a copy of it.
+
+blueprint: build-host
+name: Build host
+description: A host that compiles things.
+
+platforms: [linux]
+
+includes:
+  - base-tools
+
+resources:
+  # gcc and make. This is the one resource in the example that takes a minute
+  # to install; watch it happen on the node's log in the dashboard, tagged
+  # `[formula:build-tools]`.
+  - type: formula
+    name: build-tools
+    ensure: installed
+
+  # Already true on this host — the container is built from the Dart image.
+  #
+  # So the first plan reports it as needing nothing, and the node records it as
+  # **adopted**: this system did not put it there, and unassigning the blueprint
+  # later must not take it away. That distinction is the whole reason the node
+  # keeps a ledger rather than inferring ownership from the document.
+  - type: formula
+    name: dart
+    ensure: installed
