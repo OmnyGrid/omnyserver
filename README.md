@@ -92,6 +92,11 @@ See the [API Documentation][api_doc] for the full list of classes and APIs.
   SSH, CUDA, Metal, OpenCL — detected dynamically.
 - **Formulas & presets** — idempotent, cross-platform install/manage procedures,
   composed into presets, with desired-state reconciliation.
+- **Server Blueprints** — declare what a whole machine *is*, composed from the
+  presets you already share. Each resource says what it should *be*, so applying
+  twice does nothing, drift is the same check with the apply left off, and a
+  resource you delete from the blueprint is removed from the node. See
+  [Blueprints](#blueprints--what-a-server-is).
 - **Runs as an OS service** — `omnyserver service install hub|node` installs the
   Hub or an agent as a systemd unit, a launchd job or a Windows scheduled task,
   so it survives a reboot. See [Run as an OS service](#run-as-an-os-service).
@@ -103,7 +108,7 @@ See the [API Documentation][api_doc] for the full list of classes and APIs.
   and Prometheus/OpenTelemetry-ready `/metrics`, served on the Hub's own TLS port
   beside the node channel — one port to open, one certificate to manage.
 - **Events** — `NodeConnected`, `HeartbeatReceived`, `FormulaFinished`,
-  `PresetApplied`, … with subscriptions and streaming.
+  `PresetApplied`, `BlueprintApplied`, … with subscriptions and streaming.
 - **Remote shell** — the Hub can also broker [OmnyShell][omnyshell] sessions on
   the same port and credentials (`--shell`), and a node can be both an OmnyServer
   agent and an OmnyShell node in one process (`--with-shell`).
@@ -372,6 +377,46 @@ mint itself an admin token.
 > **`--data-dir` is not optional in production.** Without it the Hub keeps nodes,
 > the audit trail, metrics, declared state *and issued credentials* in memory
 > only, and forgets all of it when it stops.
+
+### Blueprints — what a server *is*
+
+A blueprint declares a whole machine, composed from the presets you already
+have. Write it in YAML or JSON; the format is fixed when you author it, so a
+YAML blueprint comes back as the YAML you wrote, comments and all.
+
+```yaml
+# builder.yaml
+blueprint: builder
+name: Build host
+includes: [dev-tools]            # a preset, shared with everything else
+resources:
+  - { type: formula, name: nmap, ensure: installed }
+  - { type: formula, name: docker, ensure: running }
+```
+
+```sh
+omnyserver blueprint save builder.yaml
+omnyserver blueprint assign builder --label role=build   # declare; runs nothing
+omnyserver blueprint plan worker-01                      # what would change?
+omnyserver blueprint apply --label role=build            # make it so
+```
+
+Each resource says what it should **be**, not what to do to it. That one choice
+is why applying twice is a no-op, why drift detection is the same comparison
+with the apply left off, and why uninstalling is `ensure: absent` rather than a
+separate command.
+
+`includes` names presets and does not copy them, so fixing a shared piece
+reaches every machine built on it — the next `plan` on each will say so.
+`blueprint resolved builder` shows the flattened result, every resource naming
+which document it came from and what it overrode.
+
+**The node does the planning**, because that is where the machine is. A plan
+built from what the Hub last heard is a plan built from intentions, and a node
+is something other people also touch.
+
+`blueprint plan` exits **2** when a node has drifted, so it works as a check in
+a pipeline without parsing output.
 
 ### Desired state, and drift
 

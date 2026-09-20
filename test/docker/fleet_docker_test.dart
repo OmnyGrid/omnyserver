@@ -370,6 +370,138 @@ void main() {
     }
   }, timeout: const Timeout(Duration(minutes: 10)));
 
+  test('a blueprint makes a real machine what it says', () async {
+    if (await skipWithoutDocker()) return;
+    // Everything else about blueprints is tested against fakes. This is the one
+    // that can be wrong in a way nothing else catches: a plan that reads a real
+    // machine, an apply that changes it, and a second plan that agrees the work
+    // is done.
+    await fleet.startHub();
+    await fleet.startNode(id: 'bare-01');
+
+    final client = fleet.apiClient();
+    try {
+      await fleet.eventually(
+        () async => (await client.get('/nodes') as List).length,
+        (count) => count == 1,
+        what: 'the node to register',
+      );
+
+      // A shared preset, and a blueprint built from it plus one of its own.
+      await client.post('/presets', {
+        'id': 'dev-tools',
+        'name': 'Dev tools',
+        'steps': [
+          {'formula': 'build-tools', 'action': 'install'},
+        ],
+      });
+      await client.post('/blueprints', {
+        'blueprint': 'builder',
+        'name': 'Build host',
+        'includes': ['dev-tools'],
+        'resources': [
+          {'type': 'formula', 'name': 'nmap', 'ensure': 'installed'},
+        ],
+      });
+      await client.put('/nodes/bare-01/desired-state', {
+        'blueprint': 'builder',
+      });
+
+      Future<Map> plan() async =>
+          await client.get('/nodes/bare-01/drift') as Map;
+
+      // What the *machine* says, probed on the host itself — `gcc --version`,
+      // `nmap --version` — rather than what the Hub believes about it.
+      Future<Map<String, String>> onTheBox() async {
+        final rows = await client.get('/nodes/bare-01/formulas') as List;
+        return {
+          for (final row in rows.cast<Map>())
+            row['formula'] as String: row['status'] as String,
+        };
+      }
+
+      // 1. Drifted, and the node is what said so — each change naming which
+      //    document asked for it.
+      final before = await plan();
+      expect(before['converged'], isFalse);
+      expect(before['blueprint'], 'builder');
+      final changes = (before['changes'] as List).cast<Map>();
+      expect(
+        {for (final c in changes) c['resource']: c['origin']},
+        {'formula:build-tools': 'preset:dev-tools', 'formula:nmap': 'local'},
+      );
+
+      expect(
+        (await onTheBox())['nmap'],
+        'absent',
+        reason: 'nothing has been applied yet',
+      );
+
+      // 2. Apply, and the tools genuinely arrive on the host.
+      final applied =
+          await client.post('/nodes/bare-01/reconcile', const {}) as Map;
+      expect(applied['success'], isTrue, reason: '${applied['changes']}');
+      expect(applied['changed'], 2);
+
+      final after = await onTheBox();
+      expect(after['nmap'], 'installed');
+      expect(after['build-tools'], 'installed');
+
+      // 3. Converged, and applying again does nothing. This is the property the
+      //    whole design rests on: if applying twice did the work twice, drift
+      //    could not be the same comparison with the apply left off.
+      expect((await plan())['converged'], isTrue);
+      final again =
+          await client.post('/nodes/bare-01/reconcile', const {}) as Map;
+      expect(again['changed'], 0);
+
+      // 4. Drop nmap from the blueprint. The document no longer mentions it, so
+      //    only the node's ledger can ask for its removal.
+      await client.post('/blueprints', {
+        'blueprint': 'builder',
+        'name': 'Build host',
+        'includes': ['dev-tools'],
+      });
+
+      final trimmed = await plan();
+      expect(trimmed['converged'], isFalse);
+      final removal = (trimmed['changes'] as List).cast<Map>().singleWhere(
+        (c) => c['kind'] == 'remove',
+      );
+      expect(removal['resource'], 'formula:nmap');
+      expect(removal['origin'], 'ledger');
+
+      await client.post('/nodes/bare-01/reconcile', const {});
+      expect(
+        (await onTheBox())['nmap'],
+        'absent',
+        reason: 'the ledger asked for it to go, and it went',
+      );
+
+      // 5. Edit the shared preset. The blueprint is not re-saved and nobody
+      //    touches the node, and it drifts anyway — includes follow the preset.
+      await client.post('/presets', {
+        'id': 'dev-tools',
+        'name': 'Dev tools',
+        'steps': [
+          {'formula': 'build-tools', 'action': 'install'},
+          {'formula': 'net-tools', 'action': 'install'},
+        ],
+      });
+
+      final propagated = await plan();
+      expect(propagated['converged'], isFalse);
+      expect(
+        (propagated['changes'] as List).cast<Map>().singleWhere(
+          (c) => c['kind'] == 'create',
+        )['resource'],
+        'formula:net-tools',
+      );
+    } finally {
+      client.close();
+    }
+  }, timeout: const Timeout(Duration(minutes: 10)));
+
   test('a node reports what it actually has, before and after', () async {
     if (await skipWithoutDocker()) return;
     // The point of asking the node rather than reading the Hub's history: only

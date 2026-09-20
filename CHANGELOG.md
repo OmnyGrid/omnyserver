@@ -1,3 +1,130 @@
+## 0.17.0
+
+**Server Blueprints.** A blueprint is what a server *is*: a declaration composed
+from the presets you already have, plus whatever that role needs on top.
+Assigning one to a node and applying it turns an unmanaged machine into that,
+and keeps it there.
+
+### Added
+
+- **Blueprints, built from the presets that already exist.**
+
+  The Hub could say what it had *dispatched* to a node — installed Docker at
+  14:02, and it succeeded. It could not say what a node *is*. `Preset` said *do
+  these things*, imperatively; `DesiredState` was declarative in shape but its
+  reconciler compared formula ids against advertised capabilities, so it could
+  only ever answer "is X installed" and never "does this config file have the
+  right contents".
+
+  A blueprint is a flat list of **resources**, each identified as `type:name`
+  (`formula:docker`) and each declaring what it should *be* rather than what to
+  do to it:
+
+  ```yaml
+  blueprint: builder
+  name: Build host
+  includes: [dev-tools]          # a preset, shared with everything else
+  resources:
+    - { type: formula, name: nmap, ensure: installed }
+  ```
+
+  `includes` names presets, and they are not copied — an include follows the
+  preset, so a fix to a shared piece reaches every machine built on it. The one
+  provider in this release is `formula`, so every formula a node already has is
+  a resource, and **every preset ever saved composes with nothing rewritten**:
+  each `FormulaAction` has a state it was reaching for (`install` → `installed`,
+  `start` → `running`, `uninstall` → `absent`), and the mapping is total.
+
+  Declaring states rather than actions is what makes the rest fall out.
+  Applying twice is a no-op, because the second plan is empty. Drift detection
+  is the same comparison with the apply left off. Uninstall is `ensure: absent`.
+  There is no separate update path — save a new version, re-plan, apply.
+
+- **Planning happens on the node, because that is where the machine is.**
+
+  `GET /api/v1/nodes/<id>/drift` asks the node when a blueprint is assigned: the
+  Hub resolves the document and sends it down, and the node reads its own
+  resources and answers. That needs the node online, and it is the difference
+  between checking the machine and checking what the Hub last heard.
+
+  A node declared by preset steps keeps the original path, planned Hub-side from
+  advertised capabilities — which costs nothing and works while the node is
+  away. One endpoint either way, because "how far has this node drifted" is one
+  question however it was declared. `POST /reconcile` likewise, and it takes
+  `dryRun` now.
+
+- **A ledger, so a blueprint can be edited and not only added to.**
+
+  Each node records what this system put there. Delete a resource from a
+  blueprint and the document no longer mentions it — so the document cannot ask
+  for its removal; only the record of what was applied last time can. Without
+  it, removing a line would leave that software running on every server it ever
+  reached, forever.
+
+  Anything that was already correct before a single write is marked **adopted**
+  and is never removed on unassign without an explicit `--purge-adopted`. If
+  nginx was on the box a year before anyone wrote a blueprint, unassigning must
+  not uninstall it.
+
+- **`omnyserver blueprint save|list|show|resolved|delete|assign|plan|apply`.**
+
+  A blueprint's format is fixed when it is authored: save a `.yaml` and `show`
+  hands back that YAML, comments and all, because the source travels with the
+  parsed form. Save a `.json` and it stays JSON. The two are never mixed in one
+  place; the Hub, the wire and the repositories are JSON throughout, where there
+  is nothing human to mix.
+
+  `blueprint resolved` is the answer to "this is made of four presets and is not
+  doing what I expected" — the flattened list, each resource naming where it
+  came from and what it overrode. `blueprint plan` exits **2** when a node has
+  drifted, so a pipeline can read the result without parsing output.
+
+- **The dashboard's Declared state card** renders resource changes with their
+  provenance, and blueprints lead the declare controls.
+
+### Three orderings that are load-bearing
+
+- **Present is checked before running.** A stopped daemon and an uninstalled one
+  both fail a running probe; calling the second "stopped" sends an operator to a
+  start button for software that is not there.
+- **A probe that could not run is `unknown`, and `unknown` satisfies nothing.**
+  Not `absent` — "not installed" invites an install, and installing over
+  something that already works is how a failed probe becomes an outage. A plan
+  containing an unknown is never converged, because treating silence as
+  agreement would report a blind node as healthy.
+- **Orphan removal runs in reverse.** Creation order was dependency order, so
+  teardown is that read backwards, or something is removed while something still
+  standing depends on it.
+
+### Refused before a node ever sees it
+
+Saving a blueprint resolves it first, so these come back as a `400` with the
+file still open rather than as a failure half way through changing a real
+machine: a dependency cycle, a `requires` naming nothing, a `${var}` nothing
+declares, an include naming a preset nobody saved, and `ensure: running` on a
+formula that manages no service — that last one could never converge, and would
+report drift forever that applying does not fix.
+
+### Fixed
+
+- **`ProtocolException` reached clients as a `500`.** A malformed id or an
+  unknown enum value is a request the Hub understood well enough to judge wrong,
+  which is a `400`. A `500` says the Hub broke, and sends the caller looking in
+  the wrong logs.
+
+### Changed
+
+- `DesiredState` gains an optional `blueprint` binding beside its `steps`, and
+  `Drift` gains `changes` beside `actions`. Additive: exactly one is ever
+  filled, and a client written against the preset shape keeps working.
+- `DefaultStateReconciler` is **untouched**. It is synchronous and runs Hub-side
+  against cached capabilities, which is exactly what makes it work on an offline
+  node — worth keeping rather than widening.
+- New dependency: `yaml ^3.1.4`, for reading a blueprint authored as YAML.
+  CLI-only, and kept out of the web barrel's import graph.
+
+---
+
 ## 0.16.2
 
 A coverage release, and what it turned up.
