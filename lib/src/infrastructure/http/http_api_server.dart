@@ -27,10 +27,12 @@ import '../../application/hub/hub_metrics.dart';
 import '../../application/hub/omny_server_hub.dart';
 import '../../domain/auth/credential.dart';
 import '../../domain/auth/principal.dart' as domain;
+import '../../domain/blueprint/blueprint.dart';
 import '../../domain/entities/preset.dart';
 import '../../domain/formula/formula_action.dart';
 import '../../domain/state/desired_state.dart';
 import '../../domain/state/drift.dart';
+import '../../domain/value_objects/blueprint_id.dart';
 import '../../domain/value_objects/node_id.dart';
 import '../../domain/value_objects/preset_id.dart';
 import '../../domain/value_objects/principal_id.dart';
@@ -249,6 +251,16 @@ class HttpApiServer {
         ..post('/api/v1/nodes/<id>/formula', (r, p) => _formula(r, p))
         ..get('/api/v1/nodes/<id>/formulas', (r, p) => _formulaStatus(r, p))
         ..get('/api/v1/formulas', (r, p) => _listFormulas())
+        // Before `/blueprints/<id>`: the router takes the first match, and
+        // `resolved` is reached through the id below, not as one.
+        ..get('/api/v1/blueprints', (r, p) => _listBlueprints())
+        ..post('/api/v1/blueprints', (r, p) => _saveBlueprint(r))
+        ..get(
+          '/api/v1/blueprints/<id>/resolved',
+          (r, p) => _resolvedBlueprint(p),
+        )
+        ..get('/api/v1/blueprints/<id>', (r, p) => _getBlueprint(p))
+        ..delete('/api/v1/blueprints/<id>', (r, p) => _deleteBlueprint(r, p))
         // Before `/presets/<id>`: the router takes the first match, and `apply`
         // is not a preset id.
         ..post('/api/v1/presets/apply', (r, p) => _applyPreset(r))
@@ -473,6 +485,67 @@ class HttpApiServer {
     return jsonOk([for (final report in reports) report.toJson()]);
   }
 
+  // ---------------------------------------------------------------------------
+  // Blueprints
+  // ---------------------------------------------------------------------------
+
+  /// Every blueprint saved on the Hub.
+  Future<HubResponse> _listBlueprints() async => jsonOk([
+    for (final blueprint in await hub.listBlueprints()) blueprint.toJson(),
+  ]);
+
+  Future<HubResponse> _getBlueprint(Map<String, String> params) async {
+    final blueprint = await hub.blueprintFor(BlueprintId(params['id']!));
+    if (blueprint == null) {
+      throw NotFoundException('unknown blueprint ${params['id']}');
+    }
+    return jsonOk(blueprint.toJson());
+  }
+
+  /// Saves a blueprint, refusing one that could never be applied.
+  ///
+  /// The Hub resolves before it stores, so a dependency cycle, an undeclared
+  /// variable, or an include naming a preset nobody saved comes back as a `400`
+  /// while the author is still looking at the file — rather than as a failure
+  /// half way through an apply on a real machine.
+  Future<HubResponse> _saveBlueprint(HubRequest request) async {
+    _authorize(request, 'blueprint.save');
+    final body = await _readJson(request);
+    final blueprint = Blueprint.fromJson(body);
+    await hub.saveBlueprint(blueprint, principal: _principal(request));
+    return jsonOk({
+      'status': 'saved',
+      'id': blueprint.id.value,
+      'resources': blueprint.resources.length,
+      'includes': blueprint.includes.length,
+    });
+  }
+
+  Future<HubResponse> _deleteBlueprint(
+    HubRequest request,
+    Map<String, String> params,
+  ) async {
+    _authorize(request, 'blueprint.save');
+    final id = BlueprintId(params['id']!);
+    final deleted = await hub.deleteBlueprint(
+      id,
+      principal: _principal(request),
+    );
+    if (!deleted) throw NotFoundException('unknown blueprint ${id.value}');
+    return jsonOk({'status': 'deleted', 'id': id.value});
+  }
+
+  /// A blueprint flattened: includes expanded, variables substituted, resources
+  /// in the order they would be settled, and the hash over all of it.
+  ///
+  /// What a node is actually sent, and what an operator should read when a
+  /// blueprint composed from four presets is not doing what they expected —
+  /// every resource names where it came from, and what it overrode.
+  Future<HubResponse> _resolvedBlueprint(Map<String, String> params) async {
+    final resolved = await hub.resolvedBlueprint(BlueprintId(params['id']!));
+    return jsonOk(resolved.toJson());
+  }
+
   /// Applies a preset: either one sent inline, or one saved on the Hub by id.
   ///
   /// The saved form is the one worth using. A preset shipped inline is whatever
@@ -651,10 +724,19 @@ class HttpApiServer {
     }
 
     final body = await _readJson(request);
-    // Either a bare `{steps: [...]}`, or a whole preset — an operator declaring
-    // "this node is a docker host" has a preset in hand, not a step list.
+    // Three forms. A blueprint id is the one to reach for — it is what a machine
+    // *is*, composes the shared presets, and can declare states a step list
+    // cannot. The other two are the original shapes, and still work: a whole
+    // preset, because an operator declaring "this node is a docker host" has a
+    // preset in hand; or a bare `{steps: [...]}`.
     final DesiredState desired;
-    if (body['preset'] case final Map preset) {
+    if (body['blueprint'] case final String blueprint) {
+      final id = BlueprintId(blueprint);
+      if (await hub.blueprintFor(id) == null) {
+        throw NotFoundException('unknown blueprint ${id.value}');
+      }
+      desired = DesiredState.fromBlueprint(id);
+    } else if (body['preset'] case final Map preset) {
       desired = DesiredState.fromPresets([
         Preset.fromJson(preset.cast<String, dynamic>()),
       ]);
@@ -666,6 +748,7 @@ class HttpApiServer {
     return jsonOk({
       'status': 'declared',
       'nodeId': id.value,
+      if (desired.blueprint != null) 'blueprint': desired.blueprint!.value,
       'steps': desired.steps.length,
     });
   }
@@ -689,8 +772,33 @@ class HttpApiServer {
   /// still is what it was declared to be — which is the question nothing could
   /// ask before, and the reason to declare a state rather than just apply a
   /// preset and hope.
+  /// One endpoint, two ways of getting the answer — because "how far has this
+  /// node drifted" is one question however the node was declared.
+  ///
+  /// A node assigned a **blueprint** is asked directly: the Hub resolves and
+  /// the node reads its own resources. That needs the node online, and it is
+  /// worth it — it is the difference between checking the machine and checking
+  /// what the Hub last heard. A node declared by **steps** keeps the original
+  /// path, planned Hub-side off its advertised capabilities, which costs nothing
+  /// and works while the node is away.
   Future<HubResponse> _getDrift(Map<String, String> params) async {
     final id = _nodeId(params);
+    final desired = await hub.desiredStateFor(id);
+
+    if (desired?.blueprint case final BlueprintId blueprint) {
+      final plan = await hub.planBlueprint(id);
+      return jsonOk(
+        Drift(
+          nodeId: id.value,
+          converged: plan.converged,
+          changes: plan.changes,
+          blueprint: blueprint.value,
+          appliedHash: plan.appliedHash,
+          notes: plan.notes,
+        ).toJson(),
+      );
+    }
+
     final plan = await hub.drift(id);
     // The typed wire form, so a client decodes the same shape the Hub encodes
     // rather than picking at raw JSON.
@@ -717,20 +825,34 @@ class HttpApiServer {
     final principal = _principal(request);
 
     final body = await _readJson(request);
+    final desired = await hub.desiredStateFor(id);
+    final blueprint = desired?.blueprint;
+
+    // Same endpoint for both, because "make this node what it was declared to
+    // be" is one instruction. Only the machinery underneath differs.
+    Future<Map<String, dynamic>> converge() async => blueprint == null
+        ? (await hub.reconcile(id, principal: principal)).toJson()
+        : (await hub.applyBlueprint(
+            id,
+            dryRun: body['dryRun'] == true,
+            purgeAdopted: body['purgeAdopted'] == true,
+            principal: principal,
+          )).toJson();
+
     if (body['async'] == true) {
       final operation = hub.dispatch(
-        kind: 'reconcile',
+        kind: blueprint == null ? 'reconcile' : 'blueprint',
         nodeId: id,
-        summary: 'converge to the declared state',
+        summary: blueprint == null
+            ? 'converge to the declared state'
+            : blueprint.value,
         principal: principal,
-        work: () async =>
-            (await hub.reconcile(id, principal: principal)).toJson(),
+        work: converge,
       );
       return jsonOk(operation.toJson(), status: 202);
     }
 
-    final result = await hub.reconcile(id, principal: principal);
-    return jsonOk(result.toJson());
+    return jsonOk(await converge());
   }
 
   /// The tail of what a node has reported.

@@ -39,6 +39,7 @@ class RoleBasedAuthorizer implements Authorizer {
     'node.update': {'operator'},
     'formula.': {'operator'},
     'preset.': {'operator'},
+    'blueprint.': {'operator'},
     'state.': {'operator'},
   };
 

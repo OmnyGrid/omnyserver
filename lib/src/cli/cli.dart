@@ -625,6 +625,17 @@ class NodeStartCommand extends Command<void> {
     // lines were produced and dropped: nothing was listening.
     final formulaService = NodeFormulaService(registry: registry, onLog: log);
 
+    // Blueprints run over the same formulas, through a provider. The ledger goes
+    // on disk, under the node's own home: an in-memory one would forget what the
+    // node owns on every restart, and a node that has forgotten what it owns can
+    // never really have a blueprint unassigned from it — it would adopt
+    // everything it found and remove nothing.
+    final blueprintService = NodeBlueprintService(
+      providers: ProviderRegistry.of([FormulaProvider(registry: registry)]),
+      ledgers: FileLedgerStore(OmnyServerHome.ensure().path),
+      onLog: log,
+    );
+
     final agentConfig = NodeAgentConfig(
       hubUri: Uri.parse(hub),
       nodeId: id,
@@ -641,6 +652,8 @@ class NodeStartCommand extends Command<void> {
       capabilityProvider: scanner.scan,
       formulaHandler: formulaService.runFormula,
       formulaStatusHandler: formulaService.reportStatus,
+      blueprintPlanHandler: blueprintService.plan,
+      blueprintApplyHandler: blueprintService.apply,
       presetHandler: formulaService.applyPreset,
       nodeControlHandler: updateService.handle,
       logger: log,

@@ -16,8 +16,12 @@ import '../../domain/entities/formula_spec.dart';
 import '../../domain/entities/node_status.dart';
 import '../../domain/entities/preset.dart';
 import '../../domain/events/omny_event.dart';
+import '../../domain/blueprint/blueprint.dart';
+import '../../domain/blueprint/resolved_blueprint.dart';
 import '../../domain/formula/formula_action.dart';
 import '../../domain/formula/formula_status.dart';
+import '../../domain/value_objects/blueprint_id.dart';
+import 'blueprint_resolver.dart';
 import '../../domain/repository/repositories.dart';
 import '../../domain/value_objects/node_id.dart';
 import '../../domain/value_objects/preset_id.dart';
@@ -824,7 +828,7 @@ class OmnyServerHub {
       action: 'state.declare',
       target: id.value,
       outcome: AuditOutcome.success,
-      detail: '${state.steps.length} steps',
+      detail: state.summary,
     );
   }
 
@@ -858,6 +862,155 @@ class OmnyServerHub {
       CurrentState(capabilities: node.capabilities),
     );
   }
+
+  /// How far [id] has drifted from the blueprint assigned to it.
+  ///
+  /// Unlike [drift], this **asks the node**. The blueprint is resolved here and
+  /// sent down; the node reads its own resources and answers. That costs a round
+  /// trip and needs the node online, and both are the price of an answer about
+  /// the machine rather than about what the Hub last heard — which is the whole
+  /// reason blueprints exist.
+  Future<BlueprintPlanResult> planBlueprint(NodeId id) async {
+    final resolved = await _resolvedFor(id);
+    final reply = await _call(
+      id,
+      Operations.blueprintPlan,
+      BlueprintPlanRequest(
+        requestId: config.idGenerator.next(),
+        blueprint: resolved,
+      ).toJson(),
+    );
+    return BlueprintPlanResult.fromJson(reply);
+  }
+
+  /// Makes [id] what its blueprint says it should be.
+  ///
+  /// Idempotent by construction: a converged node plans no work, so applying
+  /// twice changes nothing the second time. That is what makes it safe on a
+  /// timer or in a pipeline.
+  Future<BlueprintApplyResult> applyBlueprint(
+    NodeId id, {
+    bool dryRun = false,
+    bool purgeAdopted = false,
+    String principal = 'system',
+  }) async {
+    final resolved = await _resolvedFor(id);
+    final reply = await _call(
+      id,
+      Operations.blueprintApply,
+      BlueprintApplyRequest(
+        requestId: config.idGenerator.next(),
+        blueprint: resolved,
+        dryRun: dryRun,
+        purgeAdopted: purgeAdopted,
+      ).toJson(),
+    );
+    final result = BlueprintApplyResult.fromJson(reply);
+
+    config.eventBus.publish(
+      BlueprintApplied(
+        id,
+        resolved.blueprint.value,
+        result.success,
+        config.clock.now(),
+      ),
+    );
+    // A dry run is not audited as a change, because it was not one.
+    if (!dryRun) {
+      await audit.record(
+        principal: principal,
+        action: 'blueprint.apply',
+        outcome: result.success ? AuditOutcome.success : AuditOutcome.failure,
+        target: id.value,
+        detail: '${resolved.blueprint.value}: ${result.changed} changed',
+      );
+    }
+    return result;
+  }
+
+  /// The blueprint assigned to [id], resolved and ready to send.
+  Future<ResolvedBlueprint> _resolvedFor(NodeId id) async {
+    final desired = await config.desiredStateRepository.find(id);
+    final assigned = desired?.blueprint;
+    if (assigned == null) {
+      throw NotFoundException('no blueprint assigned to ${id.value}');
+    }
+    return resolvedBlueprint(assigned);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Blueprints: what a machine is, composed from the presets above.
+  // ---------------------------------------------------------------------------
+
+  /// Saves a blueprint on the Hub.
+  ///
+  /// Resolved first, and refused if that fails. A blueprint with a dependency
+  /// cycle, an undeclared variable or an include naming a preset nobody saved is
+  /// one that can never be applied, and the moment to say so is while the author
+  /// is still looking at the file.
+  Future<void> saveBlueprint(
+    Blueprint blueprint, {
+    String principal = 'system',
+  }) async {
+    final resolved = await _resolve(blueprint);
+    await config.blueprintRepository.save(blueprint);
+    await audit.record(
+      principal: principal,
+      action: 'blueprint.save',
+      target: blueprint.id.value,
+      outcome: AuditOutcome.success,
+      detail: '${resolved.resources.length} resources',
+    );
+  }
+
+  /// Every blueprint saved on the Hub, by id.
+  Future<List<Blueprint>> listBlueprints() async =>
+      (await config.blueprintRepository.all())
+        ..sort((a, b) => a.id.value.compareTo(b.id.value));
+
+  /// The blueprint with [id], or `null`.
+  Future<Blueprint?> blueprintFor(BlueprintId id) =>
+      config.blueprintRepository.find(id);
+
+  /// Deletes the blueprint with [id]; true if it existed.
+  Future<bool> deleteBlueprint(
+    BlueprintId id, {
+    String principal = 'system',
+  }) async {
+    final deleted = await config.blueprintRepository.delete(id);
+    if (deleted) {
+      await audit.record(
+        principal: principal,
+        action: 'blueprint.save',
+        target: id.value,
+        outcome: AuditOutcome.success,
+        detail: 'deleted',
+      );
+    }
+    return deleted;
+  }
+
+  /// The blueprint with [id], flattened: includes expanded, variables
+  /// substituted, resources ordered, hashed.
+  Future<ResolvedBlueprint> resolvedBlueprint(BlueprintId id) async {
+    final blueprint = await config.blueprintRepository.find(id);
+    if (blueprint == null) {
+      throw NotFoundException('unknown blueprint ${id.value}');
+    }
+    return _resolve(blueprint);
+  }
+
+  /// Resolves [blueprint] against every preset this Hub holds.
+  ///
+  /// All of them, not only the ones named: the resolver looks includes up by id,
+  /// and handing it the whole library is cheaper than reading them one at a time
+  /// — and means a missing include is reported by the resolver, which can say
+  /// which blueprint asked for it.
+  Future<ResolvedBlueprint> _resolve(Blueprint blueprint) async =>
+      const BlueprintResolver().resolve(
+        blueprint,
+        await config.presetRepository.all(),
+      );
 
   /// Runs whatever [drift] says is outstanding, and returns what happened.
   ///
