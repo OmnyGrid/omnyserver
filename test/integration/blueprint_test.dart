@@ -8,6 +8,8 @@ import 'package:omnyserver/omnyserver_hub.dart';
 import 'package:omnyserver/omnyserver_node.dart'
     show
         CommandExecutor,
+        CommandFormula,
+        CommandStep,
         ExecResult,
         FormulaProvider,
         FormulaRegistry,
@@ -42,7 +44,7 @@ class _ScriptedExecutor implements CommandExecutor {
   /// Every command line this executor was asked to run.
   final List<String> calls = [];
 
-  static const Set<String> _known = {'dart', 'nmap', 'docker'};
+  static const Set<String> _known = {'dart', 'nmap', 'docker', 'build-tools'};
 
   @override
   Future<ExecResult> run(
@@ -60,14 +62,6 @@ class _ScriptedExecutor implements CommandExecutor {
           : const ExecResult(exitCode: 127, stderr: 'not found');
     }
 
-    // Docker's status probe has to reach a daemon, which this machine has only
-    // if docker was installed.
-    if (executable == 'docker') {
-      return installed.contains('docker')
-          ? const ExecResult(exitCode: 0, stdout: '24.0.7')
-          : const ExecResult(exitCode: 1, stderr: 'cannot connect');
-    }
-
     // Anything else is an install or an uninstall, and it works. Which tool it
     // was is read off the command line — every install step names what it is
     // installing.
@@ -82,6 +76,48 @@ class _ScriptedExecutor implements CommandExecutor {
     }
     return const ExecResult(exitCode: 0, stdout: 'done');
   }
+}
+
+/// A real `CommandFormula` that works on every platform.
+///
+/// The built-in formulas deliberately have no Windows steps — `apt-get` is not
+/// a thing there — so a test that used them would converge on Linux and macOS
+/// and never on Windows, which says nothing about blueprints. These are real
+/// formulas over the real engine, differing only in that the platform is not a
+/// variable.
+///
+/// That the *built-ins* work through `FormulaProvider` is proven where it can
+/// only be proven: on a real Linux host, in `test/docker/`.
+class _AnywhereFormula extends CommandFormula {
+  _AnywhereFormula(this.tool, {required super.executor});
+
+  final String tool;
+
+  @override
+  FormulaSpec get spec => FormulaSpec(
+    id: FormulaId(tool),
+    name: tool,
+    actions: const {
+      FormulaAction.install,
+      FormulaAction.update,
+      FormulaAction.uninstall,
+      FormulaAction.verify,
+    },
+  );
+
+  @override
+  CommandStep get verifyStep => CommandStep(tool, const ['--version']);
+
+  @override
+  CommandStep? stepFor(FormulaAction action, String osName) => switch (action) {
+    FormulaAction.verify => verifyStep,
+    FormulaAction.install ||
+    FormulaAction.update => CommandStep('install-$tool', const []),
+    FormulaAction.uninstall => CommandStep('remove-$tool', const []),
+    // No service: start/stop/restart are genuinely unsupported, as they are for
+    // every command formula the node ships.
+    _ => null,
+  };
 }
 
 /// Blueprints end to end: saved on the Hub, resolved from shared presets,
@@ -135,10 +171,12 @@ void main() {
 
   /// Starts a node running the real formula engine over the scripted shell.
   Future<NodeBlueprintService> startNode({String id = 'worker-01'}) async {
+    final registry = FormulaRegistry();
+    for (final tool in const ['dart', 'nmap', 'docker', 'build-tools']) {
+      registry.register(_AnywhereFormula(tool, executor: executor));
+    }
     final service = NodeBlueprintService(
-      providers: ProviderRegistry.of([
-        FormulaProvider(registry: FormulaRegistry.standard(executor: executor)),
-      ]),
+      providers: ProviderRegistry.of([FormulaProvider(registry: registry)]),
     );
     await cluster.startNode(
       id: id,
