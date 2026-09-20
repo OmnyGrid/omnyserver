@@ -1,3 +1,4 @@
+import '../../../domain/blueprint/blueprint.dart';
 import '../../../domain/entities/audit_entry.dart';
 import '../../../domain/entities/formula_spec.dart';
 import '../../../domain/entities/grant.dart';
@@ -5,6 +6,7 @@ import '../../../domain/entities/node_descriptor.dart';
 import '../../../domain/entities/preset.dart';
 import '../../../domain/repository/repositories.dart';
 import '../../../domain/state/desired_state.dart';
+import '../../../domain/value_objects/blueprint_id.dart';
 import '../../../domain/value_objects/formula_id.dart';
 import '../../../domain/value_objects/node_id.dart';
 import '../../../domain/value_objects/preset_id.dart';
@@ -41,6 +43,25 @@ class MemoryPresetRepository implements PresetRepository {
 
   @override
   Future<bool> delete(PresetId id) async => _presets.remove(id.value) != null;
+}
+
+/// In-memory [BlueprintRepository].
+class MemoryBlueprintRepository implements BlueprintRepository {
+  final Map<String, Blueprint> _blueprints = {};
+
+  @override
+  Future<void> save(Blueprint blueprint) async =>
+      _blueprints[blueprint.id.value] = blueprint;
+
+  @override
+  Future<Blueprint?> find(BlueprintId id) async => _blueprints[id.value];
+
+  @override
+  Future<List<Blueprint>> all() async => _blueprints.values.toList();
+
+  @override
+  Future<bool> delete(BlueprintId id) async =>
+      _blueprints.remove(id.value) != null;
 }
 
 /// In-memory [GrantRepository].

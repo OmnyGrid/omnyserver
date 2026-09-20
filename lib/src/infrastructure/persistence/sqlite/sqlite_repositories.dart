@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:sqlite3/sqlite3.dart';
 
+import '../../../domain/blueprint/blueprint.dart';
 import '../../../domain/entities/audit_entry.dart';
 import '../../../domain/entities/formula_spec.dart';
 import '../../../domain/entities/grant.dart';
@@ -10,6 +11,7 @@ import '../../../domain/entities/node_status.dart';
 import '../../../domain/entities/preset.dart';
 import '../../../domain/repository/repositories.dart';
 import '../../../domain/state/desired_state.dart';
+import '../../../domain/value_objects/blueprint_id.dart';
 import '../../../domain/value_objects/formula_id.dart';
 import '../../../domain/value_objects/node_id.dart';
 import '../../../domain/value_objects/preset_id.dart';
@@ -39,6 +41,7 @@ class SqliteStore {
     db.execute('''
       CREATE TABLE IF NOT EXISTS nodes (id TEXT PRIMARY KEY, data TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS presets (id TEXT PRIMARY KEY, data TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS blueprints (id TEXT PRIMARY KEY, data TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS formulas (id TEXT PRIMARY KEY, data TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS grants (
         id TEXT PRIMARY KEY, token_hash TEXT NOT NULL UNIQUE, data TEXT NOT NULL
@@ -64,6 +67,11 @@ class SqliteStore {
 
   /// The preset repository.
   late final SqlitePresetRepository presets = SqlitePresetRepository(db);
+
+  /// The blueprint repository.
+  late final SqliteBlueprintRepository blueprints = SqliteBlueprintRepository(
+    db,
+  );
 
   /// The formula repository.
   late final SqliteFormulaRepository formulas = SqliteFormulaRepository(db);
@@ -118,6 +126,48 @@ class SqliteNodeRepository implements NodeRepository {
   @override
   Future<bool> delete(NodeId id) async {
     db.execute('DELETE FROM nodes WHERE id = ?', [id.value]);
+    return db.updatedRows > 0;
+  }
+}
+
+/// SQLite-backed [BlueprintRepository].
+class SqliteBlueprintRepository implements BlueprintRepository {
+  /// The database handle.
+  final Database db;
+
+  /// Creates the repository.
+  SqliteBlueprintRepository(this.db);
+
+  @override
+  Future<void> save(Blueprint blueprint) async => db.execute(
+    'INSERT OR REPLACE INTO blueprints (id, data) VALUES (?, ?)',
+    [blueprint.id.value, jsonEncode(blueprint.toJson())],
+  );
+
+  @override
+  Future<Blueprint?> find(BlueprintId id) async {
+    final rows = db.select('SELECT data FROM blueprints WHERE id = ?', [
+      id.value,
+    ]);
+    if (rows.isEmpty) return null;
+    return Blueprint.fromJson(
+      jsonDecode(rows.first['data'] as String) as Map<String, dynamic>,
+    );
+  }
+
+  @override
+  Future<List<Blueprint>> all() async => db
+      .select('SELECT data FROM blueprints')
+      .map(
+        (r) => Blueprint.fromJson(
+          jsonDecode(r['data'] as String) as Map<String, dynamic>,
+        ),
+      )
+      .toList();
+
+  @override
+  Future<bool> delete(BlueprintId id) async {
+    db.execute('DELETE FROM blueprints WHERE id = ?', [id.value]);
     return db.updatedRows > 0;
   }
 }

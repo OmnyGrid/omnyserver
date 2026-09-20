@@ -112,6 +112,14 @@ class HubConfig {
   /// has quietly diverged.
   final PresetRepository presetRepository;
 
+  /// Persists the blueprints an operator has saved on the Hub.
+  ///
+  /// Where a preset is a piece, a blueprint is a whole machine — composed from
+  /// presets, plus whatever that role needs on top. Only a blueprint is
+  /// assignable to a node, which is the distinction that earns it its own
+  /// repository rather than a flag on [presetRepository].
+  final BlueprintRepository blueprintRepository;
+
   /// Persists the credentials the Hub has issued at runtime.
   ///
   /// Separate from [authenticator], which is how a credential is *checked*: this
@@ -176,6 +184,7 @@ class HubConfig {
     MetricRepository? metricRepository,
     FormulaRepository? formulaRepository,
     PresetRepository? presetRepository,
+    BlueprintRepository? blueprintRepository,
     GrantRepository? grantRepository,
     DesiredStateRepository? desiredStateRepository,
     StateReconciler? reconciler,
@@ -194,6 +203,7 @@ class HubConfig {
        metricRepository = metricRepository ?? MemoryMetricRepository(),
        formulaRepository = formulaRepository ?? MemoryFormulaRepository(),
        presetRepository = presetRepository ?? MemoryPresetRepository(),
+       blueprintRepository = blueprintRepository ?? MemoryBlueprintRepository(),
        grantRepository = grantRepository ?? MemoryGrantRepository(),
        desiredStateRepository =
            desiredStateRepository ?? MemoryDesiredStateRepository(),

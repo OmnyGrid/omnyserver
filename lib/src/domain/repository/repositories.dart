@@ -1,3 +1,4 @@
+import '../blueprint/blueprint.dart';
 import '../entities/audit_entry.dart';
 import '../entities/formula_spec.dart';
 import '../entities/grant.dart';
@@ -5,6 +6,7 @@ import '../entities/node_descriptor.dart';
 import '../entities/node_status.dart';
 import '../entities/preset.dart';
 import '../state/desired_state.dart';
+import '../value_objects/blueprint_id.dart';
 import '../value_objects/formula_id.dart';
 import '../value_objects/node_id.dart';
 import '../value_objects/preset_id.dart';
@@ -81,6 +83,25 @@ abstract class PresetRepository {
 
   /// Deletes the preset with [id]; returns true if removed.
   Future<bool> delete(PresetId id);
+}
+
+/// Persists [Blueprint]s.
+///
+/// A blueprint is what a *machine* is, composed from the presets above. It is
+/// stored with the bytes it was authored in, so a YAML blueprint reads back as
+/// the YAML somebody wrote rather than as a re-rendering of it.
+abstract class BlueprintRepository {
+  /// Inserts or replaces [blueprint].
+  Future<void> save(Blueprint blueprint);
+
+  /// Returns the blueprint with [id], or `null`.
+  Future<Blueprint?> find(BlueprintId id);
+
+  /// Returns all blueprints.
+  Future<List<Blueprint>> all();
+
+  /// Deletes the blueprint with [id]; returns true if removed.
+  Future<bool> delete(BlueprintId id);
 }
 
 /// Persists [FormulaSpec]s (formula catalogue).

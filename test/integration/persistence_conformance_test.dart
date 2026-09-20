@@ -10,6 +10,7 @@ import 'package:test/test.dart';
 class RepoBundle {
   final NodeRepository nodes;
   final PresetRepository presets;
+  final BlueprintRepository blueprints;
   final FormulaRepository formulas;
   final GrantRepository grants;
   final DesiredStateRepository desired;
@@ -20,6 +21,7 @@ class RepoBundle {
   RepoBundle({
     required this.nodes,
     required this.presets,
+    required this.blueprints,
     required this.formulas,
     required this.grants,
     required this.desired,
@@ -38,6 +40,7 @@ void main() {
 RepoBundle _memoryBundle() => RepoBundle(
   nodes: MemoryNodeRepository(),
   presets: MemoryPresetRepository(),
+  blueprints: MemoryBlueprintRepository(),
   formulas: MemoryFormulaRepository(),
   grants: MemoryGrantRepository(),
   desired: MemoryDesiredStateRepository(),
@@ -51,6 +54,7 @@ RepoBundle _jsonBundle() {
   return RepoBundle(
     nodes: JsonNodeRepository(dir.path),
     presets: JsonPresetRepository(dir.path),
+    blueprints: JsonBlueprintRepository(dir.path),
     formulas: JsonFormulaRepository(dir.path),
     grants: JsonGrantRepository(dir.path),
     desired: JsonDesiredStateRepository(dir.path),
@@ -65,6 +69,7 @@ RepoBundle _sqliteBundle() {
   return RepoBundle(
     nodes: store.nodes,
     presets: store.presets,
+    blueprints: store.blueprints,
     formulas: store.formulas,
     grants: store.grants,
     desired: store.desired,
@@ -256,6 +261,61 @@ void _conformance(RepoBundle Function() make) {
     final back = await repos.presets.find(PresetId('docker-host'));
     expect(back?.steps, hasLength(1));
     expect(await repos.presets.all(), hasLength(1));
+  });
+
+  test('blueprint save/find/all/delete', () async {
+    final blueprint = Blueprint(
+      id: BlueprintId('web-server'),
+      name: 'Web server',
+      includes: [PresetId('base-hardening')],
+      vars: const {'sdk': '3.13.3'},
+      resources: [
+        Resource(
+          id: ResourceId('formula', 'dart'),
+          ensure: Ensure.installed,
+          params: const {'version': r'${sdk}'},
+          requires: [ResourceId('formula', 'build-tools')],
+        ),
+      ],
+    );
+
+    await repos.blueprints.save(blueprint);
+    final back = await repos.blueprints.find(BlueprintId('web-server'));
+
+    // Every part of the document, because a backend that quietly drops the
+    // includes or the requires would produce a blueprint that still applies —
+    // just not the one anybody wrote.
+    expect(back!.includes.single.value, 'base-hardening');
+    expect(back.vars, {'sdk': '3.13.3'});
+    expect(back.resources.single.id.toString(), 'formula:dart');
+    expect(back.resources.single.ensure, Ensure.installed);
+    expect(back.resources.single.params, {'version': r'${sdk}'});
+    expect(
+      back.resources.single.requires.single.toString(),
+      'formula:build-tools',
+    );
+
+    expect(await repos.blueprints.all(), hasLength(1));
+    expect(await repos.blueprints.delete(BlueprintId('web-server')), isTrue);
+    expect(await repos.blueprints.delete(BlueprintId('web-server')), isFalse);
+    expect(await repos.blueprints.all(), isEmpty);
+  });
+
+  test('a blueprint keeps the bytes it was authored in', () async {
+    // The format rule: a YAML blueprint stays YAML through storage, comments
+    // and all. A backend that stored only the parsed form would hand back a
+    // re-rendering, and the file in your editor would stop matching the Hub.
+    const source = BlueprintSource(
+      format: BlueprintFormat.yaml,
+      text: '# the hardened base\nblueprint: web\nname: Web\n',
+    );
+    await repos.blueprints.save(
+      Blueprint(id: BlueprintId('web'), name: 'Web').withSource(source),
+    );
+
+    final back = await repos.blueprints.find(BlueprintId('web'));
+    expect(back!.source!.format, BlueprintFormat.yaml);
+    expect(back.source!.text, contains('# the hardened base'));
   });
 
   test('formula save/find', () async {

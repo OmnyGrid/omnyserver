@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:path/path.dart' as p;
 
+import '../../../domain/blueprint/blueprint.dart';
 import '../../../domain/entities/audit_entry.dart';
 import '../../../domain/entities/formula_spec.dart';
 import '../../../domain/entities/grant.dart';
@@ -12,6 +13,7 @@ import '../../../domain/entities/preset.dart';
 import '../../../domain/repository/repositories.dart';
 import '../../../shared/json/json_codec_helpers.dart';
 import '../../../domain/state/desired_state.dart';
+import '../../../domain/value_objects/blueprint_id.dart';
 import '../../../domain/value_objects/formula_id.dart';
 import '../../../domain/value_objects/node_id.dart';
 import '../../../domain/value_objects/preset_id.dart';
@@ -147,6 +149,36 @@ class JsonPresetRepository implements PresetRepository {
 
   @override
   Future<bool> delete(PresetId id) => _store.deleteObject(id.value);
+}
+
+/// JSON-directory [BlueprintRepository] (`<root>/blueprints/<id>.json`).
+///
+/// The file holds the parsed blueprint *and* the bytes it was authored in, so a
+/// YAML blueprint survives a round trip through this directory as the YAML
+/// somebody wrote. Both are written from one parse and neither is edited on its
+/// own, so they cannot come to disagree.
+class JsonBlueprintRepository implements BlueprintRepository {
+  final _JsonDir _store;
+
+  /// Creates a blueprint repository rooted at [path].
+  JsonBlueprintRepository(String path) : _store = _JsonDir(path, 'blueprints');
+
+  @override
+  Future<void> save(Blueprint blueprint) =>
+      _store.writeObject(blueprint.id.value, blueprint.toJson());
+
+  @override
+  Future<Blueprint?> find(BlueprintId id) async {
+    final json = await _store.readObject(id.value);
+    return json == null ? null : Blueprint.fromJson(json);
+  }
+
+  @override
+  Future<List<Blueprint>> all() async =>
+      (await _store.readAll()).map(Blueprint.fromJson).toList();
+
+  @override
+  Future<bool> delete(BlueprintId id) => _store.deleteObject(id.value);
 }
 
 /// JSON-directory [GrantRepository] (`<root>/grants/<id>.json`).

@@ -377,6 +377,9 @@ class HubStartCommand extends Command<void> {
         grantRepository: grantStore,
         nodeRepository: persistent ? JsonNodeRepository(dataDir) : null,
         presetRepository: persistent ? JsonPresetRepository(dataDir) : null,
+        blueprintRepository: persistent
+            ? JsonBlueprintRepository(dataDir)
+            : null,
         formulaRepository: persistent ? JsonFormulaRepository(dataDir) : null,
         auditRepository: persistent ? JsonAuditRepository(dataDir) : null,
         metricRepository: persistent ? JsonMetricRepository(dataDir) : null,
