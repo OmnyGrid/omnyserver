@@ -6,6 +6,8 @@
 /// already duplicated across two screens before it moved here.
 library;
 
+import 'dart:js_interop';
+
 import 'package:omnyserver/omnyserver_client_web.dart' show BlueprintFormat;
 import 'package:omnyshell_web/foundation.dart' show AppError;
 import 'package:omnyshell_web/ui_kit.dart';
@@ -111,6 +113,17 @@ web.HTMLElement highlightedCode(String text, BlueprintFormat format) => el(
     input: input,
   );
 }
+
+/// Stops a click on [element] from reaching the row around it.
+///
+/// A list row that navigates cannot also hold a button without this: the
+/// button runs, and then the row opens the thing the button was acting on.
+web.HTMLElement stopClickPropagation(web.HTMLElement element) {
+  element.addEventListener('click', _swallowClick);
+  return element;
+}
+
+final _swallowClick = ((web.Event event) => event.stopPropagation()).toJS;
 
 /// A `<select>` over [options], each a `(value, label)` pair.
 web.HTMLSelectElement select({

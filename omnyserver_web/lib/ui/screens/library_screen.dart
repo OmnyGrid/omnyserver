@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:js_interop';
 
 import 'package:omnyserver/omnyserver_client_web.dart';
 import 'package:omnyshell_web/foundation.dart' show AppError;
@@ -215,16 +214,15 @@ class LibraryScreen implements Screen {
     ],
   );
 
-  /// The row is itself a link, so a button inside it has to stop the click
-  /// before it navigates — otherwise confirming a delete also opens the thing
-  /// being deleted.
+  /// The row is itself a link, so the click is stopped here — otherwise
+  /// confirming a delete also opens the thing being deleted.
   web.HTMLElement _deleteButton({
     required String label,
     required String detail,
     required Future<void> Function() delete,
     required Future<void> Function() reload,
-  }) {
-    final b = button(
+  }) => stopClickPropagation(
+    button(
       '✕',
       className: 'icon ghost',
       ariaLabel: label,
@@ -239,14 +237,8 @@ class LibraryScreen implements Screen {
         },
         confirmLabel: 'Delete',
       ),
-    );
-    b.addEventListener('click', _stopPropagation);
-    return b;
-  }
-
-  static final _stopPropagation = ((web.Event event) {
-    event.stopPropagation();
-  }).toJS;
+    ),
+  );
 
   /// Creating is naming: the document itself is written on the detail screen,
   /// which is where the editor and the Hub's validation already live.

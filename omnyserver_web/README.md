@@ -42,7 +42,9 @@ the two apps read as one product and the hard parts are solved once.
   resource naming where it came from and what it overrode, and the hash a node
   is compared against. Assigning is by label in two steps, Preview naming every
   node before Assign touches any of them, and the selectors the fleet actually
-  carries listed under the box. Presets are edited as JSON, because that is
+  carries listed under the box. At the bottom, the nodes living by this
+  document — each one's standing against it, a Reconcile beside it, and the
+  row a way back to the machine. Presets are edited as JSON, because that is
   what `preset save` on the CLI takes.
 - **Run.** Formulas and their actions come from the Hub's catalogue, so the UI
   offers what a node can actually do instead of a text box to get wrong; presets

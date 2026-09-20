@@ -36,6 +36,7 @@ class BlueprintScreen implements Screen {
   late final web.HTMLElement _assignBody;
   late final web.HTMLElement _selectorsBody;
   late final web.HTMLElement _matchesBody;
+  late final web.HTMLElement _nodesBody;
 
   Blueprint? _blueprint;
   web.HTMLTextAreaElement? _editor;
@@ -53,6 +54,7 @@ class BlueprintScreen implements Screen {
     _assignBody = div(classes: 'stack');
     _selectorsBody = div();
     _matchesBody = div();
+    _nodesBody = div(classes: 'stack');
 
     element = el(
       'div',
@@ -70,6 +72,25 @@ class BlueprintScreen implements Screen {
         ),
         el('div', classes: 'card stack', children: [_documentBody]),
         el('div', classes: 'card stack', children: [_assignBody]),
+        el(
+          'div',
+          classes: 'card stack',
+          children: [
+            el(
+              'div',
+              classes: 'row',
+              children: [
+                el('h2', classes: 'grow', text: 'Nodes'),
+                button(
+                  'Refresh',
+                  className: 'ghost',
+                  onClick: () => unawaited(_loadNodes()),
+                ),
+              ],
+            ),
+            _nodesBody,
+          ],
+        ),
       ],
     );
 
@@ -86,6 +107,9 @@ class BlueprintScreen implements Screen {
       _title.textContent = blueprint.name;
       _renderDocument();
       _renderAssign();
+      // Saving changes the hash, so every node's standing against it moves
+      // too — and the whole point of the list below is to say so.
+      unawaited(_loadNodes());
     } on AppError catch (e) {
       if (_disposed) return;
       clearChildren(_documentBody);
@@ -531,11 +555,150 @@ class BlueprintScreen implements Screen {
         }
       },
       onError: ctx.toasts.error,
-      onDone: () => ctx.toasts.success(
-        'Assigned to ${nodes.length} node(s). Nothing has run.',
-      ),
+      onDone: () {
+        ctx.toasts.success(
+          'Assigned to ${nodes.length} node(s). Nothing has run.',
+        );
+        // They belong in the list below now, each saying how far it has to go.
+        unawaited(_loadNodes());
+      },
       confirmLabel: 'Assign',
     );
+  }
+
+  // --- The nodes this blueprint is on ----------------------------------------
+
+  /// Which machines are actually living by this document, and how they are
+  /// getting on with it.
+  ///
+  /// Everything above this card is about the blueprint in the abstract. This is
+  /// the answer to the question that follows every edit — *so what is it doing
+  /// out there* — and the way back to any one of those machines.
+  Future<void> _loadNodes() async {
+    clearChildren(_nodesBody);
+    _nodesBody.appendChild(loadingRow('Finding the nodes assigned to this…'));
+    try {
+      final nodes = await ctx.service.listNodes();
+      // There is no "nodes by blueprint" endpoint, so the assignment is read
+      // per node. These are Hub-side repository reads that touch no machine,
+      // and they go out together rather than one after another.
+      final states = await Future.wait([
+        for (final node in nodes) ctx.service.desiredState(node.id.value),
+      ]);
+      if (_disposed) return;
+
+      final assigned = [
+        for (var i = 0; i < nodes.length; i++)
+          if (states[i]?.blueprint?.value == blueprintId) nodes[i],
+      ];
+
+      clearChildren(_nodesBody);
+      if (assigned.isEmpty) {
+        _nodesBody.appendChild(
+          emptyState('No node is assigned to this blueprint.'),
+        );
+        return;
+      }
+      for (final node in assigned) {
+        _nodesBody.appendChild(_nodeRow(node));
+      }
+    } on AppError catch (e) {
+      if (_disposed) return;
+      clearChildren(_nodesBody);
+      _nodesBody.appendChild(errorBanner(e));
+    }
+  }
+
+  web.HTMLElement _nodeRow(NodeDescriptor node) {
+    final id = node.id.value;
+    // Filled in afterwards: a blueprint is planned *on* the node, so knowing
+    // how a machine stands costs a round trip to it. The row is useful without
+    // that, and appears without waiting for it.
+    final standing = el(
+      'div',
+      classes: 'grow muted',
+      text: node.online ? 'asking…' : 'offline — cannot be asked',
+    );
+
+    final children = <web.HTMLElement>[
+      el(
+        'span',
+        classes: node.online ? 'badge online' : 'badge offline',
+        text: node.online ? 'online' : 'offline',
+      ),
+      el('strong', text: id),
+      standing,
+      if (ctx.auth.state.value.canOperate)
+        stopClickPropagation(
+          button(
+            'Reconcile',
+            onClick: () => unawaited(_reconcileNode(id, standing)),
+          ),
+        ),
+    ];
+
+    if (node.online) unawaited(_fillStanding(id, standing));
+
+    return el(
+      'div',
+      classes: 'row list-item',
+      onClick: (_) => ctx.router.go('/nodes/$id'),
+      children: children,
+    );
+  }
+
+  Future<void> _fillStanding(String nodeId, web.HTMLElement into) async {
+    try {
+      final drift = await ctx.service.drift(nodeId);
+      if (_disposed) return;
+      if (drift == null) {
+        into.textContent = 'nothing declared';
+        return;
+      }
+      final work = drift.changes.where((c) => c.kind.isWork).length;
+      into.textContent = [
+        // Two different facts, and a node can be both: behind the current
+        // revision of the document, and behind what its own revision asked for.
+        if (drift.stale) 'on an older revision',
+        if (drift.converged) 'converged' else '$work change(s) outstanding',
+      ].join(' · ');
+    } on AppError catch (e) {
+      if (_disposed) return;
+      // Not a bug. Planning happens on the node, so a machine that cannot be
+      // reached genuinely has no answer to give — and saying "converged" for it
+      // would be the worst thing this card could do.
+      into.textContent = 'could not be asked — ${e.message}';
+    }
+  }
+
+  /// Converges one node, and says what moved.
+  ///
+  /// Not confirmed, for the same reason the node's own page does not confirm
+  /// it: the row already says what is outstanding, which is the information a
+  /// confirmation would be repeating back.
+  Future<void> _reconcileNode(String nodeId, web.HTMLElement standing) async {
+    standing.textContent = 'reconciling…';
+    try {
+      final result = await ctx.service.reconcile(nodeId);
+      if (_disposed) return;
+      if (!result.success) {
+        // A partial failure still answers 200 with the outcomes in the body.
+        ctx.toasts.error(
+          '$nodeId reconciled with failures — ${result.changed} changed, '
+          '${result.skipped} skipped.',
+        );
+      } else {
+        ctx.toasts.success(
+          result.converged
+              ? '$nodeId was already converged.'
+              : '$nodeId changed ${result.changed} thing(s).',
+        );
+      }
+    } on AppError catch (e) {
+      if (_disposed) return;
+      ctx.toasts.error('$nodeId: ${e.message}');
+    }
+    await _fillStanding(nodeId, standing);
   }
 
   /// Enough of a digest to compare two by eye, which is all anybody does with

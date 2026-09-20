@@ -128,6 +128,12 @@ and keeps it there.
   failure worth preventing is not a typo, which matches nothing and is obvious,
   but `role=web` on a fleet that says `tier=web`.
 
+  At the bottom, **the nodes actually living by this document**: each one's
+  standing against it, a Reconcile beside it, and the row itself a way back to
+  that machine. A node can be both *on an older revision* and *converged* — it
+  already has everything the current document asks for, but its ledger records
+  an older hash — and the card says both, because either alone misleads.
+
   The Declared state card gains the four things it was missing: a **Dry run**
   beside Reconcile, the node's blueprint as a **link** to its page, a line
   saying the blueprint has been **edited since this node applied it** — a
@@ -234,8 +240,8 @@ report drift forever that applying does not fix.
   dashboard's editor reads the same documents the CLI does; reading a *file*
   stays in `blueprint_format.dart`, out of that import graph and kept out by
   `web_barrel_dart_io_free_test`. The dashboard bundle grows from 739 KB to
-  827 KB — mostly `yaml` and its scanner now actually being reachable, and
-  6 KB of syntax highlighting.
+  832 KB — mostly `yaml` and its scanner now actually being reachable, plus
+  the Library screens and 6 KB of syntax highlighting.
 - `omnyserver_web` 0.3.1 → **0.4.0**.
 
 ---
