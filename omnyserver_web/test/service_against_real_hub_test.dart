@@ -508,6 +508,221 @@ void main() {
     });
   });
 
+  /// The rest of the service's surface, driven end to end.
+  ///
+  /// No node is attached in this suite, and most of these need one to do
+  /// anything — but *reaching the endpoint* and *classifying what came back*
+  /// are exactly the two things a mocked test cannot check, and the two that
+  /// break when the Hub renames a field or changes a status code. Every screen
+  /// in the dashboard shows the result of one of these, so a call that answers
+  /// with something unexpected is a panel that fails at the worst moment.
+  group('the rest of the service', () {
+    Future<void> signIn() => service
+        .connect(hubUri: baseUrl(), principal: 'alice', token: 'admin-token')
+        .then((_) {});
+
+    test('a node that has never heartbeated has no status, and that is '
+        'not an error', () async {
+      // Null rather than a throw: "not yet" is the ordinary state of a node
+      // that has only just registered, and a caller made to catch it will
+      // sooner or later catch a real failure by mistake.
+      await signIn();
+      expect(await service.status('ghost'), isNull);
+    });
+
+    test('the Hub-wide lists decode, empty', () async {
+      // Empty is the interesting case: a decoder that only ever saw populated
+      // fixtures throws on `[]` often enough to be worth pinning.
+      await signIn();
+      expect(await service.operations(), isEmpty);
+      expect(await service.operations(nodeId: 'ghost', running: true), isEmpty);
+      expect(await service.alerts(), isEmpty);
+      expect(await service.presets(), isEmpty);
+      expect(await service.blueprints(), isEmpty);
+    });
+
+    test('asking an unknown node for its capabilities is a notFound', () async {
+      await signIn();
+      await expectLater(
+        service.capabilities('ghost'),
+        throwsA(
+          isA<AppError>().having((e) => e.kind, 'kind', AppErrorKind.notFound),
+        ),
+      );
+    });
+
+    test('metrics for a node nobody registered is a notFound', () async {
+      // Not an empty series. "No history yet" and "no such node" are
+      // different answers, and a sparkline would draw nothing for both.
+      await signIn();
+      await expectLater(
+        service.metrics('ghost'),
+        throwsA(
+          isA<AppError>().having((e) => e.kind, 'kind', AppErrorKind.notFound),
+        ),
+      );
+      await expectLater(
+        service.metrics('ghost', since: '24h'),
+        throwsA(isA<AppError>()),
+      );
+    });
+
+    group('the controls that need the node, with no node there', () {
+      // Each of these is behind a button in the dashboard. What matters is that
+      // an unreachable node produces an AppError the panel can show, rather
+      // than an exception dropped into a click handler where nothing catches
+      // it and the operator sees a control that silently did nothing.
+      setUp(signIn);
+
+      test('restart', () {
+        expect(service.restart('ghost'), throwsA(isA<AppError>()));
+      });
+
+      test('shutdown', () {
+        expect(service.shutdown('ghost'), throwsA(isA<AppError>()));
+      });
+
+      test('update', () {
+        expect(service.update('ghost'), throwsA(isA<AppError>()));
+        expect(
+          service.update('ghost', target: 'agent'),
+          throwsA(isA<AppError>()),
+        );
+      });
+
+      test('running a formula', () {
+        expect(
+          service.runFormula(
+            'ghost',
+            formula: 'docker',
+            action: FormulaAction.install,
+            version: '24.0',
+          ),
+          throwsA(isA<AppError>()),
+        );
+      });
+
+      test('applying a preset, saved or inline', () async {
+        await hub.savePreset(Preset(id: PresetId('tools'), name: 'Tools'));
+        expect(
+          service.applySavedPreset('ghost', 'tools'),
+          throwsA(isA<AppError>()),
+        );
+        expect(
+          service.applyPreset(
+            'ghost',
+            Preset(id: PresetId('tools'), name: 'Tools'),
+          ),
+          throwsA(isA<AppError>()),
+        );
+      });
+
+      test('reading the log tail', () {
+        expect(service.logs('ghost'), throwsA(isA<AppError>()));
+        expect(service.logs('ghost', tail: 10), throwsA(isA<AppError>()));
+      });
+
+      test('reconciling, dry or otherwise', () {
+        expect(service.reconcile('ghost'), throwsA(isA<AppError>()));
+        expect(
+          service.reconcile('ghost', dryRun: true),
+          throwsA(isA<AppError>()),
+        );
+      });
+    });
+
+    group('declaring', () {
+      // No node is attached in this suite, and a declaration is refused for a
+      // node the Hub has never met — so what these pin is the *refusal*. That
+      // is worth pinning on its own: each one is a control on the node page,
+      // and each must come back as something a panel can put in a banner. The
+      // happy paths run against real containers in
+      // `test/integration/blueprint_test.dart` and `example/docker_blueprints`.
+      test('declaring for a node nobody registered is a notFound', () async {
+        await signIn();
+        await expectLater(
+          service.declare(
+            'worker-01',
+            Preset(
+              id: PresetId('tools'),
+              name: 'Tools',
+              steps: [PresetStep(formula: FormulaId('docker'))],
+            ),
+          ),
+          throwsA(
+            isA<AppError>().having(
+              (e) => e.kind,
+              'kind',
+              AppErrorKind.notFound,
+            ),
+          ),
+        );
+      });
+
+      test('undeclaring a node with nothing declared says so', () async {
+        // Not silence. The Undeclare button would otherwise report success for
+        // having done nothing, on a node that may well still be carrying
+        // software somebody wants taken off it.
+        await signIn();
+        await expectLater(
+          service.undeclare('worker-01'),
+          throwsA(
+            isA<AppError>().having(
+              (e) => e.kind,
+              'kind',
+              AppErrorKind.notFound,
+            ),
+          ),
+        );
+      });
+
+      test('unassigning a node with no blueprint says so', () async {
+        // Distinct from undeclare, and it fails loudly rather than quietly
+        // succeeding: unassign exists to take software back off a machine, and
+        // "there was nothing to take" is worth hearing.
+        await signIn();
+        await expectLater(
+          service.unassign('worker-01'),
+          throwsA(isA<AppError>()),
+        );
+        await expectLater(
+          service.unassign('worker-01', purgeAdopted: true),
+          throwsA(isA<AppError>()),
+        );
+      });
+    });
+
+    test('a viewer may read the fleet and change nothing', () async {
+      // The roles the dashboard hides controls for. Hiding a button is a
+      // courtesy; this is the control.
+      await service.connect(
+        hubUri: baseUrl(),
+        principal: 'vera',
+        token: 'viewer-token',
+      );
+
+      expect(await service.presets(), isEmpty);
+      expect(await service.audit(), isEmpty);
+
+      for (final refused in [
+        service.savePreset(Preset(id: PresetId('x'), name: 'X')),
+        service.declare('worker-01', Preset(id: PresetId('x'), name: 'X')),
+        service.undeclare('worker-01'),
+      ]) {
+        await expectLater(
+          refused,
+          throwsA(
+            isA<AppError>().having(
+              (e) => e.kind,
+              'kind',
+              AppErrorKind.authorization,
+            ),
+          ),
+        );
+      }
+    });
+  });
+
   group('normalizeHubUri', () {
     test('a bare host becomes https on the Hub port', () {
       expect(
