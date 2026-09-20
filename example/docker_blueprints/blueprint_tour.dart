@@ -247,21 +247,29 @@ Future<void> _stopDeclaringSomething(HubApiClient hub) async {
   }
 }
 
-/// One of the two blueprints above, rebuilt with a shorter resource list.
-Blueprint _blueprint(String id, String name, List<String> formulas) =>
-    Blueprint(
-      id: BlueprintId(id),
-      name: name,
-      platforms: const ['linux'],
-      includes: [PresetId('base-tools')],
-      resources: [
-        for (final formula in formulas)
-          Resource(
-            id: ResourceId('formula', formula),
-            ensure: Ensure.installed,
-          ),
-      ],
-    );
+/// One of the two blueprints above, rewritten with a shorter resource list.
+///
+/// Written as a *document* and parsed, rather than assembled out of `Resource`
+/// objects, because that is what editing a blueprint is: the YAML is the thing
+/// a team keeps, and it travels with the parsed form. Saving a constructed
+/// `Blueprint` would work, and would quietly replace the authored document with
+/// nothing — which the dashboard then has to render as "saved without a source
+/// document" on a blueprint somebody definitely wrote.
+Blueprint _blueprint(
+  String id,
+  String name,
+  List<String> formulas,
+) => parseBlueprint(
+  '# What a $name should be.\n'
+  'blueprint: $id\n'
+  'name: $name\n'
+  'platforms: [linux]\n'
+  'includes: [base-tools]\n'
+  'resources:\n'
+  '${formulas.map((f) => '  - { type: formula, name: $f, ensure: installed }\n').join()}',
+  BlueprintFormat.yaml,
+  origin: 'the $id blueprint',
+);
 
 /// 8. The sharing dividend, and the sharing hazard: one coin.
 Future<void> _editTheSharedPreset(HubApiClient hub) async {

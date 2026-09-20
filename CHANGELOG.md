@@ -85,8 +85,47 @@ and keeps it there.
   came from and what it overrode. `blueprint plan` exits **2** when a node has
   drifted, so a pipeline can read the result without parsing output.
 
-- **The dashboard's Declared state card** renders resource changes with their
-  provenance, and blueprints lead the declare controls.
+- **`omnyserver blueprint unassign <node> [--purge-adopted]`, and
+  `POST /api/v1/nodes/<id>/unassign`.**
+
+  `DELETE .../desired-state` forgets the declaration and nothing else, so a
+  blueprint could be added to a machine and never really taken off it: the
+  packages stayed, the node's ledger still listed them, and the only record of
+  what needed cleaning up was the declaration that had just been dropped.
+
+  `unassign` sends an **empty** blueprint first — every ledger entry becomes an
+  orphan and is removed, in reverse order, releasing rather than uninstalling
+  the ones the machine already had — and only then clears the declaration. Both
+  failure modes fail towards *keeping the record*: an offline node fails the
+  call and clears nothing, and a partial failure leaves the blueprint assigned
+  so it can be retried. `DELETE` keeps its exact current meaning, which is the
+  right answer for hardware that is never coming back.
+
+- **The dashboard manages blueprints.**
+
+  It could point a machine at a document nobody using the dashboard could read.
+  A new **Library** screen lists blueprints and presets, and opening one gives
+  you the document itself: **Source** is what somebody wrote — YAML, comments
+  intact — and is the only view that can be edited; **Resolved** is what a node
+  is actually sent, each resource naming where it came from and what it
+  overrode, with the hash beside it. Saving parses in the browser, so a typo is
+  reported against the text in front of you, and the Hub's own refusals arrive
+  as themselves.
+
+  Assignment is by label and in two steps: **Preview** names every node it
+  matched, and **Assign** acts on that list rather than on whatever the label
+  box says by then.
+
+  The Declared state card gains the four things it was missing: a **Dry run**
+  beside Reconcile, the node's blueprint as a **link** to its page, a line
+  saying the blueprint has been **edited since this node applied it** — a
+  different fact from having drifted — and an **Undeclare** that offers to take
+  back what the blueprint installed, with a separate, deliberately separate,
+  checkbox for what the machine already had.
+
+  This is what the blueprint parser was split for: `parseBlueprint` is now
+  web-safe, and reading a *file* is the half that stays out of the browser's
+  import graph.
 
 - **`HubApiClient` has a method per endpoint, returning what it means.**
 
@@ -157,16 +196,34 @@ report drift forever that applying does not fix.
   which is a `400`. A `500` says the Hub broke, and sends the caller looking in
   the wrong logs.
 
+- **A removal that failed dropped out of the ledger while still installed.** The
+  ledger was rebuilt from the blueprint being applied, so a resource the
+  blueprint had stopped declaring left the record whether or not its removal
+  actually worked. The software stayed on the machine with nothing tracking it,
+  and the next apply saw it as "already correct the first time we looked" —
+  marking it adopted, and putting it permanently beyond removal. Entries whose
+  removal did not succeed are now retained, so the next apply retries them.
+
 ### Changed
 
 - `DesiredState` gains an optional `blueprint` binding beside its `steps`, and
   `Drift` gains `changes` beside `actions`. Additive: exactly one is ever
   filled, and a client written against the preset shape keeps working.
+- `Drift` also gains `expectedHash` — what the Hub currently resolves the
+  blueprint to, beside the `appliedHash` the node's ledger reports. `stale` is
+  the two disagreeing, which is "this node is on an older revision", not "this
+  machine has been tampered with". It was already known where the drift was
+  computed and merely not passed along, so reading it cost a second request.
 - `DefaultStateReconciler` is **untouched**. It is synchronous and runs Hub-side
   against cached capabilities, which is exactly what makes it work on an offline
   node — worth keeping rather than widening.
-- New dependency: `yaml ^3.1.4`, for reading a blueprint authored as YAML.
-  CLI-only, and kept out of the web barrel's import graph.
+- New dependency: `yaml ^3.1.4`, for reading a blueprint authored as YAML. The
+  parsing half is web-safe and exported from the browser barrel, so the
+  dashboard's editor reads the same documents the CLI does; reading a *file*
+  stays in `blueprint_format.dart`, out of that import graph and kept out by
+  `web_barrel_dart_io_free_test`. The dashboard bundle grows from 739 KB to
+  818 KB, which is `yaml` and its scanner now actually being reachable.
+- `omnyserver_web` 0.3.1 → **0.4.0**.
 
 ---
 

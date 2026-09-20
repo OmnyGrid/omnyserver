@@ -125,6 +125,46 @@
 }
 .op-log .lines i:nth-child(2) { width: 70%; }
 
+/* The blueprint/preset editor. The kit styles `input` and `select` but has no
+   textarea, so an unstyled one would arrive with no border and the browser's
+   default 13px serif — unreadable for whitespace-significant YAML. */
+textarea {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 10px 12px;
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  line-height: 1.5;
+  color: var(--fg);
+  background: var(--bg-sunken);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  resize: vertical;
+}
+textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+/* A badge that navigates. It is the only way to reach a blueprint from a node,
+   so it has to look reachable rather than like the labels beside it. */
+.badge.link {
+  cursor: pointer;
+  border-color: var(--border-strong);
+}
+.badge.link:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+/* The kit styles `.hint` only inside a `.field` or a `.banner`. These screens
+   use it standalone — under a drift row, under an editor — for the sentence
+   that explains what just happened. */
+.hint {
+  font-size: 0.85rem;
+  color: var(--fg-muted);
+}
+
 /* Alerts sit above the fleet, and are the one thing on the page that should
    catch the eye. */
 .alerts {

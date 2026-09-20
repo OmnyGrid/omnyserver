@@ -660,10 +660,17 @@ docker compose -f example/docker_fleet/compose.yaml down -v
 ```
 
 The dashboard gives you the fleet, a node's live status, formulas, declared
-state, the audit trail and a terminal on any node. The tour walks the same
-ground over the REST API: label selectors, a formula that succeeds on one host
-and fails on another, desired state and drift, issuing and revoking a
-credential.
+state, the audit trail and a terminal on any node. Its **Library** screen is
+where blueprints and presets are read and written: a blueprint opens on the
+document somebody authored — YAML, comments intact — with a Resolved view
+beside it showing what a node is actually sent and where each resource came
+from, and assignment is by label with every matched node named before anything
+is declared. Nothing runs from the Library; a node is reconciled from its own
+page, where **Dry run** will tell you what that would do first.
+
+The tour walks the same ground over the REST API: label selectors, a formula
+that succeeds on one host and fails on another, desired state and drift,
+issuing and revoking a credential.
 
 `compose.service.yaml` beside it runs the same fleet the way a server does —
 under systemd, installed with `omnyserver service install`, so each role is a

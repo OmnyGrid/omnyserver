@@ -90,8 +90,14 @@ class OmnyServerService {
     _hubUri = null;
   }
 
-  /// Every registered node.
-  Future<List<NodeDescriptor>> listNodes() => _guard(client.nodes);
+  /// Every registered node, optionally narrowed to those matching every one of
+  /// [labels] (`key=value`).
+  ///
+  /// Narrowed by the Hub rather than here: "which of my machines are the
+  /// production ones" is a different request from downloading the fleet to find
+  /// out, and a blueprint assigned by label wants the first one.
+  Future<List<NodeDescriptor>> listNodes({List<String> labels = const []}) =>
+      _guard(() => client.nodes(labels: labels));
 
   /// One node's descriptor.
   Future<NodeDescriptor> node(String id) => _guard(() => client.node(id));
@@ -241,8 +247,21 @@ class OmnyServerService {
   Future<void> declare(String id, Preset preset) =>
       _guard(() => client.declarePreset(id, preset));
 
-  /// Stops expecting anything of a node.
+  /// Stops expecting anything of a node, and leaves the machine as it is.
+  ///
+  /// For hardware that is gone. [unassign] is the one that takes back what the
+  /// blueprint installed.
   Future<void> undeclare(String id) => _guard(() => client.undeclare(id));
+
+  /// Takes the blueprint off a node, removing what it put there.
+  ///
+  /// Resources the machine already had are released rather than removed unless
+  /// [purgeAdopted]. A partial failure leaves the blueprint assigned so it can
+  /// be retried — read [BlueprintApplyResult.success] rather than assuming.
+  Future<BlueprintApplyResult> unassign(
+    String id, {
+    bool purgeAdopted = false,
+  }) => _guard(() => client.unassign(id, purgeAdopted: purgeAdopted));
 
   /// How far a node has drifted, or `null` if nothing was declared for it.
   Future<Drift?> drift(String id) => _guard(() => client.drift(id));
@@ -250,19 +269,56 @@ class OmnyServerService {
   /// Runs whatever the drift plan says is outstanding. Idempotent.
   ///
   /// The node may be declared by a blueprint or by preset steps; the client
-  /// reduces both to the same [ConvergeResult], and what the toast wants is the
-  /// count — the detail is in the operations tray.
-  Future<int> reconcile(String id) =>
-      _guard(() async => (await client.reconcile(id)).changed);
+  /// reduces both to the same [ConvergeResult]. [dryRun] plans and changes
+  /// nothing, which is the safe way to see what an apply would do.
+  Future<ConvergeResult> reconcile(String id, {bool dryRun = false}) =>
+      _guard(() => client.reconcile(id, dryRun: dryRun));
 
   // --- Blueprints -----------------------------------------------------------
 
   /// Every blueprint saved on the Hub.
   Future<List<Blueprint>> blueprints() => _guard(client.blueprints);
 
+  /// One blueprint, as it was authored — source text and all.
+  Future<Blueprint> blueprint(String id) => _guard(() => client.blueprint(id));
+
+  /// A blueprint flattened: what a node is actually sent.
+  ///
+  /// Includes expanded, variables substituted, resources in the order they
+  /// would be settled, each naming where it came from and what it overrode.
+  Future<ResolvedBlueprint> resolvedBlueprint(String id) =>
+      _guard(() => client.resolvedBlueprint(id));
+
+  /// Saves a blueprint on the Hub.
+  ///
+  /// Refused with a `400` if it could never apply, which surfaces here as an
+  /// [AppError] carrying the Hub's own reason — a dependency cycle, an
+  /// undeclared variable, an include naming a preset nobody saved.
+  Future<void> saveBlueprint(Blueprint blueprint) =>
+      _guard(() => client.saveBlueprint(blueprint));
+
+  /// Deletes a saved blueprint.
+  Future<void> deleteBlueprint(String id) =>
+      _guard(() => client.deleteBlueprint(id));
+
   /// Says a node should be [blueprint]. Runs nothing.
   Future<void> assignBlueprint(String id, String blueprint) =>
       _guard(() => client.assignBlueprint(id, blueprint));
+
+  // --- Presets ---------------------------------------------------------------
+
+  /// One saved preset.
+  Future<Preset> preset(String id) => _guard(() => client.preset(id));
+
+  /// Saves a preset on the Hub, so every operator applies the same one.
+  Future<void> savePreset(Preset preset) =>
+      _guard(() => client.savePreset(preset));
+
+  /// Deletes a saved preset.
+  ///
+  /// A blueprint that includes it will stop resolving until it is put back or
+  /// the include removed — the Hub says so when that blueprint is next read.
+  Future<void> deletePreset(String id) => _guard(() => client.deletePreset(id));
 
   // --- Credentials ---------------------------------------------------------
 

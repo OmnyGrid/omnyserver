@@ -9,6 +9,7 @@ import '../../app/app_context.dart';
 import '../../state/nodes_controller.dart';
 import '../format.dart';
 import '../sparkline.dart';
+import '../widgets.dart';
 import 'node_logs.dart';
 import 'node_operations.dart';
 
@@ -202,7 +203,7 @@ class NodeDetailScreen implements Screen {
       ),
     );
     _infoBody.appendChild(
-      _facts({
+      facts({
         'Platform':
             '${node.platform.osName} ${node.platform.osVersion} '
             '(${node.platform.architecture})',
@@ -245,7 +246,7 @@ class NodeDetailScreen implements Screen {
     final memUsed = status.memory.usedBytes;
     final memTotal = status.memory.totalBytes;
     _statusBody.appendChild(
-      _facts({
+      facts({
         'CPU':
             '${status.cpu.usagePercent.toStringAsFixed(1)}% '
             'across ${status.cpu.coreCount} cores'
@@ -358,49 +359,12 @@ class NodeDetailScreen implements Screen {
     String detail,
     Future<void> Function() action,
     String done,
-  ) {
-    late final Modal modal;
-    modal = Modal(
-      title: title,
-      body: el(
-        'div',
-        classes: 'stack',
-        children: [el('div', text: detail)],
-      ),
-      actions: [
-        button('Cancel', onClick: () => modal.close()),
-        button(
-          'Confirm',
-          primary: true,
-          onClick: () async {
-            modal.close();
-            try {
-              await action();
-              ctx.toasts.success(done);
-            } on AppError catch (e) {
-              ctx.toasts.error(e.message);
-            }
-          },
-        ),
-      ],
-    );
-    modal.show();
-  }
-
-  web.HTMLElement _facts(Map<String, String> facts) => el(
-    'div',
-    classes: 'stack',
-    children: [
-      for (final f in facts.entries)
-        el(
-          'div',
-          classes: 'row',
-          children: [
-            el('div', classes: 'muted', text: f.key),
-            el('div', classes: 'grow ellipsis', text: f.value),
-          ],
-        ),
-    ],
+  ) => confirmDialog(
+    title: title,
+    detail: detail,
+    action: action,
+    onError: ctx.toasts.error,
+    onDone: () => ctx.toasts.success(done),
   );
 
   @override

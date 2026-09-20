@@ -6,6 +6,8 @@ import 'dart:io';
 // The VM transport, standing in for the browser's `fetch` — the one seam this
 // test swaps. Everything else is what the app itself runs.
 import 'package:omnyserver/omnyserver_cli.dart' show IoApiTransport;
+// The browser's own blueprint parser, which the editor calls before saving.
+import 'package:omnyserver/omnyserver_client_web.dart' show parseBlueprint;
 import 'package:omnyserver/omnyserver_hub.dart';
 import 'package:omnyserver_web/core/omnyserver_service.dart';
 import 'package:omnyshell_web/foundation.dart' show AppError, AppErrorKind;
@@ -41,6 +43,12 @@ void main() {
           'node-token': TokenGrant(
             principal: PrincipalId('node-account'),
             roles: const {'node'},
+          ),
+          // Can sign in and read the fleet, and nothing else — the role the
+          // library screen has to hide its editor from.
+          'viewer-token': TokenGrant(
+            principal: PrincipalId('vera'),
+            roles: const {'viewer'},
           ),
         }),
       ),
@@ -322,6 +330,182 @@ void main() {
         expect(await service.grants(), isEmpty);
       },
     );
+  });
+
+  /// The library screen's whole surface. Every one of these methods existed on
+  /// `HubApiClient` and was unreachable from the dashboard until the Library
+  /// screen needed it, so none of them had ever been driven end to end.
+  group('the library screen', () {
+    Future<void> signIn() => service
+        .connect(hubUri: baseUrl(), principal: 'alice', token: 'admin-token')
+        .then((_) {});
+
+    const yaml =
+        '# Everything a build host needs.\n'
+        'blueprint: builder\n'
+        'name: Build host\n'
+        'includes: [dev-tools]\n'
+        'resources:\n'
+        '  - { type: formula, name: nmap, ensure: installed }\n';
+
+    test('a blueprint authored in the browser round-trips verbatim', () async {
+      // The editor's entire premise: what somebody typed comes back as what
+      // they typed. A Hub that re-rendered the document from its parse would
+      // lose the comment on the first line, and the file in the editor and the
+      // thing on the Hub would be two documents that happen to agree.
+      await signIn();
+      await hub.savePreset(Preset(id: PresetId('dev-tools'), name: 'Dev'));
+
+      await service.saveBlueprint(
+        parseBlueprint(yaml, BlueprintFormat.yaml, origin: 'the editor'),
+      );
+
+      final saved = await service.blueprint('builder');
+      expect(saved.name, 'Build host');
+      expect(saved.source?.format, BlueprintFormat.yaml);
+      expect(saved.source?.text, yaml);
+      expect(saved.includes.single.value, 'dev-tools');
+    });
+
+    test('the resolved view names where each resource came from', () async {
+      await signIn();
+      await hub.savePreset(
+        Preset(
+          id: PresetId('dev-tools'),
+          name: 'Dev',
+          steps: [PresetStep(formula: FormulaId('dart'))],
+        ),
+      );
+      await service.saveBlueprint(
+        parseBlueprint(yaml, BlueprintFormat.yaml, origin: 'the editor'),
+      );
+
+      final resolved = await service.resolvedBlueprint('builder');
+
+      // The include is flattened in and the blueprint's own resource follows
+      // it, each carrying the provenance the screen renders.
+      expect(resolved.hash, isNotEmpty);
+      expect(
+        [for (final r in resolved.resources) r.id.toString()],
+        ['formula:dart', 'formula:nmap'],
+      );
+      expect(resolved.resources.first.origin, contains('dev-tools'));
+      expect(resolved.resources.last.origin, 'local');
+    });
+
+    test('a blueprint the Hub cannot resolve is refused on save', () async {
+      // The reason the editor does not validate includes itself: only the Hub
+      // knows what is saved on it. The message has to arrive intact, because it
+      // is the only thing the author is shown.
+      await signIn();
+      await expectLater(
+        service.saveBlueprint(
+          parseBlueprint(
+            'blueprint: orphan\nincludes: [nobody-saved-this]\nresources: []\n',
+            BlueprintFormat.yaml,
+          ),
+        ),
+        throwsA(
+          isA<AppError>().having(
+            (e) => e.message,
+            'message',
+            contains('nobody-saved-this'),
+          ),
+        ),
+      );
+    });
+
+    test('a preset round-trips through the editor, then deletes', () async {
+      await signIn();
+      await service.savePreset(
+        Preset(
+          id: PresetId('base-tools'),
+          name: 'Base tools',
+          description: 'What every machine gets',
+          steps: [
+            PresetStep(formula: FormulaId('git')),
+            PresetStep(
+              formula: FormulaId('docker'),
+              action: FormulaAction.start,
+            ),
+          ],
+        ),
+      );
+
+      final saved = await service.preset('base-tools');
+      expect(saved.description, 'What every machine gets');
+      expect(saved.steps.last.action, FormulaAction.start);
+
+      await service.deletePreset('base-tools');
+      expect(await service.presets(), isEmpty);
+    });
+
+    test('deleting a blueprint takes it out of the list', () async {
+      await signIn();
+      await hub.saveBlueprint(Blueprint(id: BlueprintId('bare'), name: 'Bare'));
+      expect(await service.blueprints(), hasLength(1));
+
+      await service.deleteBlueprint('bare');
+      expect(await service.blueprints(), isEmpty);
+    });
+
+    test('reading a blueprint nobody saved is a notFound, not a crash', () {
+      return signIn().then(
+        (_) => expectLater(
+          service.blueprint('ghost'),
+          throwsA(
+            isA<AppError>().having(
+              (e) => e.kind,
+              'kind',
+              AppErrorKind.notFound,
+            ),
+          ),
+        ),
+      );
+    });
+
+    test('a viewer is refused the editor by the Hub, not just the UI', () async {
+      // The screen hides Save from a viewer, but hiding a button is a courtesy
+      // and not a control. This is the one that matters: a viewer who reaches
+      // the endpoint anyway is refused, and the service reports it as an
+      // authorization failure so the toast says so.
+      await service.connect(
+        hubUri: baseUrl(),
+        principal: 'vera',
+        token: 'viewer-token',
+      );
+
+      await expectLater(
+        service.saveBlueprint(
+          parseBlueprint(
+            'blueprint: sneaky\nresources: []\n',
+            BlueprintFormat.yaml,
+          ),
+        ),
+        throwsA(
+          isA<AppError>().having(
+            (e) => e.kind,
+            'kind',
+            AppErrorKind.authorization,
+          ),
+        ),
+      );
+      // Reading is a viewer's whole job, and must still work.
+      expect(await service.blueprints(), isEmpty);
+    });
+
+    test('an unusable label selector is reported, not silently ignored', () {
+      // The assign panel sends whatever was typed. A selector the Hub cannot
+      // parse must come back as an error the panel can show — assigning to the
+      // *whole fleet* because a selector was dropped is the failure worth
+      // preventing.
+      return signIn().then(
+        (_) => expectLater(
+          service.listNodes(labels: const ['role']),
+          throwsA(isA<AppError>()),
+        ),
+      );
+    });
   });
 
   group('normalizeHubUri', () {
