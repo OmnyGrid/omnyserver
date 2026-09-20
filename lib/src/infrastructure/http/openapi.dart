@@ -291,6 +291,30 @@ Map<String, dynamic> openApiDocument() => {
         'responses': {'200': _ok('Cleared'), '404': _err},
       },
     },
+    '/nodes/{id}/unassign': {
+      'post': {
+        'summary': 'Take the blueprint off a node, removing what it installed',
+        'description':
+            'Sends an empty blueprint first, so every resource the node\'s '
+            'ledger holds is removed. Resources the machine already had are '
+            'released rather than removed unless `purgeAdopted`. The node must '
+            'be online; a partial failure answers 200 with `success: false` '
+            'and leaves the blueprint assigned so it can be retried. To forget '
+            'a node that is gone without touching it, DELETE its '
+            'desired-state instead.',
+        'parameters': [_pathId],
+        'requestBody': _jsonBody({
+          'purgeAdopted': 'boolean',
+          'async': 'boolean',
+        }),
+        'responses': {
+          '200': _ok('Apply result'),
+          '202': _ok('Operation handle (async)'),
+          '404': _err,
+          '502': _err,
+        },
+      },
+    },
     '/nodes/{id}/drift': {
       'get': {
         'summary':

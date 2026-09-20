@@ -237,8 +237,28 @@ class HubApiClient {
         'steps': [for (final step in steps) step.toJson()],
       });
 
-  /// Stops expecting anything of [id].
+  /// Stops expecting anything of [id], and leaves the machine as it is.
+  ///
+  /// The right answer for hardware that is gone. [unassign] is the one that
+  /// takes back what the blueprint installed.
   Future<void> undeclare(String id) async => delete('/nodes/$id/desired-state');
+
+  /// Takes the blueprint back off [id], removing what it put there.
+  ///
+  /// Adopted resources — the ones the machine already had before any blueprint
+  /// touched it — are left alone unless [purgeAdopted]. The node must be
+  /// online, and a partial failure leaves the blueprint assigned so it can be
+  /// retried: read [BlueprintApplyResult.success] rather than assuming.
+  Future<BlueprintApplyResult> unassign(
+    String id, {
+    bool purgeAdopted = false,
+  }) async => BlueprintApplyResult.fromJson(
+    await _object(
+      await post('/nodes/$id/unassign', {
+        if (purgeAdopted) 'purgeAdopted': true,
+      }),
+    ),
+  );
 
   /// How far [id] has drifted, or `null` if nothing was declared for it.
   ///

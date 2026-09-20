@@ -1423,6 +1423,7 @@ class BlueprintCommand extends Command<void> {
     addSubcommand(BlueprintResolvedCommand());
     addSubcommand(BlueprintDeleteCommand());
     addSubcommand(BlueprintAssignCommand());
+    addSubcommand(BlueprintUnassignCommand());
     addSubcommand(BlueprintPlanCommand());
     addSubcommand(BlueprintApplyCommand());
   }
@@ -1658,6 +1659,51 @@ class BlueprintAssignCommand extends Command<void> {
       // Said plainly: an operator who expects this to have *done* something will
       // otherwise wonder why the machine is unchanged.
       stdout.writeln('nothing has run — blueprint apply <node> to make it so');
+    } finally {
+      client.close();
+    }
+  }
+}
+
+/// `omnyserver blueprint unassign <node>`
+class BlueprintUnassignCommand extends Command<void> {
+  /// Creates the blueprint-unassign command.
+  BlueprintUnassignCommand() {
+    _addApiOptions(argParser);
+    _addSelectorOptions(argParser);
+    argParser.addFlag(
+      'purge-adopted',
+      negatable: false,
+      help:
+          'Also remove what the machine already had before this blueprint '
+          'touched it. Off by default, and deliberately.',
+    );
+  }
+
+  @override
+  String get name => 'unassign';
+
+  @override
+  String get description =>
+      'Take the blueprint off a node, removing what it installed.';
+
+  @override
+  Future<void> run() async {
+    final args = argResults!;
+    final purgeAdopted = args['purge-adopted'] as bool;
+
+    final client = _apiClientFrom(args);
+    try {
+      final nodes = await _selectNodes(client, args, positional: args.rest);
+      await _fanOut(nodes, (node) async {
+        final result = await client.unassign(node, purgeAdopted: purgeAdopted);
+        if (!result.success) {
+          // Still assigned, on purpose: the declaration is the only record of
+          // what is left to clean up.
+          return 'FAILED — ${result.changed} removed, still assigned';
+        }
+        return 'unassigned — ${result.changed} removed';
+      });
     } finally {
       client.close();
     }

@@ -243,6 +243,7 @@ class HttpApiServer {
           '/api/v1/nodes/<id>/desired-state',
           (r, p) => _deleteDesired(r, p),
         )
+        ..post('/api/v1/nodes/<id>/unassign', (r, p) => _unassign(r, p))
         ..get('/api/v1/nodes/<id>/drift', (r, p) => _getDrift(p))
         ..post('/api/v1/nodes/<id>/reconcile', (r, p) => _reconcile(r, p))
         ..post('/api/v1/nodes/<id>/restart', (r, p) => _restart(r, p))
@@ -772,6 +773,50 @@ class HttpApiServer {
   /// still is what it was declared to be — which is the question nothing could
   /// ask before, and the reason to declare a state rather than just apply a
   /// preset and hope.
+  /// Takes a blueprint back off a node, and takes back what it installed.
+  ///
+  /// A POST rather than a flag on `DELETE /desired-state`, for three reasons:
+  /// it uninstalls software on another machine, which is not what a DELETE on a
+  /// declaration reads like; it can outlive the request timeout, so it needs the
+  /// same `async` handle every other long job has; and `DELETE` keeps its exact
+  /// current meaning — forget the declaration, touch nothing — which is the
+  /// right and only answer for hardware that is never coming back.
+  Future<HubResponse> _unassign(
+    HubRequest request,
+    Map<String, String> params,
+  ) async {
+    final id = _nodeId(params);
+    _authorize(request, 'state.unassign', target: id.value);
+    final principal = _principal(request);
+    final body = await _readJson(request);
+    final purgeAdopted = body['purgeAdopted'] == true;
+
+    if (body['async'] == true) {
+      final operation = hub.dispatch(
+        kind: 'unassign',
+        nodeId: id,
+        summary: 'take the blueprint back off ${id.value}',
+        principal: principal,
+        work: () async => (await hub.unassign(
+          id,
+          purgeAdopted: purgeAdopted,
+          principal: principal,
+        )).toJson(),
+      );
+      return jsonOk(operation.toJson(), status: 202);
+    }
+
+    final result = await hub.unassign(
+      id,
+      purgeAdopted: purgeAdopted,
+      principal: principal,
+    );
+    // A partial failure is a 200 carrying `success: false`, not an error: the
+    // work was attempted and the caller needs the per-resource detail to know
+    // what is left. The blueprint stays assigned so it can be retried.
+    return jsonOk(result.toJson());
+  }
+
   /// One endpoint, two ways of getting the answer — because "how far has this
   /// node drifted" is one question however the node was declared.
   ///

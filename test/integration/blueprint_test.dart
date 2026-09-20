@@ -492,6 +492,92 @@ void main() {
       },
     );
 
+    test('unassigning takes back what the blueprint installed', () async {
+      // Without this, "unassign" forgot the declaration and left every package
+      // on the machine, with the node's ledger still listing them and nothing
+      // able to ask for their removal ever again.
+      await setUpBuilder();
+      await reconcile('worker-01');
+      expect((await drift('worker-01'))['converged'], isTrue);
+
+      final (status, body) = await send(
+        'POST',
+        '/api/v1/nodes/worker-01/unassign',
+        const <String, dynamic>{},
+      );
+      expect(status, 200, reason: '$body');
+      final result = body as Map;
+      expect(result['success'], isTrue);
+      expect(result['changed'], 2, reason: 'dart and nmap both came off');
+
+      // The declaration is gone, and so is the software.
+      final (gone, _) = await send('GET', '/api/v1/nodes/worker-01/drift');
+      expect(gone, 404);
+      expect(executor.installed, isEmpty);
+    });
+
+    test('unassigning a node with no blueprint is a 404', () async {
+      await startNode();
+      final (status, _) = await send(
+        'POST',
+        '/api/v1/nodes/worker-01/unassign',
+        const <String, dynamic>{},
+      );
+      expect(status, 404);
+    });
+
+    test('an offline node keeps its declaration rather than losing it', () async {
+      // Clearing while the machine keeps everything is not merely untidy: once
+      // the Hub has forgotten which blueprint the node was on, nothing can ever
+      // compute the cleanup. A retryable failure would become a permanent one.
+      await savePreset('dev-tools', [
+        {'formula': 'dart', 'action': 'install'},
+      ]);
+      await saveBlueprint(builder());
+      await cluster.startNode(id: 'worker-01');
+      await send('PUT', '/api/v1/nodes/worker-01/desired-state', {
+        'blueprint': 'builder',
+      });
+      // A node with no blueprint handler cannot apply, which is as unreachable
+      // as being offline from the Hub's point of view.
+      await cluster.stopNodes();
+
+      final (status, _) = await send(
+        'POST',
+        '/api/v1/nodes/worker-01/unassign',
+        const <String, dynamic>{},
+      );
+      expect(status, 502);
+
+      final (still, state) = await send(
+        'GET',
+        '/api/v1/nodes/worker-01/desired-state',
+      );
+      expect(
+        still,
+        200,
+        reason: 'the declaration survives an unreachable node',
+      );
+      expect((state as Map)['blueprint'], 'builder');
+    });
+
+    test('plain DELETE still forgets without touching the machine', () async {
+      // The escape hatch for hardware that is never coming back.
+      await setUpBuilder();
+      await reconcile('worker-01');
+
+      final (status, _) = await send(
+        'DELETE',
+        '/api/v1/nodes/worker-01/desired-state',
+      );
+      expect(status, 200);
+      expect(
+        executor.installed,
+        contains('dart'),
+        reason: 'DELETE forgets the declaration and touches nothing',
+      );
+    });
+
     test('an async apply lands in the operations tray', () async {
       await setUpBuilder();
 

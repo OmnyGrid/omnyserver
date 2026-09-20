@@ -836,9 +836,88 @@ class OmnyServerHub {
   Future<DesiredState?> desiredStateFor(NodeId id) =>
       config.desiredStateRepository.find(id);
 
-  /// Stops expecting anything of [id].
+  /// Stops expecting anything of [id], and leaves the machine exactly as it is.
+  ///
+  /// The escape hatch for a node that is never coming back — decommissioned
+  /// hardware, a destroyed VM. It works offline, because it touches nothing.
+  /// [unassign] is what you want when the machine is still there.
   Future<bool> clearDesiredState(NodeId id) =>
       config.desiredStateRepository.delete(id);
+
+  /// Stops expecting anything of [id], and takes back what the blueprint put
+  /// there.
+  ///
+  /// Sends an **empty** blueprint first: with nothing declared, every entry in
+  /// the node's ledger is an orphan, and the apply removes it. Adopted
+  /// resources — the ones the machine already had before any blueprint touched
+  /// it — are released rather than removed unless [purgeAdopted] says
+  /// otherwise.
+  ///
+  /// Two failure policies, both chosen so the record is never the thing that is
+  /// lost:
+  ///
+  /// * **The node must be online.** Clearing the declaration while the machine
+  ///   keeps everything is not merely untidy — once the Hub has forgotten which
+  ///   blueprint the node was on, nothing can ever compute the cleanup, and a
+  ///   retryable failure has become a permanent one. An offline node fails here
+  ///   and keeps its declaration.
+  /// * **A partial failure does not clear either.** The declaration is the only
+  ///   record of what is still outstanding; dropping it would strand the
+  ///   remainder. The result says what failed, and the call can be repeated.
+  Future<BlueprintApplyResult> unassign(
+    NodeId id, {
+    bool purgeAdopted = false,
+    String principal = 'system',
+  }) async {
+    final desired = await config.desiredStateRepository.find(id);
+    final assigned = desired?.blueprint;
+    if (assigned == null) {
+      throw NotFoundException('no blueprint assigned to ${id.value}');
+    }
+
+    // Deliberately *not* the assigned blueprint's own hash. A ledger stamped
+    // with the live hash and no entries would report itself up to date on a
+    // machine where nothing is installed, the next time the blueprint was
+    // assigned. This is the hash of an empty resource list, and nothing else
+    // ever produces it.
+    final empty = ResolvedBlueprint(
+      blueprint: assigned,
+      hash: BlueprintResolver.hashOf(const []),
+    );
+
+    final reply = await _call(
+      id,
+      Operations.blueprintApply,
+      BlueprintApplyRequest(
+        requestId: config.idGenerator.next(),
+        blueprint: empty,
+        purgeAdopted: purgeAdopted,
+      ).toJson(),
+    );
+    final result = BlueprintApplyResult.fromJson(reply);
+
+    if (result.success) {
+      await config.desiredStateRepository.delete(id);
+    }
+
+    config.eventBus.publish(
+      BlueprintApplied(id, assigned.value, result.success, config.clock.now()),
+    );
+    // Audited under its own action, not `state.declare`: this uninstalls
+    // software, and a site that grants bookkeeping without granting removal
+    // needs a name to say no to.
+    await audit.record(
+      principal: principal,
+      action: 'state.unassign',
+      outcome: result.success ? AuditOutcome.success : AuditOutcome.failure,
+      target: id.value,
+      detail:
+          '${assigned.value}: ${result.changed} removed'
+          '${purgeAdopted ? ', adopted purged' : ''}'
+          '${result.success ? '' : ' — still assigned'}',
+    );
+    return result;
+  }
 
   /// How far [id] has drifted from what was declared for it.
   ///

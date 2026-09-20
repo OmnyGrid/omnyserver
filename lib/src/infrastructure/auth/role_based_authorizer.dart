@@ -40,6 +40,9 @@ class RoleBasedAuthorizer implements Authorizer {
     'formula.': {'operator'},
     'preset.': {'operator'},
     'blueprint.': {'operator'},
+    // Covers `state.declare`, `state.reconcile` and `state.unassign` by prefix.
+    // They are named separately so a site can grant declaring without granting
+    // the one that uninstalls software.
     'state.': {'operator'},
   };
 
