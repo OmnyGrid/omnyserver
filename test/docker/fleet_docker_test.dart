@@ -3,9 +3,28 @@
 @Timeout(Duration(minutes: 10))
 library;
 
+import 'package:omnyserver/omnyserver_cli.dart';
 import 'package:test/test.dart';
 
 import 'fleet.dart';
+
+/// The shared preset the blueprint below includes.
+Preset _devTools(List<String> formulas) => Preset(
+  id: PresetId('dev-tools'),
+  name: 'Dev tools',
+  steps: [for (final f in formulas) PresetStep(formula: FormulaId(f))],
+);
+
+/// A blueprint that includes it, plus whatever it declares of its own.
+Blueprint _builder(List<String> formulas) => Blueprint(
+  id: BlueprintId('builder'),
+  name: 'Build host',
+  includes: [PresetId('dev-tools')],
+  resources: [
+    for (final f in formulas)
+      Resource(id: ResourceId('formula', f), ensure: Ensure.installed),
+  ],
+);
 
 /// A Hub and several node containers on one network: the cases that only exist
 /// once the fleet is spread across machines.
@@ -31,20 +50,17 @@ void main() {
     final client = fleet.apiClient();
     try {
       final nodes = await fleet.eventually(
-        () async => (await client.get('/nodes') as List).cast<Map>(),
-        (nodes) => nodes.length == 2 && nodes.every((n) => n['online'] == true),
+        client.nodes,
+        (nodes) => nodes.length == 2 && nodes.every((n) => n.online),
         what: 'both nodes to register',
       );
 
       expect(
-        nodes.map((n) => n['nodeId']),
+        nodes.map((n) => n.id.value),
         containsAll(['worker-a', 'worker-b']),
       );
       // Each node reported its own host, not the Hub's.
-      final hostnames = <String>{
-        for (final node in nodes)
-          ((node['platform'] as Map)['hostname'] as String),
-      };
+      final hostnames = {for (final node in nodes) node.platform.hostname};
       expect(hostnames, hasLength(2));
     } finally {
       client.close();
@@ -60,14 +76,13 @@ void main() {
     final client = fleet.apiClient();
     try {
       await fleet.eventually(
-        () async => (await client.get('/nodes') as List).length,
+        () async => (await client.nodes()).length,
         (count) => count == 2,
         what: 'both nodes to register',
       );
 
-      final prod = (await client.get('/nodes?label=env%3Dprod') as List)
-          .cast<Map>();
-      expect(prod.single['nodeId'], 'prod-01');
+      final prod = await client.nodes(labels: ['env=prod']);
+      expect(prod.single.id.value, 'prod-01');
     } finally {
       client.close();
     }
@@ -85,20 +100,11 @@ void main() {
     final client = fleet.apiClient();
     try {
       final capabilities = await fleet.eventually(
-        () async {
-          final nodes = (await client.get('/nodes') as List).cast<Map>();
-          return {
-            for (final node in nodes)
-              node['nodeId'] as String: [
-                // `capabilities` is the NodeCapabilities object, which holds
-                // the list under a key of the same name.
-                for (final c
-                    in ((node['capabilities'] as Map?)?['capabilities']
-                            as List? ??
-                        const []))
-                  (c as Map)['name'] as String,
-              ],
-          };
+        () async => {
+          for (final node in await client.nodes())
+            node.id.value: [
+              for (final c in node.capabilities.capabilities) c.name,
+            ],
         },
         // Wait for the SDK node to have reported something, not merely for
         // both to be listed: capabilities arrive with the registration, and
@@ -125,8 +131,7 @@ void main() {
 
     final client = fleet.apiClient();
     try {
-      Future<bool?> online() async =>
-          ((await client.get('/nodes/worker-a') as Map)['online'] as bool?);
+      Future<bool> online() async => (await client.node('worker-a')).online;
 
       await fleet.eventually(online, (up) => up == true, what: 'the node');
 
@@ -160,7 +165,7 @@ void main() {
     final client = fleet.apiClient();
     try {
       await fleet.eventually(
-        () async => (await client.get('/nodes') as List).length,
+        () async => (await client.nodes()).length,
         (count) => count == 1,
         what: 'the node to register',
       );
@@ -187,27 +192,25 @@ void main() {
     final client = fleet.apiClient();
     try {
       await fleet.eventually(
-        () async => (await client.get('/nodes') as List).length,
+        () async => (await client.nodes()).length,
         (count) => count == 2,
         what: 'both nodes to register',
       );
 
-      final onSdk =
-          await client.post('/nodes/sdk-01/formula', {
-                'formula': 'dart',
-                'action': 'verify',
-              })
-              as Map;
-      expect((onSdk['result'] as Map)['success'], isTrue);
+      final onSdk = await client.runFormula(
+        'sdk-01',
+        formula: 'dart',
+        action: FormulaAction.verify,
+      );
+      expect(onSdk.result.success, isTrue);
 
-      final onBare =
-          await client.post('/nodes/bare-01/formula', {
-                'formula': 'dart',
-                'action': 'verify',
-              })
-              as Map;
+      final onBare = await client.runFormula(
+        'bare-01',
+        formula: 'dart',
+        action: FormulaAction.verify,
+      );
       expect(
-        (onBare['result'] as Map)['success'],
+        onBare.result.success,
         isFalse,
         reason: 'there is no Dart SDK on the slim image',
       );
@@ -230,17 +233,16 @@ void main() {
     final client = fleet.apiClient();
     try {
       await fleet.eventually(
-        () async => (await client.get('/nodes') as List).length,
+        () async => (await client.nodes()).length,
         (count) => count == 2,
         what: 'both nodes to register',
       );
 
       // Answered before the agent goes: an operator should see a confirmation,
-      // not a dropped connection.
-      final reply = await client.post('/nodes/worker-a/restart') as Map;
-      expect(reply['status'], 'restarting');
-
-      await client.post('/nodes/worker-b/shutdown');
+      // not a dropped connection. Returning normally *is* the confirmation —
+      // anything from 400 up would have thrown.
+      await client.restartAgent('worker-a');
+      await client.stopAgent('worker-b');
 
       expect(
         await restarting.waitExit(),
@@ -270,38 +272,30 @@ void main() {
     final client = fleet.apiClient();
     try {
       await fleet.eventually(
-        () async => (await client.get('/nodes') as List).length,
+        () async => (await client.nodes()).length,
         (count) => count == 1,
         what: 'the node to register',
       );
 
-      final reply =
-          await client.post('/nodes/bare-01/formula', {
-                'formula': 'procps',
-                'action': 'install',
-              })
-              as Map;
-      final result = reply['result'] as Map;
-      expect(result['success'], isTrue, reason: '${result['message']}');
+      final result = (await client.runFormula(
+        'bare-01',
+        formula: 'procps',
+        action: FormulaAction.install,
+      )).result;
+      expect(result.success, isTrue, reason: result.message);
 
       // The result keeps its own copy, so a run nobody watched is still
       // readable afterwards.
-      final logs = (result['logs'] as List? ?? const []).cast<String>();
-      expect(logs, isNotEmpty);
-      expect(logs.first, contains('running'));
+      expect(result.logs, isNotEmpty);
+      expect(result.logs.first, contains('running'));
 
       // And the same output reached the Hub, tagged with exactly the string a
       // client builds from the operation's summary.
       final shipped = await fleet.eventually(
-        () async {
-          final lines = (await client.get('/nodes/bare-01/logs') as List)
-              .cast<Map>();
-          return [
-            for (final line in lines)
-              if ((line['message'] as String).contains('[procps install]'))
-                line['message'] as String,
-          ];
-        },
+        () async => [
+          for (final line in await client.logs('bare-01'))
+            if (line.message.contains('[procps install]')) line.message,
+        ],
         (lines) => lines.isNotEmpty,
         what: 'the run output to reach the Hub',
       );
@@ -324,47 +318,46 @@ void main() {
     final client = fleet.apiClient();
     try {
       await fleet.eventually(
-        () async => (await client.get('/nodes') as List).length,
+        () async => (await client.nodes()).length,
         (count) => count == 1,
         what: 'the node to register',
       );
 
-      final before =
-          await client.post('/nodes/bare-01/formula', {
-                'formula': 'dart',
-                'action': 'verify',
-              })
-              as Map;
-      expect((before['result'] as Map)['success'], isFalse);
+      final before = await client.runFormula(
+        'bare-01',
+        formula: 'dart',
+        action: FormulaAction.verify,
+      );
+      expect(before.result.success, isFalse);
 
-      final installed =
-          await client.post('/nodes/bare-01/formula', {
-                'formula': 'dart',
-                'action': 'install',
-              })
-              as Map;
-      final result = installed['result'] as Map;
-      expect(result['success'], isTrue, reason: '${result['message']}');
-      expect(result['changed'], isTrue);
+      final installed = await client.runFormula(
+        'bare-01',
+        formula: 'dart',
+        action: FormulaAction.install,
+      );
+      expect(
+        installed.result.success,
+        isTrue,
+        reason: installed.result.message,
+      );
+      expect(installed.result.changed, isTrue);
 
       // Installed, and the node can now prove it — the claim the Hub records.
-      final after =
-          await client.post('/nodes/bare-01/formula', {
-                'formula': 'dart',
-                'action': 'verify',
-              })
-              as Map;
-      expect((after['result'] as Map)['success'], isTrue);
+      final after = await client.runFormula(
+        'bare-01',
+        formula: 'dart',
+        action: FormulaAction.verify,
+      );
+      expect(after.result.success, isTrue);
 
       // And asking again changes nothing, rather than re-adding the repository.
-      final again =
-          await client.post('/nodes/bare-01/formula', {
-                'formula': 'dart',
-                'action': 'install',
-              })
-              as Map;
-      expect((again['result'] as Map)['changed'], isFalse);
-      expect((again['result'] as Map)['message'], contains('already'));
+      final again = await client.runFormula(
+        'bare-01',
+        formula: 'dart',
+        action: FormulaAction.install,
+      );
+      expect(again.result.changed, isFalse);
+      expect(again.result.message, contains('already'));
     } finally {
       client.close();
     }
@@ -382,52 +375,32 @@ void main() {
     final client = fleet.apiClient();
     try {
       await fleet.eventually(
-        () async => (await client.get('/nodes') as List).length,
+        () async => (await client.nodes()).length,
         (count) => count == 1,
         what: 'the node to register',
       );
 
       // A shared preset, and a blueprint built from it plus one of its own.
-      await client.post('/presets', {
-        'id': 'dev-tools',
-        'name': 'Dev tools',
-        'steps': [
-          {'formula': 'build-tools', 'action': 'install'},
-        ],
-      });
-      await client.post('/blueprints', {
-        'blueprint': 'builder',
-        'name': 'Build host',
-        'includes': ['dev-tools'],
-        'resources': [
-          {'type': 'formula', 'name': 'nmap', 'ensure': 'installed'},
-        ],
-      });
-      await client.put('/nodes/bare-01/desired-state', {
-        'blueprint': 'builder',
-      });
+      await client.savePreset(_devTools(['build-tools']));
+      await client.saveBlueprint(_builder(['nmap']));
+      await client.assignBlueprint('bare-01', 'builder');
 
-      Future<Map> plan() async =>
-          await client.get('/nodes/bare-01/drift') as Map;
+      Future<Drift> plan() async => (await client.drift('bare-01'))!;
 
       // What the *machine* says, probed on the host itself — `gcc --version`,
       // `nmap --version` — rather than what the Hub believes about it.
-      Future<Map<String, String>> onTheBox() async {
-        final rows = await client.get('/nodes/bare-01/formulas') as List;
-        return {
-          for (final row in rows.cast<Map>())
-            row['formula'] as String: row['status'] as String,
-        };
-      }
+      Future<Map<String, String>> onTheBox() async => {
+        for (final report in await client.formulaStatus('bare-01'))
+          report.formula.value: report.status.name,
+      };
 
       // 1. Drifted, and the node is what said so — each change naming which
       //    document asked for it.
       final before = await plan();
-      expect(before['converged'], isFalse);
-      expect(before['blueprint'], 'builder');
-      final changes = (before['changes'] as List).cast<Map>();
+      expect(before.converged, isFalse);
+      expect(before.blueprint, 'builder');
       expect(
-        {for (final c in changes) c['resource']: c['origin']},
+        {for (final c in before.changes) c.id.toString(): c.origin},
         {'formula:build-tools': 'preset:dev-tools', 'formula:nmap': 'local'},
       );
 
@@ -438,10 +411,9 @@ void main() {
       );
 
       // 2. Apply, and the tools genuinely arrive on the host.
-      final applied =
-          await client.post('/nodes/bare-01/reconcile', const {}) as Map;
-      expect(applied['success'], isTrue, reason: '${applied['changes']}');
-      expect(applied['changed'], 2);
+      final applied = await client.reconcile('bare-01');
+      expect(applied.success, isTrue, reason: '${applied.changes}');
+      expect(applied.changed, 2);
 
       final after = await onTheBox();
       expect(after['nmap'], 'installed');
@@ -450,28 +422,22 @@ void main() {
       // 3. Converged, and applying again does nothing. This is the property the
       //    whole design rests on: if applying twice did the work twice, drift
       //    could not be the same comparison with the apply left off.
-      expect((await plan())['converged'], isTrue);
-      final again =
-          await client.post('/nodes/bare-01/reconcile', const {}) as Map;
-      expect(again['changed'], 0);
+      expect((await plan()).converged, isTrue);
+      expect((await client.reconcile('bare-01')).changed, 0);
 
       // 4. Drop nmap from the blueprint. The document no longer mentions it, so
       //    only the node's ledger can ask for its removal.
-      await client.post('/blueprints', {
-        'blueprint': 'builder',
-        'name': 'Build host',
-        'includes': ['dev-tools'],
-      });
+      await client.saveBlueprint(_builder(const []));
 
       final trimmed = await plan();
-      expect(trimmed['converged'], isFalse);
-      final removal = (trimmed['changes'] as List).cast<Map>().singleWhere(
-        (c) => c['kind'] == 'remove',
+      expect(trimmed.converged, isFalse);
+      final removal = trimmed.changes.singleWhere(
+        (c) => c.kind == ChangeKind.remove,
       );
-      expect(removal['resource'], 'formula:nmap');
-      expect(removal['origin'], 'ledger');
+      expect(removal.id.toString(), 'formula:nmap');
+      expect(removal.origin, 'ledger');
 
-      await client.post('/nodes/bare-01/reconcile', const {});
+      await client.reconcile('bare-01');
       expect(
         (await onTheBox())['nmap'],
         'absent',
@@ -480,21 +446,15 @@ void main() {
 
       // 5. Edit the shared preset. The blueprint is not re-saved and nobody
       //    touches the node, and it drifts anyway — includes follow the preset.
-      await client.post('/presets', {
-        'id': 'dev-tools',
-        'name': 'Dev tools',
-        'steps': [
-          {'formula': 'build-tools', 'action': 'install'},
-          {'formula': 'net-tools', 'action': 'install'},
-        ],
-      });
+      await client.savePreset(_devTools(['build-tools', 'net-tools']));
 
       final propagated = await plan();
-      expect(propagated['converged'], isFalse);
+      expect(propagated.converged, isFalse);
       expect(
-        (propagated['changes'] as List).cast<Map>().singleWhere(
-          (c) => c['kind'] == 'create',
-        )['resource'],
+        propagated.changes
+            .singleWhere((c) => c.kind == ChangeKind.create)
+            .id
+            .toString(),
         'formula:net-tools',
       );
     } finally {
@@ -515,18 +475,15 @@ void main() {
     final client = fleet.apiClient();
     try {
       await fleet.eventually(
-        () async => (await client.get('/nodes') as List).length,
+        () async => (await client.nodes()).length,
         (count) => count == 2,
         what: 'both nodes to register',
       );
 
-      Future<Map<String, String>> statusOf(String node) async {
-        final rows = await client.get('/nodes/$node/formulas') as List;
-        return {
-          for (final row in rows.cast<Map>())
-            row['formula'] as String: row['status'] as String,
-        };
-      }
+      Future<Map<String, String>> statusOf(String node) async => {
+        for (final report in await client.formulaStatus(node))
+          report.formula.value: report.status.name,
+      };
 
       final bare = await statusOf('bare-01');
       final sdk = await statusOf('sdk-01');
@@ -540,16 +497,15 @@ void main() {
       expect(bare['docker'], 'absent');
 
       // Now install something, and watch the same endpoint change its mind.
-      final installed =
-          await client.post('/nodes/bare-01/formula', {
-                'formula': 'nmap',
-                'action': 'install',
-              })
-              as Map;
+      final installed = await client.runFormula(
+        'bare-01',
+        formula: 'nmap',
+        action: FormulaAction.install,
+      );
       expect(
-        (installed['result'] as Map)['success'],
+        installed.result.success,
         isTrue,
-        reason: '${(installed['result'] as Map)['message']}',
+        reason: installed.result.message,
       );
 
       final after = await statusOf('bare-01');
@@ -572,21 +528,20 @@ void main() {
 
     final client = fleet.apiClient();
     try {
-      Future<int> processCount() async {
-        final status = await client.get('/nodes/bare-01/status') as Map;
-        // Absent rather than empty when there is nothing to report.
-        return (status['processes'] as List? ?? const []).length;
-      }
+      // Null until the node's first heartbeat; -1 says "no status yet", which
+      // is not the same as "a status reporting no processes".
+      Future<int> processCount() async =>
+          (await client.nodeStatus('bare-01'))?.processes.length ?? -1;
 
       await fleet.eventually(
-        () async => (await client.get('/nodes') as List).length,
+        () async => (await client.nodes()).length,
         (count) => count == 1,
         what: 'the node to register',
       );
       // Wait for a status to exist at all before reading what is in it.
       await fleet.eventually(
-        () async => client.get('/nodes/bare-01/status'),
-        (_) => true,
+        processCount,
+        (count) => count >= 0,
         what: 'the node-s first status report',
       );
       expect(
@@ -595,15 +550,13 @@ void main() {
         reason: 'the slim image has no ps for the monitor to call',
       );
 
-      final applied =
-          await client.post('/nodes/bare-01/formula', {
-                'formula': 'procps',
-                'action': 'install',
-              })
-              as Map;
-      final result = applied['result'] as Map;
-      expect(result['success'], isTrue, reason: '${result['message']}');
-      expect(result['changed'], isTrue);
+      final result = (await client.runFormula(
+        'bare-01',
+        formula: 'procps',
+        action: FormulaAction.install,
+      )).result;
+      expect(result.success, isTrue, reason: result.message);
+      expect(result.changed, isTrue);
 
       // The next heartbeat carries a status gathered with a `ps` that now
       // exists — nothing had to restart for it.
@@ -615,14 +568,13 @@ void main() {
       expect(count, greaterThan(0));
 
       // Asking again is a no-op rather than a second install.
-      final again =
-          await client.post('/nodes/bare-01/formula', {
-                'formula': 'procps',
-                'action': 'install',
-              })
-              as Map;
-      expect((again['result'] as Map)['changed'], isFalse);
-      expect((again['result'] as Map)['message'], contains('already'));
+      final again = await client.runFormula(
+        'bare-01',
+        formula: 'procps',
+        action: FormulaAction.install,
+      );
+      expect(again.result.changed, isFalse);
+      expect(again.result.message, contains('already'));
     } finally {
       client.close();
     }

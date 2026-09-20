@@ -16,6 +16,13 @@ import 'package:test/test.dart';
 import '../support/captured_stdout.dart';
 import '../support/harness.dart';
 
+/// The shared preset the blueprints below include.
+final Preset _devTools = Preset(
+  id: PresetId('dev-tools'),
+  name: 'Dev tools',
+  steps: [PresetStep(formula: FormulaId('dart'))],
+);
+
 /// The blueprint CLI, driven through the real `buildRunner()` against a real
 /// Hub — the same path an operator's shell takes, one seam shorter.
 void main() {
@@ -70,13 +77,7 @@ resources:
     name: nmap
     ensure: installed
 ''';
-        await client.post('/presets', {
-          'id': 'dev-tools',
-          'name': 'Dev tools',
-          'steps': [
-            {'formula': 'dart', 'action': 'install'},
-          ],
-        });
+        await client.savePreset(_devTools);
         write('builder.yaml', source);
 
         final saved = await captureStdout(
@@ -133,13 +134,7 @@ resources:
 
   group('listing and resolving', () {
     setUp(() async {
-      await client.post('/presets', {
-        'id': 'dev-tools',
-        'name': 'Dev tools',
-        'steps': [
-          {'formula': 'dart', 'action': 'install'},
-        ],
-      });
+      await client.savePreset(_devTools);
       write('builder.yaml', '''
 blueprint: builder
 name: Build host

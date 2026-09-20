@@ -59,16 +59,16 @@ Future<void> _theFleet(HubApiClient hub) async {
   _heading('The fleet, before anything is declared');
 
   final nodes = await _eventually(
-    () async => (await hub.get('/nodes') as List).cast<Map>(),
-    (nodes) => nodes.length >= 3 && nodes.every((n) => n['online'] == true),
+    hub.nodes,
+    (nodes) => nodes.length >= 3 && nodes.every((n) => n.online),
     what: 'all three nodes to register',
   );
 
   for (final node in nodes) {
-    final labels = (node['labels'] as Map).entries
+    final labels = node.labels.entries
         .map((e) => '${e.key}=${e.value}')
         .join(' ');
-    print('  ${(node['nodeId'] as String).padRight(9)} [$labels]');
+    print('  ${node.id.value.padRight(9)} [$labels]');
   }
 }
 
@@ -79,14 +79,14 @@ Future<void> _theLibrary(HubApiClient hub) async {
   // A preset is JSON; a blueprint is whichever format it was written in, and
   // these two were written as YAML. `BlueprintFile.read` is what the CLI's
   // `blueprint save` uses.
-  await hub.post('/presets', await _json('presets/base-tools.json'));
+  await hub.savePreset(await _preset('presets/base-tools.json'));
   print('  preset    base-tools   (procps, net-tools)');
 
   for (final name in ['web-server', 'build-host']) {
     final blueprint = await BlueprintFile.read(
       _here.resolve('blueprints/$name.yaml').toFilePath(),
     );
-    await hub.post('/blueprints', blueprint.toJson());
+    await hub.saveBlueprint(blueprint);
     print(
       '  blueprint ${name.padRight(12)} '
       'includes ${blueprint.includes.length}, '
@@ -98,14 +98,14 @@ Future<void> _theLibrary(HubApiClient hub) async {
   // be settled, and each resource naming the document that asked for it. This
   // is exactly what a node is sent.
   print('\n  build-host, resolved:');
-  final resolved = await hub.get('/blueprints/build-host/resolved') as Map;
-  for (final r in (resolved['resources'] as List).cast<Map>()) {
+  final resolved = await hub.resolvedBlueprint('build-host');
+  for (final r in resolved.resources) {
     print(
-      '    ${'${r['type']}:${r['name']}'.padRight(22)} '
-      '${'${r['ensure']}'.padRight(10)} from ${r['origin']}',
+      '    ${r.id.toString().padRight(22)} '
+      '${r.ensure.name.padRight(10)} from ${r.origin}',
     );
   }
-  print('    ${resolved['hash']}');
+  print('    ${resolved.hash}');
 }
 
 /// 3. Assigning by what a machine is for, not by its name.
@@ -116,12 +116,11 @@ Future<void> _assign(HubApiClient hub) async {
     ('role=web', 'web-server'),
     ('role=build', 'build-host'),
   ]) {
-    final nodes = (await hub.get('/nodes?label=$selector') as List)
-        .cast<Map>()
-        .map((n) => n['nodeId'] as String)
-        .toList();
+    final nodes = [
+      for (final n in await hub.nodes(labels: [selector])) n.id.value,
+    ];
     for (final node in nodes) {
-      await hub.put('/nodes/$node/desired-state', {'blueprint': blueprint});
+      await hub.assignBlueprint(node, blueprint);
     }
     print('  $selector -> $blueprint  (${nodes.join(', ')})');
   }
@@ -136,16 +135,16 @@ Future<void> _planBeforeAnything(HubApiClient hub) async {
   _heading('The plan');
 
   for (final node in ['web-1', 'web-2', 'build-1']) {
-    final drift = await hub.get('/nodes/$node/drift') as Map;
+    final drift = (await hub.drift(node))!;
     print(
-      '  $node — ${drift['converged'] == true ? 'converged' : 'drifted'} '
-      'from ${drift['blueprint']}',
+      '  $node — ${drift.converged ? 'converged' : 'drifted'} '
+      'from ${drift.blueprint}',
     );
-    for (final change in (drift['changes'] as List).cast<Map>()) {
+    for (final change in drift.changes) {
       print(
-        '    ${'${change['kind']}'.padRight(8)} '
-        '${'${change['resource']}'.padRight(22)} '
-        '${'${change['reason']}'.padRight(24)} from ${change['origin']}',
+        '    ${change.kind.name.padRight(8)} '
+        '${change.id.toString().padRight(22)} '
+        '${change.reason.padRight(24)} from ${change.origin}',
       );
     }
   }
@@ -163,14 +162,14 @@ Future<void> _apply(HubApiClient hub) async {
   _heading('Applying (this installs real packages — give it a minute)');
 
   for (final node in ['web-1', 'web-2', 'build-1']) {
-    final result = await hub.post('/nodes/$node/reconcile', const {}) as Map;
+    final result = await hub.reconcile(node);
     print(
-      '  ${node.padRight(9)} ${result['success'] == true ? 'ok ' : 'FAILED'} '
-      '— ${result['changed']} changed, ${result['skipped']} skipped',
+      '  ${node.padRight(9)} ${result.success ? 'ok ' : 'FAILED'} '
+      '— ${result.changed} changed, ${result.skipped} skipped',
     );
-    for (final change in (result['changes'] as List).cast<Map>()) {
-      if (change['kind'] == 'noop') continue;
-      print('    ${'${change['kind']}'.padRight(8)} ${change['resource']}');
+    for (final change in result.changes) {
+      if (change.kind == ChangeKind.noop) continue;
+      print('    ${change.kind.name.padRight(8)} ${change.id}');
     }
   }
 }
@@ -180,11 +179,11 @@ Future<void> _applyAgain(HubApiClient hub) async {
   _heading('Converged, and idempotent');
 
   for (final node in ['web-1', 'web-2', 'build-1']) {
-    final drift = await hub.get('/nodes/$node/drift') as Map;
-    final again = await hub.post('/nodes/$node/reconcile', const {}) as Map;
+    final drift = (await hub.drift(node))!;
+    final again = await hub.reconcile(node);
     print(
-      '  ${node.padRight(9)} converged: ${drift['converged']}, '
-      'and applying again changed ${again['changed']}',
+      '  ${node.padRight(9)} converged: ${drift.converged}, '
+      'and applying again changed ${again.changed}',
     );
   }
 
@@ -209,59 +208,60 @@ Future<void> _stopDeclaringSomething(HubApiClient hub) async {
   //   dart on build-1  the machine already had it, so the node adopted it
   //                    rather than claiming it. It is released and left exactly
   //                    where it is — we never owned that SDK.
-  await hub.post('/blueprints', {
-    'blueprint': 'web-server',
-    'name': 'Web server',
-    'platforms': ['linux'],
-    'includes': ['base-tools'],
-    'resources': [
-      {'type': 'formula', 'name': 'dns-utils', 'ensure': 'installed'},
-    ],
-  });
-  await hub.post('/blueprints', {
-    'blueprint': 'build-host',
-    'name': 'Build host',
-    'platforms': ['linux'],
-    'includes': ['base-tools'],
-    'resources': [
-      {'type': 'formula', 'name': 'build-tools', 'ensure': 'installed'},
-    ],
-  });
+  await hub.saveBlueprint(
+    _blueprint('web-server', 'Web server', ['dns-utils']),
+  );
+  await hub.saveBlueprint(
+    _blueprint('build-host', 'Build host', ['build-tools']),
+  );
   print('  web-server drops nmap, which it installed.');
   print('  build-host drops dart, which the machine already had.\n');
 
   for (final node in ['web-1', 'build-1']) {
-    final drift = await hub.get('/nodes/$node/drift') as Map;
-    for (final change in (drift['changes'] as List).cast<Map>()) {
-      if (change['kind'] == 'noop') continue;
+    final drift = (await hub.drift(node))!;
+    for (final change in drift.changes) {
+      if (change.kind == ChangeKind.noop) continue;
       print(
-        '  ${node.padRight(9)} ${'${change['kind']}'.padRight(7)} '
-        '${'${change['resource']}'.padRight(20)} ${change['reason']}',
+        '  ${node.padRight(9)} ${change.kind.name.padRight(7)} '
+        '${change.id.toString().padRight(20)} ${change.reason}',
       );
     }
-    for (final note in (drift['notes'] as List? ?? const [])) {
+    for (final note in drift.notes) {
       print('  ${node.padRight(9)} left    $note');
     }
   }
 
   print('');
   for (final node in ['web-1', 'build-1']) {
-    final result = await hub.post('/nodes/$node/reconcile', const {}) as Map;
-    print('  ${node.padRight(9)} applied: ${result['changed']} changed');
+    final result = await hub.reconcile(node);
+    print('  ${node.padRight(9)} applied: ${result.changed} changed');
   }
 
   // What each node has now, probed on the node itself rather than believed by
   // the Hub. nmap is gone; the Dart SDK is exactly where it was.
   print('');
   for (final (node, formula) in [('web-1', 'nmap'), ('build-1', 'dart')]) {
-    final onTheBox = (await hub.get('/nodes/$node/formulas') as List)
-        .cast<Map>();
-    final status = onTheBox.firstWhere(
-      (f) => f['formula'] == formula,
-    )['status'];
-    print('  ${node.padRight(9)} $formula: $status');
+    final onTheBox = await hub.formulaStatus(node);
+    final report = onTheBox.firstWhere((f) => f.formula.value == formula);
+    print('  ${node.padRight(9)} $formula: ${report.status.name}');
   }
 }
+
+/// One of the two blueprints above, rebuilt with a shorter resource list.
+Blueprint _blueprint(String id, String name, List<String> formulas) =>
+    Blueprint(
+      id: BlueprintId(id),
+      name: name,
+      platforms: const ['linux'],
+      includes: [PresetId('base-tools')],
+      resources: [
+        for (final formula in formulas)
+          Resource(
+            id: ResourceId('formula', formula),
+            ensure: Ensure.installed,
+          ),
+      ],
+    );
 
 /// 8. The sharing dividend, and the sharing hazard: one coin.
 Future<void> _editTheSharedPreset(HubApiClient hub) async {
@@ -270,35 +270,35 @@ Future<void> _editTheSharedPreset(HubApiClient hub) async {
   // Neither blueprint is touched, and neither node is contacted. An include
   // names a preset and follows it, so this one edit reaches both kinds of
   // machine — which is why sharing is worth it, and why it deserves care.
-  await hub.post('/presets', {
-    'id': 'base-tools',
-    'name': 'Base tools',
-    'steps': [
-      {'formula': 'procps', 'action': 'install'},
-      {'formula': 'net-tools', 'action': 'install'},
-      {'formula': 'nmap', 'action': 'install'},
-    ],
-  });
+  await hub.savePreset(
+    Preset(
+      id: PresetId('base-tools'),
+      name: 'Base tools',
+      steps: [
+        for (final formula in ['procps', 'net-tools', 'nmap'])
+          PresetStep(formula: FormulaId(formula)),
+      ],
+    ),
+  );
   print('  base-tools gains nmap. Nothing else was edited.\n');
 
   for (final node in ['web-1', 'build-1']) {
-    final drift = await hub.get('/nodes/$node/drift') as Map;
-    final pending = (drift['changes'] as List)
-        .cast<Map>()
-        .where((c) => c['kind'] != 'noop')
-        .map((c) => '${c['kind']} ${c['resource']}')
+    final drift = (await hub.drift(node))!;
+    final pending = drift.changes
+        .where((c) => c.kind != ChangeKind.noop)
+        .map((c) => '${c.kind.name} ${c.id}')
         .join(', ');
     print(
       '  ${node.padRight(9)} '
-      '${drift['converged'] == true ? 'converged' : 'drifted'}'
+      '${drift.converged ? 'converged' : 'drifted'}'
       '${pending.isEmpty ? '' : ' — $pending'}',
     );
   }
 
   print('\n  Converging both:');
   for (final node in ['web-1', 'build-1']) {
-    final result = await hub.post('/nodes/$node/reconcile', const {}) as Map;
-    print('    ${node.padRight(9)} ${result['changed']} changed');
+    final result = await hub.reconcile(node);
+    print('    ${node.padRight(9)} ${result.changed} changed');
   }
 }
 
@@ -306,12 +306,11 @@ Future<void> _editTheSharedPreset(HubApiClient hub) async {
 Future<void> _whatHappened(HubApiClient hub) async {
   _heading('Audit trail');
 
-  final entries = (await hub.get('/audit') as List).cast<Map>();
+  final entries = await hub.audit();
   for (final entry in entries.take(10)) {
     print(
-      '  ${(entry['principal'] as String).padRight(6)} '
-      '${(entry['action'] as String).padRight(18)} '
-      '${'${entry['target'] ?? ''}'.padRight(12)} ${entry['detail'] ?? ''}',
+      '  ${entry.principal.padRight(6)} ${entry.action.padRight(18)} '
+      '${(entry.target ?? '').padRight(12)} ${entry.detail ?? ''}',
     );
   }
 
@@ -323,10 +322,15 @@ Future<void> _whatHappened(HubApiClient hub) async {
 // Helpers.
 // ---------------------------------------------------------------------------
 
-/// Reads one of this example's JSON files.
-Future<Map<String, dynamic>> _json(String relative) async {
+/// Reads one of this example's preset files.
+///
+/// Presets are JSON only; blueprints are whichever format they were authored
+/// in, which is what `BlueprintFile.read` is for above.
+Future<Preset> _preset(String relative) async {
   final file = File(_here.resolve(relative).toFilePath());
-  return (jsonDecode(await file.readAsString()) as Map).cast<String, dynamic>();
+  return Preset.fromJson(
+    (jsonDecode(await file.readAsString()) as Map).cast<String, dynamic>(),
+  );
 }
 
 /// Copies the fleet's CA certificate out of the running Hub container.

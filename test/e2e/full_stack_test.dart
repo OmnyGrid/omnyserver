@@ -51,30 +51,29 @@ void main() {
         formulaHandler: service.runFormula,
         presetHandler: service.applyPreset,
       );
-      var nodes = (await client.get('/nodes') as List).cast<Map>();
-      expect(nodes.single['nodeId'], 'app-01');
-      expect(nodes.single['online'], isTrue);
+      final nodes = await client.nodes();
+      expect(nodes.single.id.value, 'app-01');
+      expect(nodes.single.online, isTrue);
 
       // 2. Monitoring: status surfaces after a heartbeat.
-      await _eventually(() async {
-        final (ok, _) = await _try(client, '/nodes/app-01/status');
-        return ok;
-      });
-      final caps = await client.get('/nodes/app-01/capabilities');
-      expect((caps as Map)['capabilities'], isNotEmpty);
+      await _eventually(() async => await client.nodeStatus('app-01') != null);
+      expect((await client.capabilities('app-01')).capabilities, isNotEmpty);
 
       // 3. Preset application across formulas.
-      final result = await client.post('/presets/apply', {
-        'nodeId': 'app-01',
-        'preset': {
-          'id': 'docker-host',
-          'name': 'Docker Host',
-          'steps': [
-            {'formula': 'docker', 'action': 'verify'},
+      final result = await client.applyPreset(
+        'app-01',
+        preset: Preset(
+          id: PresetId('docker-host'),
+          name: 'Docker Host',
+          steps: [
+            PresetStep(
+              formula: FormulaId('docker'),
+              action: FormulaAction.verify,
+            ),
           ],
-        },
-      });
-      expect((result as Map)['success'], isTrue);
+        ),
+      );
+      expect(result.success, isTrue);
 
       // 4. Recovery: node disconnects then re-registers.
       await cluster
@@ -106,14 +105,6 @@ void main() {
       await cluster.dispose();
     }
   });
-}
-
-Future<(bool, dynamic)> _try(HubApiClient client, String path) async {
-  try {
-    return (true, await client.get(path));
-  } on Object {
-    return (false, null);
-  }
 }
 
 Future<void> _eventually(

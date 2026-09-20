@@ -106,13 +106,13 @@ void main() {
   Future<void> waitForStatus(String id) async {
     final deadline = DateTime.now().add(const Duration(seconds: 10));
     while (true) {
-      try {
-        await client.get('/nodes/$id/status');
-        return;
-      } on HubApiException catch (e) {
-        if (e.statusCode != 404 || DateTime.now().isAfter(deadline)) rethrow;
-        await Future<void>.delayed(const Duration(milliseconds: 25));
+      // Null until the first heartbeat lands, which is the thing being waited
+      // for — not an error, so it is not caught as one.
+      if (await client.nodeStatus(id) != null) return;
+      if (DateTime.now().isAfter(deadline)) {
+        throw StateError('$id never reported a status');
       }
+      await Future<void>.delayed(const Duration(milliseconds: 25));
     }
   }
 
@@ -394,11 +394,9 @@ void main() {
   group('desired state', () {
     setUp(() async {
       await startNode();
-      await client.put('/nodes/worker-01/desired-state', {
-        'steps': [
-          {'formula': 'docker', 'action': 'verify'},
-        ],
-      });
+      await client.declareSteps('worker-01', [
+        PresetStep(formula: FormulaId('docker'), action: FormulaAction.verify),
+      ]);
     });
 
     test('diff reports drift and exits non-zero', () async {

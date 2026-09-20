@@ -88,6 +88,33 @@ and keeps it there.
 - **The dashboard's Declared state card** renders resource changes with their
   provenance, and blueprints lead the declare controls.
 
+- **`HubApiClient` has a method per endpoint, returning what it means.**
+
+  It was four verbs and a `dynamic`. Every caller — the CLI, the dashboard's
+  service layer, both examples, the tests — decoded the same replies in its own
+  way, and a field the Hub renamed became a runtime failure in one of them and
+  not the others.
+
+  ```dart
+  final nodes = await client.nodes(labels: ['env=prod']);  // List<NodeDescriptor>
+  final drift = await client.drift('web-1');               // Drift?
+  final result = await client.reconcile('web-1');          // ConvergeResult
+  ```
+
+  Three replies that were not already domain entities get types: `Identity`,
+  `ConvergeResult` and `IssuedGrant`. `ConvergeResult` is the one that earns its
+  keep — `POST /reconcile` answers in two shapes, because a node is declared in
+  one of two ways, and "did it work, and how much moved" is now derived once
+  rather than at every call site.
+
+  **Absence is a return value where absence is ordinary.** `nodeStatus`,
+  `desiredState` and `drift` answer `null` on a `404`: a node that has not
+  heartbeated yet and a node nobody declared anything about are not errors, and
+  a caller made to catch one will sooner or later catch the wrong one.
+
+  The raw verbs stay public, for an endpoint not modelled yet and for a test
+  asserting the *wire shape* — which a typed decoder would paper over.
+
 - **`example/docker_blueprints/`** — three empty containers that become two web
   servers and a build host. One preset shared by two blueprints, assigned by
   label, planned by each node against its own machine, applied with real

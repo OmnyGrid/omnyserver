@@ -544,10 +544,17 @@ final client = HubApiClient(
   principal: 'alice',
   token: 'admin-token',
 );
-final nodes = (await client.get('/nodes') as List)
-    .map((n) => NodeDescriptor.fromJson((n as Map).cast()))
-    .toList();
+
+// One method per endpoint, returning what it means.
+final nodes = await client.nodes(labels: ['env=prod']);
+final drift = await client.drift('web-1');          // null if nothing declared
+final result = await client.reconcile('web-1');
+print('${result.changed} changed on ${nodes.length} nodes');
 ```
+
+The raw `get`/`post`/`put`/`delete` are still there for an endpoint the client
+does not model yet — and for a test asserting the wire shape, which a typed
+decoder would paper over.
 
 ### HTTP API
 

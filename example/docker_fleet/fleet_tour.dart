@@ -54,25 +54,24 @@ Future<void> _theFleet(HubApiClient hub) async {
   // Containers start in parallel and register when they are ready, so wait
   // rather than assume.
   final nodes = await _eventually(
-    () async => (await hub.get('/nodes') as List).cast<Map>(),
-    (nodes) => nodes.length >= 3 && nodes.every((n) => n['online'] == true),
+    hub.nodes,
+    (nodes) => nodes.length >= 3 && nodes.every((n) => n.online),
     what: 'all three nodes to register',
   );
 
   for (final node in nodes) {
-    final labels = (node['labels'] as Map).entries
+    final labels = node.labels.entries
         .map((e) => '${e.key}=${e.value}')
         .join(' ');
     // Capability detection ran on each node's own host: the builder found a
     // Dart SDK because it has one, and the workers found nothing because they
     // have nothing.
-    final capabilities =
-        ((node['capabilities'] as Map?)?['capabilities'] as List? ?? const [])
-            .map((c) => (c as Map)['name'])
-            .join(', ');
+    final capabilities = node.capabilities.capabilities
+        .map((c) => c.name)
+        .join(', ');
     print(
-      '  ${(node['nodeId'] as String).padRight(10)} '
-      '${(node['platform'] as Map)['osName']}  '
+      '  ${node.id.value.padRight(10)} '
+      '${node.platform.osName}  '
       '[$labels]  '
       'can: ${capabilities.isEmpty ? '(nothing installed)' : capabilities}',
     );
@@ -84,10 +83,9 @@ Future<void> _addressingIt(HubApiClient hub) async {
   _heading('Selecting by label');
 
   for (final selector in ['env=prod', 'region=eu', 'role=builder']) {
-    final matched = (await hub.get('/nodes?label=$selector') as List)
-        .cast<Map>()
-        .map((n) => n['nodeId'])
-        .join(', ');
+    final matched = (await hub.nodes(
+      labels: [selector],
+    )).map((n) => n.id.value).join(', ');
     print('  ${selector.padRight(14)} -> $matched');
   }
 }
@@ -99,17 +97,14 @@ Future<void> _workOnAHost(HubApiClient hub) async {
   // The same request to two hosts, with two different answers — which is the
   // point: the Hub did not run this, the node did.
   for (final node in ['builder-1', 'worker-1']) {
-    final reply =
-        await hub.post('/nodes/$node/formula', {
-              'formula': 'dart',
-              'action': 'verify',
-            })
-            as Map;
-    final result = reply['result'] as Map;
+    final result = (await hub.runFormula(
+      node,
+      formula: 'dart',
+      action: FormulaAction.verify,
+    )).result;
     print(
       '  dart verify on ${node.padRight(10)} '
-      '${result['success'] == true ? 'ok' : 'no'} '
-      '— ${result['message']}',
+      '${result.success ? 'ok' : 'no'} — ${result.message}',
     );
   }
 }
@@ -120,22 +115,20 @@ Future<void> _desiredState(HubApiClient hub) async {
 
   // One thing the host already has and one it does not, so the answer below
   // has something to say either way.
-  await hub.put('/nodes/builder-1/desired-state', {
-    'steps': [
-      {'formula': 'dart', 'action': 'verify'},
-      {'formula': 'docker', 'action': 'verify'},
-    ],
-  });
+  await hub.declareSteps('builder-1', [
+    for (final formula in ['dart', 'docker'])
+      PresetStep(formula: FormulaId(formula), action: FormulaAction.verify),
+  ]);
   print('  builder-1 is declared to be: dart, docker');
 
   // Nothing has run: this is a question about the node, not an instruction.
-  final drift = await hub.get('/nodes/builder-1/drift') as Map;
+  final drift = (await hub.drift('builder-1'))!;
+  final wouldRun = drift.actions.map((a) => a.formula.value).join(', ');
   print(
-    '  converged: ${drift['converged']}'
-    '${drift['converged'] == true ? '' : ' — would run: '
-              '${(drift['actions'] as List).map((a) => (a as Map)['formula']).join(', ')}'}',
+    '  converged: ${drift.converged}'
+    '${drift.converged ? '' : ' — would run: $wouldRun'}',
   );
-  for (final note in (drift['notes'] as List? ?? const [])) {
+  for (final note in drift.notes) {
     print('    - $note');
   }
 }
@@ -144,20 +137,18 @@ Future<void> _desiredState(HubApiClient hub) async {
 Future<void> _credentials(HubApiClient hub) async {
   _heading('Credentials');
 
-  final grant =
-      await hub.post('/grants', {
-            'principal': 'ci',
-            'roles': ['viewer'],
-            'note': 'the fleet tour',
-          })
-          as Map;
+  final issued = await hub.issueGrant(
+    principal: 'ci',
+    roles: const {'viewer'},
+    note: 'the fleet tour',
+  );
   // Shown once, and once only: the Hub keeps a hash, not the token.
-  print('  issued ${grant['id']} for ci (viewer)');
+  print('  issued ${issued.id} for ci (viewer)');
 
   final asCi = HubApiClient(
     Uri.parse('https://127.0.0.1:8443'),
     principal: 'ci',
-    token: grant['token'] as String,
+    token: issued.token,
     transport: IoApiTransport(
       securityContext: SecurityContext(withTrustedRoots: true)
         ..setTrustedCertificates(_caPath),
@@ -165,15 +156,15 @@ Future<void> _credentials(HubApiClient hub) async {
   );
   try {
     print(
-      '  as ci: sees ${(await asCi.get('/nodes') as List).length} nodes, '
+      '  as ci: sees ${(await asCi.nodes()).length} nodes, '
       'and cannot restart one: '
-      '${await _refused(() => asCi.post('/nodes/worker-1/restart'))}',
+      '${await _refused(() => asCi.restartAgent('worker-1'))}',
     );
   } finally {
     asCi.close();
   }
 
-  await hub.delete('/grants/${grant['id']}');
+  await hub.revokeGrant(issued.id);
   print('  revoked — that token is now refused');
 }
 
@@ -181,12 +172,12 @@ Future<void> _credentials(HubApiClient hub) async {
 Future<void> _whatHappened(HubApiClient hub) async {
   _heading('Audit trail');
 
-  final entries = (await hub.get('/audit') as List).cast<Map>();
+  final entries = await hub.audit();
   for (final entry in entries.take(8)) {
     print(
-      '  ${entry['at']}  ${(entry['principal'] as String).padRight(6)} '
-      '${(entry['action'] as String).padRight(16)} '
-      '${entry['target'] ?? ''} ${entry['outcome']}',
+      '  ${entry.at}  ${entry.principal.padRight(6)} '
+      '${entry.action.padRight(16)} '
+      '${entry.target ?? ''} ${entry.outcome.name}',
     );
   }
 
