@@ -793,7 +793,11 @@ class HttpApiServer {
           converged: plan.converged,
           changes: plan.changes,
           blueprint: blueprint.value,
+          // Both from the node, and from one resolution: it echoes the hash of
+          // the document it was just handed, so the pair cannot disagree the
+          // way a second Hub-side resolve could if a preset changed between.
           appliedHash: plan.appliedHash,
+          expectedHash: plan.expectedHash,
           notes: plan.notes,
         ).toJson(),
       );

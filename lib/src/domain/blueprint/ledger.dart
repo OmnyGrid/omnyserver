@@ -120,11 +120,21 @@ class Ledger {
   /// [adopted] names the resources that were already correct before anything
   /// ran. An entry that was adopted once stays adopted: the machine's history
   /// does not change because a later apply touched something else.
+  ///
+  /// [retain] names resources this blueprint no longer declares but which are
+  /// **still on the machine**, because removing them was attempted and did not
+  /// work. They stay in the ledger, and that is the whole point: a resource
+  /// that falls out of the ledger while it is still installed is leaked for
+  /// good. Nothing remembers we put it there, the next apply finds no orphan to
+  /// retry, and a later re-declaration *adopts* it — so it can never be removed
+  /// again. One transient failure would otherwise cost an owned resource
+  /// permanently.
   Ledger recording(
     ResolvedBlueprint resolved,
     DateTime at, {
     required Set<ResourceId> adopted,
     Map<ResourceId, ResourceState> states = const {},
+    Set<ResourceId> retain = const {},
   }) => Ledger(
     blueprint: resolved.blueprint,
     hash: resolved.hash,
@@ -140,6 +150,9 @@ class Ledger {
                 adopted.contains(r.id) || (entries[r.id]?.adopted ?? false),
             fingerprint: states[r.id]?.fingerprint,
           ),
+      // Kept exactly as they were — including `adopted`, which must not flip
+      // just because a teardown failed.
+      for (final id in retain) id: ?entries[id],
     },
   );
 

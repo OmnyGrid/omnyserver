@@ -37,9 +37,26 @@ class Drift {
 
   /// The resolved hash the node reports having applied.
   ///
-  /// Empty when it has never applied one. Compared against the Hub's current
-  /// resolution, a mismatch is drift that needed no resource read to find.
+  /// Empty when it has never applied one.
   final String appliedHash;
+
+  /// The hash of the blueprint as the Hub resolves it now.
+  ///
+  /// Together with [appliedHash] this answers a question no amount of reading
+  /// resources can: whether the node is on an *older revision* of the
+  /// blueprint. That is not the same as having drifted from the current one —
+  /// somebody edited the document, or a preset it includes — and it deserves a
+  /// different sentence in front of an operator.
+  final String expectedHash;
+
+  /// Whether the node has applied a different resolution than the current one.
+  ///
+  /// False when it has never applied anything: that is "nothing has run here",
+  /// not "something older has".
+  bool get stale =>
+      appliedHash.isNotEmpty &&
+      expectedHash.isNotEmpty &&
+      appliedHash != expectedHash;
 
   /// Why the planner kept or dropped each step.
   final List<String> notes;
@@ -52,6 +69,7 @@ class Drift {
     this.changes = const [],
     this.blueprint,
     this.appliedHash = '',
+    this.expectedHash = '',
     this.notes = const [],
   });
 
@@ -64,6 +82,7 @@ class Drift {
       'changes': [for (final change in changes) change.toJson()],
     if (blueprint != null) 'blueprint': blueprint,
     if (appliedHash.isNotEmpty) 'appliedHash': appliedHash,
+    if (expectedHash.isNotEmpty) 'expectedHash': expectedHash,
     'notes': notes,
   };
 
@@ -81,6 +100,7 @@ class Drift {
     ).map(ResourceChange.fromJson).toList(),
     blueprint: Json.optString(json, 'blueprint'),
     appliedHash: Json.optString(json, 'appliedHash') ?? '',
+    expectedHash: Json.optString(json, 'expectedHash') ?? '',
     notes: Json.optStringList(json, 'notes'),
   );
 }

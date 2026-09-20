@@ -304,7 +304,10 @@ Map<String, dynamic> openApiDocument() => {
             'while the node is offline.',
         'parameters': [_pathId],
         'responses': {
-          '200': _ok('{converged, actions | changes, blueprint?, notes}'),
+          '200': _ok(
+            '{converged, actions | changes, blueprint?, appliedHash?, '
+            'expectedHash?, notes}',
+          ),
           '404': _err,
           '502': _err,
         },

@@ -143,6 +143,7 @@ class NodeBlueprintService {
       changes: _diff(request.blueprint, reading.states, ledger, notes),
       states: reading.states.values.toList(),
       appliedHash: ledger?.hash ?? '',
+      expectedHash: request.blueprint.hash,
       notes: notes,
     );
   }
@@ -229,6 +230,16 @@ class NodeBlueprintService {
 
     final changes = [for (final change in planned) done[change.id] ?? change];
 
+    // A resource we tried to remove and could not is still on the machine, and
+    // so is still ours. It has to stay in the ledger or it is leaked: see
+    // `Ledger.recording`.
+    final unremoved = {
+      for (final change in planned)
+        if (change.kind == ChangeKind.remove &&
+            done[change.id]?.kind != ChangeKind.remove)
+          change.id,
+    };
+
     // The ledger records what was *declared*, not what succeeded: a resource
     // whose install failed is still this system's responsibility, and forgetting
     // it would orphan whatever half of it landed.
@@ -238,6 +249,7 @@ class NodeBlueprintService {
         clock.now(),
         adopted: request.purgeAdopted ? const {} : adopted,
         states: reading.states,
+        retain: unremoved,
       ),
     );
 

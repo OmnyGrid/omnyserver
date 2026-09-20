@@ -35,6 +35,10 @@ library;
 // The API client and its transport seam.
 export 'src/cli/api_client.dart';
 export 'src/cli/api_results.dart';
+// Authoring a blueprint, which the dashboard does too. The *file*-reading half
+// (`blueprint_format.dart`) stays out — it reaches `dart:io`, and
+// `web_barrel_dart_io_free_test` is what keeps it out.
+export 'src/cli/blueprint_source.dart';
 export 'src/cli/api_transport.dart';
 
 // Version.

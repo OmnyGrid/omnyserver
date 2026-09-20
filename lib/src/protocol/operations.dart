@@ -378,10 +378,21 @@ final class BlueprintPlanResult {
 
   /// The resolved hash the node has recorded as applied, if any.
   ///
-  /// Empty when the node has never applied this blueprint. Compared against the
-  /// Hub's current resolution, this answers "is this node on the blueprint it
-  /// was assigned" with no further reads.
+  /// Empty when the node has never applied this blueprint.
   final String appliedHash;
+
+  /// The hash of the resolution this plan was made against.
+  ///
+  /// Echoed from the request, and reported alongside [appliedHash] so the two
+  /// are directly comparable: a difference says the node is on an older
+  /// revision of the blueprint, which is a different thing from having drifted
+  /// away from the current one, and wants a different sentence in front of an
+  /// operator.
+  ///
+  /// The node is the right place to answer this, even though the Hub knows the
+  /// same number: both hashes then come from one place, and neither can be a
+  /// stale copy of the other.
+  final String expectedHash;
 
   /// Notes worth showing: a provider the node does not have, a skipped branch.
   final List<String> notes;
@@ -392,8 +403,19 @@ final class BlueprintPlanResult {
     this.changes = const [],
     this.states = const [],
     this.appliedHash = '',
+    this.expectedHash = '',
     this.notes = const [],
   });
+
+  /// Whether the node has applied a different resolution than this plan was
+  /// made against.
+  ///
+  /// False when the node has never applied one at all — that is "nothing has
+  /// been applied here", not "something older has".
+  bool get stale =>
+      appliedHash.isNotEmpty &&
+      expectedHash.isNotEmpty &&
+      appliedHash != expectedHash;
 
   /// Whether the node already matches: nothing left that would change it.
   ///
@@ -410,6 +432,7 @@ final class BlueprintPlanResult {
     'changes': [for (final c in changes) c.toJson()],
     'states': [for (final s in states) s.toJson()],
     if (appliedHash.isNotEmpty) 'appliedHash': appliedHash,
+    if (expectedHash.isNotEmpty) 'expectedHash': expectedHash,
     if (notes.isNotEmpty) 'notes': notes,
   };
 
@@ -430,6 +453,7 @@ final class BlueprintPlanResult {
           'states',
         ).map(ResourceState.fromJson).toList(),
         appliedHash: Json.optString(d, 'appliedHash') ?? '',
+        expectedHash: Json.optString(d, 'expectedHash') ?? '',
         notes: Json.optStringList(d, 'notes'),
       );
 }

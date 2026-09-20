@@ -431,6 +431,44 @@ void main() {
       },
     );
 
+    test('a removal that failed is still ours, and can be retried', () async {
+      // The ledger records what was *declared*, and a resource dropped from the
+      // blueprint is declared no longer — so a removal that fails would fall
+      // out of the ledger with the thing still on the machine. Nothing would
+      // then remember we put it there: the retry finds no orphan, and a later
+      // re-declaration *adopts* it, so it can never be removed again. One
+      // transient failure, and an owned resource is leaked for good.
+      final provider = ScriptedProvider(failing: {'nmap'});
+      final ledgers = MemoryLedgerStore();
+      final subject = service(provider, ledgers: ledgers);
+
+      // Owned, not adopted: the blueprint installed it.
+      provider.failing.clear();
+      await apply(subject, resolved([resource('dart'), resource('nmap')]));
+      provider.failing.add('nmap');
+
+      final trimmed = resolved([resource('dart')], hash: 'sha256:two');
+      final result = await apply(subject, trimmed);
+      expect(result.success, isFalse);
+
+      expect(
+        (await ledgers.read('builder'))!.entries.keys.map((k) => k.toString()),
+        containsAll(['formula:dart', 'formula:nmap']),
+        reason: 'a removal that did not happen is still our responsibility',
+      );
+
+      // And the retry actually retries, rather than finding nothing to do.
+      provider.failing.clear();
+      final retry = await apply(subject, trimmed);
+      expect(retry.success, isTrue);
+      expect(retry.changed, 1);
+      expect(provider.present['nmap'], FormulaStatus.absent);
+      expect(
+        (await ledgers.read('builder'))!.entries.keys.map((k) => k.toString()),
+        ['formula:dart'],
+      );
+    });
+
     test('it records the hash that was applied', () async {
       // What lets the Hub answer "is this node on the blueprint it was
       // assigned" without reading a single resource.

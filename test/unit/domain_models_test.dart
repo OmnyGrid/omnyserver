@@ -268,6 +268,45 @@ void main() {
       expect(back.actions.single.formula, FormulaId('docker'));
       expect(back.notes, ['docker is absent']);
 
+      // A step-declared node has no hashes at all, and the pair is elided from
+      // the wire rather than sent empty.
+      expect(drift.toJson().containsKey('appliedHash'), isFalse);
+      expect(drift.toJson().containsKey('expectedHash'), isFalse);
+      expect(back.stale, isFalse);
+    });
+
+    test('Drift, for a node declared by a blueprint', () {
+      Drift withHashes(String applied, String expected) => Drift(
+        nodeId: 'worker-01',
+        converged: true,
+        blueprint: 'builder',
+        appliedHash: applied,
+        expectedHash: expected,
+      );
+
+      final stale = Drift.fromJson(
+        withHashes('sha256:old', 'sha256:new').toJson(),
+      );
+      expect(stale.blueprint, 'builder');
+      expect(stale.appliedHash, 'sha256:old');
+      expect(stale.expectedHash, 'sha256:new');
+      expect(
+        stale.stale,
+        isTrue,
+        reason: 'the document changed since this node last applied it',
+      );
+      expect(
+        stale.converged,
+        isTrue,
+        reason:
+            'and it is still converged against what it did apply — the '
+            'two are different questions',
+      );
+
+      expect(withHashes('sha256:same', 'sha256:same').stale, isFalse);
+      // Never applied is "nothing has run here", not "something older has".
+      expect(withHashes('', 'sha256:new').stale, isFalse);
+
       // A converged node is the useful answer: nothing to run.
       final converged = Drift.fromJson({'nodeId': 'w', 'converged': true});
       expect(converged.actions, isEmpty);
