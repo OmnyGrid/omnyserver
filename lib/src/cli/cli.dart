@@ -12,6 +12,7 @@ import '../../omnyserver_node.dart';
 import 'ai_command.dart';
 import 'api_client.dart';
 import 'api_transport_io.dart';
+import 'blueprint_format.dart';
 import 'cli_error.dart';
 import 'service_commands.dart';
 import 'start_options.dart';
@@ -38,6 +39,7 @@ CommandRunner<void> buildRunner() {
         ..addCommand(AiCliCommand())
         ..addCommand(NodesCommand())
         ..addCommand(PresetCommand())
+        ..addCommand(BlueprintCommand())
         ..addCommand(FormulaCommand())
         ..addCommand(StateCommand())
         ..addCommand(GrantCommand())
@@ -1387,6 +1389,360 @@ class PresetDeleteCommand extends Command<void> {
     try {
       await client.delete('/presets/${rest.first}');
       stdout.writeln('deleted ${rest.first}');
+    } finally {
+      client.close();
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// blueprint
+// ---------------------------------------------------------------------------
+
+/// `omnyserver blueprint …`
+class BlueprintCommand extends Command<void> {
+  /// Creates the blueprint command group.
+  BlueprintCommand() {
+    addSubcommand(BlueprintSaveCommand());
+    addSubcommand(BlueprintListCommand());
+    addSubcommand(BlueprintShowCommand());
+    addSubcommand(BlueprintResolvedCommand());
+    addSubcommand(BlueprintDeleteCommand());
+    addSubcommand(BlueprintAssignCommand());
+    addSubcommand(BlueprintPlanCommand());
+    addSubcommand(BlueprintApplyCommand());
+  }
+
+  @override
+  String get name => 'blueprint';
+
+  @override
+  String get description => 'Declare what a server should be, and make it so.';
+}
+
+/// `omnyserver blueprint save <file.yaml|file.json>`
+class BlueprintSaveCommand extends Command<void> {
+  /// Creates the blueprint-save command.
+  BlueprintSaveCommand() {
+    _addApiOptions(argParser);
+  }
+
+  @override
+  String get name => 'save';
+
+  @override
+  String get description =>
+      'Save a blueprint on the Hub, from a YAML or JSON file.';
+
+  @override
+  Future<void> run() async {
+    final rest = argResults!.rest;
+    if (rest.isEmpty) {
+      throw CliError('usage: blueprint save <file.yaml|file.json>');
+    }
+
+    // Parsed here so a malformed file is a local error naming the file, rather
+    // than a 400 from a Hub that only ever saw the bytes.
+    final blueprint = await BlueprintFile.read(rest.first);
+
+    final client = _apiClientFrom(argResults!);
+    try {
+      final saved = await client.post('/blueprints', blueprint.toJson()) as Map;
+      stdout
+        ..writeln(
+          'saved "${saved['id']}" (${saved['includes']} includes, '
+          '${saved['resources']} resources)',
+        )
+        ..writeln('assign it with: blueprint assign ${saved['id']} <node>');
+    } finally {
+      client.close();
+    }
+  }
+}
+
+/// `omnyserver blueprint list`
+class BlueprintListCommand extends Command<void> {
+  /// Creates the blueprint-list command.
+  BlueprintListCommand() {
+    _addApiOptions(argParser);
+  }
+
+  @override
+  String get name => 'list';
+
+  @override
+  String get description => 'List the blueprints saved on the Hub.';
+
+  @override
+  Future<void> run() async {
+    final client = _apiClientFrom(argResults!);
+    try {
+      final blueprints = (await client.get('/blueprints') as List).cast<Map>();
+      if (blueprints.isEmpty) {
+        stdout.writeln('no blueprints are saved (try: blueprint save <file>)');
+        return;
+      }
+      stdout.writeln('ID              INCLUDES  RESOURCES  NAME');
+      for (final b in blueprints) {
+        final id = '${b['id'] ?? b['blueprint']}'.padRight(15);
+        final includes = '${(b['includes'] as List? ?? const []).length}'
+            .padLeft(8);
+        final resources = '${(b['resources'] as List? ?? const []).length}'
+            .padLeft(9);
+        stdout.writeln('$id $includes  $resources  ${b['name']}');
+      }
+    } finally {
+      client.close();
+    }
+  }
+}
+
+/// `omnyserver blueprint show <id>`
+class BlueprintShowCommand extends Command<void> {
+  /// Creates the blueprint-show command.
+  BlueprintShowCommand() {
+    _addApiOptions(argParser);
+  }
+
+  @override
+  String get name => 'show';
+
+  @override
+  String get description =>
+      'Show a saved blueprint, in the format it was written in.';
+
+  @override
+  Future<void> run() async {
+    final rest = argResults!.rest;
+    if (rest.isEmpty) throw CliError('usage: blueprint show <id>');
+
+    final client = _apiClientFrom(argResults!);
+    try {
+      final blueprint = await client.get('/blueprints/${rest.first}') as Map;
+      // A blueprint authored as YAML comes back as that YAML, comments intact.
+      // Printing the parsed JSON instead would hand back a different document
+      // from the one in the author's editor.
+      if (blueprint['source'] case final Map source) {
+        stdout.write(source['text']);
+        return;
+      }
+      stdout.writeln(const JsonEncoder.withIndent('  ').convert(blueprint));
+    } finally {
+      client.close();
+    }
+  }
+}
+
+/// `omnyserver blueprint resolved <id>`
+class BlueprintResolvedCommand extends Command<void> {
+  /// Creates the blueprint-resolved command.
+  BlueprintResolvedCommand() {
+    _addApiOptions(argParser);
+  }
+
+  @override
+  String get name => 'resolved';
+
+  @override
+  String get description =>
+      'Show a blueprint flattened: what a node is actually sent.';
+
+  @override
+  Future<void> run() async {
+    final rest = argResults!.rest;
+    if (rest.isEmpty) throw CliError('usage: blueprint resolved <id>');
+
+    final client = _apiClientFrom(argResults!);
+    try {
+      final resolved =
+          await client.get('/blueprints/${rest.first}/resolved') as Map;
+      final resources = (resolved['resources'] as List).cast<Map>();
+
+      stdout.writeln('${resolved['hash']}');
+      stdout.writeln('RESOURCE                       ENSURE     FROM');
+      for (final r in resources) {
+        final id = '${r['type']}:${r['name']}'.padRight(30);
+        final ensure = '${r['ensure']}'.padRight(10);
+        final from = r['overrides'] == null
+            ? '${r['origin']}'
+            : '${r['origin']} (overrides ${r['overrides']})';
+        stdout.writeln('$id $ensure $from');
+      }
+      for (final note in (resolved['notes'] as List? ?? const [])) {
+        stdout.writeln('note: $note');
+      }
+    } finally {
+      client.close();
+    }
+  }
+}
+
+/// `omnyserver blueprint delete <id>`
+class BlueprintDeleteCommand extends Command<void> {
+  /// Creates the blueprint-delete command.
+  BlueprintDeleteCommand() {
+    _addApiOptions(argParser);
+  }
+
+  @override
+  String get name => 'delete';
+
+  @override
+  String get description => 'Delete a saved blueprint.';
+
+  @override
+  Future<void> run() async {
+    final rest = argResults!.rest;
+    if (rest.isEmpty) throw CliError('usage: blueprint delete <id>');
+    final client = _apiClientFrom(argResults!);
+    try {
+      await client.delete('/blueprints/${rest.first}');
+      stdout.writeln('deleted ${rest.first}');
+    } finally {
+      client.close();
+    }
+  }
+}
+
+/// `omnyserver blueprint assign <id> <node>`
+class BlueprintAssignCommand extends Command<void> {
+  /// Creates the blueprint-assign command.
+  BlueprintAssignCommand() {
+    _addApiOptions(argParser);
+    _addSelectorOptions(argParser);
+  }
+
+  @override
+  String get name => 'assign';
+
+  @override
+  String get description =>
+      'Say a node should be this blueprint — runs nothing.';
+
+  @override
+  Future<void> run() async {
+    final args = argResults!;
+    final rest = args.rest;
+    if (rest.isEmpty) {
+      throw CliError(
+        'usage: blueprint assign <id> [<node>] [--label env=prod | --all]',
+      );
+    }
+    final blueprint = rest.first;
+
+    final client = _apiClientFrom(args);
+    try {
+      final nodes = await _selectNodes(
+        client,
+        args,
+        positional: rest.skip(1).toList(),
+      );
+      await _fanOut(nodes, (node) async {
+        await client.put('/nodes/$node/desired-state', {
+          'blueprint': blueprint,
+        });
+        return 'assigned $blueprint';
+      });
+      // Said plainly: an operator who expects this to have *done* something will
+      // otherwise wonder why the machine is unchanged.
+      stdout.writeln('nothing has run — blueprint apply <node> to make it so');
+    } finally {
+      client.close();
+    }
+  }
+}
+
+/// `omnyserver blueprint plan <node>`
+class BlueprintPlanCommand extends Command<void> {
+  /// Creates the blueprint-plan command.
+  BlueprintPlanCommand() {
+    _addApiOptions(argParser);
+  }
+
+  @override
+  String get name => 'plan';
+
+  @override
+  String get description =>
+      'Ask a node what would change — exits 2 when it has drifted.';
+
+  @override
+  Future<void> run() async {
+    final rest = argResults!.rest;
+    if (rest.isEmpty) throw CliError('usage: blueprint plan <node>');
+
+    final client = _apiClientFrom(argResults!);
+    try {
+      final drift = await client.get('/nodes/${rest.first}/drift') as Map;
+      final changes = (drift['changes'] as List? ?? const []).cast<Map>();
+
+      if (drift['converged'] == true) {
+        stdout.writeln('${rest.first} is converged (${drift['blueprint']})');
+        return;
+      }
+
+      stdout.writeln('${rest.first} has drifted from ${drift['blueprint']}:');
+      for (final c in changes) {
+        if (c['kind'] == 'noop') continue;
+        final kind = '${c['kind']}'.padRight(8);
+        stdout.writeln('  $kind ${c['resource']}  — ${c['reason']}');
+      }
+      // A distinct code, so this is usable in CI and on a timer without anyone
+      // having to parse the output.
+      exitCode = 2;
+    } finally {
+      client.close();
+    }
+  }
+}
+
+/// `omnyserver blueprint apply <node>`
+class BlueprintApplyCommand extends Command<void> {
+  /// Creates the blueprint-apply command.
+  BlueprintApplyCommand() {
+    _addApiOptions(argParser);
+    _addSelectorOptions(argParser);
+    argParser
+      ..addFlag('dry-run', negatable: false, help: 'Plan, and change nothing.')
+      ..addFlag(
+        'async',
+        negatable: false,
+        help: 'Do not wait. Prints an operation id to ask about later.',
+      );
+  }
+
+  @override
+  String get name => 'apply';
+
+  @override
+  String get description =>
+      'Make a node what its blueprint says it should be (idempotent).';
+
+  @override
+  Future<void> run() async {
+    final args = argResults!;
+    final dryRun = args['dry-run'] as bool;
+    final async = args['async'] as bool;
+
+    final client = _apiClientFrom(args);
+    try {
+      final nodes = await _selectNodes(client, args, positional: args.rest);
+      await _fanOut(nodes, (node) async {
+        final reply =
+            await client.post('/nodes/$node/reconcile', {
+                  if (dryRun) 'dryRun': true,
+                  if (async) 'async': true,
+                })
+                as Map;
+        if (async) return 'dispatched — ops show ${reply['id']}';
+
+        final changed = reply['changed'] ?? 0;
+        final skipped = reply['skipped'] ?? 0;
+        if (reply['success'] != true) {
+          return 'FAILED — $changed changed, $skipped skipped';
+        }
+        return dryRun ? 'would change $changed' : 'applied — $changed changed';
+      });
     } finally {
       client.close();
     }

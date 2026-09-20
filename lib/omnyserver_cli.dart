@@ -13,6 +13,7 @@ export 'src/cli/api_client.dart';
 export 'src/cli/api_transport.dart';
 export 'src/cli/api_transport_io.dart';
 export 'src/cli/ai_command.dart';
+export 'src/cli/blueprint_format.dart';
 export 'src/cli/cli.dart';
 export 'src/cli/service_commands.dart';
 export 'src/cli/start_options.dart';

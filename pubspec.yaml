@@ -30,6 +30,10 @@ dependencies:
   # call the Hub. Reached only through a conditional import, so it never enters a
   # native build's graph.
   web: ^1.1.1
+  # Reads a blueprint authored as YAML. CLI-only — the Hub, the wire and the
+  # repositories are JSON throughout, and this must stay out of the web barrel's
+  # import graph.
+  yaml: ^3.1.4
 
 dev_dependencies:
   # Run as an executable by CI (`coverage:test_with_coverage`), never imported.
