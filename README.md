@@ -663,6 +663,28 @@ under systemd, installed with `omnyserver service install`, so each role is a
 unit you can `systemctl status`. See its
 [README](example/docker_fleet/README.md).
 
+### Blueprints, in Docker
+
+[`example/docker_blueprints/`](example/docker_blueprints/) starts three *empty*
+containers and turns them into two web servers and a build host, because a
+document said they should be:
+
+```sh
+docker compose -f example/docker_blueprints/compose.yaml up --build -d
+
+open http://localhost:8080                             # watch it happen
+dart run example/docker_blueprints/blueprint_tour.dart
+
+docker compose -f example/docker_blueprints/compose.yaml down -v
+```
+
+One preset shared by two blueprints, assigned by label, planned by each node
+against its own machine, and applied with real `apt-get`. Then the parts that
+only a declarative model can show: applying again changes nothing; dropping a
+resource from a blueprint removes it from the node; dropping a resource the
+machine *already had* leaves it alone; and editing the shared preset drifts
+every machine built on it without either blueprint being touched.
+
 ### The container fleet
 
 `test/docker/` runs a Hub and its nodes as **real containers on a real

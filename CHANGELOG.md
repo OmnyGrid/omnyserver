@@ -61,10 +61,16 @@ and keeps it there.
   it, removing a line would leave that software running on every server it ever
   reached, forever.
 
-  Anything that was already correct before a single write is marked **adopted**
-  and is never removed on unassign without an explicit `--purge-adopted`. If
-  nginx was on the box a year before anyone wrote a blueprint, unassigning must
-  not uninstall it.
+  A resource that was already correct the **first** time a blueprint saw it is
+  marked **adopted**, and dropping it from the blueprint *releases* it — out of
+  the ledger, and left exactly where it is — rather than removing it. If nginx
+  was on the box a year before anyone wrote a blueprint, no edit to that
+  blueprint should uninstall it. `--purge-adopted` is how you say you meant it.
+
+  Adoption is a fact about history, not about the current run: re-deciding it
+  on every apply would mark everything adopted by the second one, since by then
+  the blueprint's own installs are "already correct" — and nothing could ever be
+  removed again.
 
 - **`omnyserver blueprint save|list|show|resolved|delete|assign|plan|apply`.**
 
@@ -81,6 +87,18 @@ and keeps it there.
 
 - **The dashboard's Declared state card** renders resource changes with their
   provenance, and blueprints lead the declare controls.
+
+- **`example/docker_blueprints/`** — three empty containers that become two web
+  servers and a build host. One preset shared by two blueprints, assigned by
+  label, planned by each node against its own machine, applied with real
+  `apt-get`, and then every property that only a declarative model can show:
+  idempotence, removal of what a blueprint has stopped declaring, *release* of
+  what the machine already had, and one edit to a shared preset drifting both
+  kinds of machine at once.
+
+  Worth running before trusting a blueprint with anything you care about — and
+  worth writing, since two mistakes in the adoption rule only became visible
+  once real containers were doing it.
 
 ### Three orderings that are load-bearing
 

@@ -348,6 +348,89 @@ void main() {
       expect((await plan(subject, trimmed)).converged, isTrue);
     });
 
+    test('a resource that was already here is released, not removed', () async {
+      // The safety rule. If nginx was on this box a year before anyone wrote a
+      // blueprint, and somebody edits that blueprint, "no longer declared" must
+      // not mean "uninstall nginx" — this system never owned it.
+      final provider = ScriptedProvider(
+        present: {'dart': FormulaStatus.installed},
+      );
+      final subject = service(provider);
+
+      await apply(subject, resolved([resource('dart'), resource('nmap')]));
+      provider.applied.clear();
+
+      final trimmed = resolved([resource('nmap')], hash: 'sha256:two');
+      final plan = await subject.plan(
+        BlueprintPlanRequest(requestId: 'r', blueprint: trimmed),
+      );
+
+      expect(
+        plan.changes.where((c) => c.kind == ChangeKind.remove),
+        isEmpty,
+        reason: 'dart was adopted, so dropping it plans no removal',
+      );
+      expect(
+        plan.notes.single,
+        allOf(contains('formula:dart'), contains('left alone')),
+        reason: 'left alone is not the same as unnoticed',
+      );
+
+      await apply(subject, trimmed);
+      expect(provider.applied, isEmpty);
+      expect(provider.present['dart'], FormulaStatus.installed);
+    });
+
+    test(
+      'releasing it drops it from the ledger, so it is mentioned once',
+      () async {
+        final ledgers = MemoryLedgerStore();
+        final subject = service(
+          ScriptedProvider(present: {'dart': FormulaStatus.installed}),
+          ledgers: ledgers,
+        );
+
+        await apply(subject, resolved([resource('dart'), resource('nmap')]));
+        final trimmed = resolved([resource('nmap')], hash: 'sha256:two');
+        await apply(subject, trimmed);
+
+        expect(
+          (await ledgers.read(
+            'builder',
+          ))!.entries.keys.map((k) => k.toString()),
+          ['formula:nmap'],
+        );
+        final after = await subject.plan(
+          BlueprintPlanRequest(requestId: 'r', blueprint: trimmed),
+        );
+        expect(after.notes, isEmpty, reason: 'it is not ours to mention again');
+        expect(after.converged, isTrue);
+      },
+    );
+
+    test(
+      'purging takes the adopted ones too, when asked in so many words',
+      () async {
+        final provider = ScriptedProvider(
+          present: {'dart': FormulaStatus.installed},
+        );
+        final subject = service(provider);
+        await apply(subject, resolved([resource('dart')]));
+
+        final emptied = resolved([], hash: 'sha256:two');
+        final result = await subject.apply(
+          BlueprintApplyRequest(
+            requestId: 'r',
+            blueprint: emptied,
+            purgeAdopted: true,
+          ),
+        );
+
+        expect(result.changes.single.kind, ChangeKind.remove);
+        expect(provider.present['dart'], FormulaStatus.absent);
+      },
+    );
+
     test('it records the hash that was applied', () async {
       // What lets the Hub answer "is this node on the blueprint it was
       // assigned" without reading a single resource.
@@ -372,6 +455,32 @@ void main() {
 
       final ledger = await ledgers.read('builder');
       expect(ledger!.entries[ResourceId('formula', 'dart')]!.adopted, isTrue);
+    });
+
+    test('what it installed stays owned, however often you apply', () async {
+      // Adoption is a fact about history, not about this run. By the second
+      // apply a resource this blueprint installed *is* "already correct" — and
+      // re-deciding adoption from that would mark it adopted, so dropping it
+      // from the blueprint later would leave it on the machine forever.
+      final ledgers = MemoryLedgerStore();
+      final provider = ScriptedProvider();
+      final subject = service(provider, ledgers: ledgers);
+      final blueprint = resolved([resource('nmap')]);
+
+      await apply(subject, blueprint);
+      await apply(subject, blueprint);
+      await apply(subject, blueprint);
+
+      expect(
+        (await ledgers.read(
+          'builder',
+        ))!.entries[ResourceId('formula', 'nmap')]!.adopted,
+        isFalse,
+      );
+
+      // And it is still removable, which is the consequence that matters.
+      await apply(subject, resolved([], hash: 'sha256:two'));
+      expect(provider.present['nmap'], FormulaStatus.absent);
     });
 
     test('what the blueprint installed is owned', () async {

@@ -1,0 +1,25 @@
+# What a web server in this fleet is.
+#
+# Two of the three resources below are not written here at all — they come from
+# the `base-tools` preset, which the build host includes too. Fixing something
+# in that one preset reaches both kinds of machine.
+
+blueprint: web-server
+name: Web server
+description: A host that serves traffic, and can be debugged when it does not.
+
+platforms: [linux]
+
+includes:
+  - base-tools
+
+resources:
+  # For chasing a name that will not resolve: nslookup, dig.
+  - type: formula
+    name: dns-utils
+    ensure: installed
+
+  # For checking whether a port is actually open, from the machine that cares.
+  - type: formula
+    name: nmap
+    ensure: installed

@@ -1,0 +1,9 @@
+{
+  "id": "base-tools",
+  "name": "Base tools",
+  "description": "What every host in this fleet gets, whatever it is for.",
+  "steps": [
+    { "formula": "procps", "action": "install" },
+    { "formula": "net-tools", "action": "install" }
+  ]
+}

@@ -136,13 +136,14 @@ class NodeBlueprintService {
   Future<BlueprintPlanResult> plan(BlueprintPlanRequest request) async {
     final ledger = await ledgers.read(request.blueprint.blueprint.value);
     final reading = await _read(request.blueprint);
+    final notes = [...reading.notes];
 
     return BlueprintPlanResult(
       requestId: request.requestId,
-      changes: _diff(request.blueprint, reading.states, ledger),
+      changes: _diff(request.blueprint, reading.states, ledger, notes),
       states: reading.states.values.toList(),
       appliedHash: ledger?.hash ?? '',
-      notes: reading.notes,
+      notes: notes,
     );
   }
 
@@ -151,8 +152,14 @@ class NodeBlueprintService {
     final resolved = request.blueprint;
     final ledger = await ledgers.read(resolved.blueprint.value);
     final reading = await _read(resolved);
-    final planned = _diff(resolved, reading.states, ledger);
     final notes = [...reading.notes];
+    final planned = _diff(
+      resolved,
+      reading.states,
+      ledger,
+      notes,
+      purgeAdopted: request.purgeAdopted,
+    );
 
     // A dry run stops here, having run exactly the code a real one runs up to
     // this point. A dry run that took a different path would be a dry run that
@@ -167,13 +174,24 @@ class NodeBlueprintService {
       );
     }
 
-    // Anything already correct before a single write is adopted: this system
-    // did not put it there, so unassigning must not take it away.
+    // Adoption is a fact about history, not about this run: a resource is
+    // adopted if it was already correct the **first** time this blueprint saw
+    // it, which is why the ledger is consulted before the reading is.
+    //
+    // Re-deciding it every time would be wrong in the worst direction. A
+    // resource this blueprint installed is, by the second apply, "already
+    // correct" — so it would be marked adopted, and dropping it from the
+    // blueprint later would leave it behind forever.
+    final known = ledger?.entries ?? const <ResourceId, LedgerEntry>{};
     final adopted = <ResourceId>{
       for (final resource in resolved.resources)
-        if (reading.states[resource.id]?.satisfies(resource.ensure) ?? false)
+        if (!known.containsKey(resource.id) &&
+            (reading.states[resource.id]?.satisfies(resource.ensure) ?? false))
           resource.id,
-      ...?ledger?.entries.values.where((e) => e.adopted).map((e) => e.id),
+      // Once adopted, always adopted: the machine's history does not change
+      // because a later apply touched something else.
+      for (final entry in known.values)
+        if (entry.adopted) entry.id,
     };
 
     final done = <ResourceId, ResourceChange>{};
@@ -308,7 +326,9 @@ class NodeBlueprintService {
     ResolvedBlueprint resolved,
     Map<ResourceId, ResourceState> states,
     Ledger? ledger,
-  ) {
+    List<String> notes, {
+    bool purgeAdopted = false,
+  }) {
     final changes = <ResourceChange>[];
 
     for (final resource in resolved.resources) {
@@ -355,6 +375,23 @@ class NodeBlueprintService {
       for (final orphan in ledger.orphansOf(resolved)) {
         final state = states[orphan.id];
         if (state != null && state.satisfies(Ensure.absent)) continue;
+
+        // Something that was already on this machine before the blueprint ever
+        // touched it is *released*, not removed: it drops out of the ledger and
+        // is left exactly where it was. This system did not put it there, and
+        // no-longer-managing something is not the same as deleting it.
+        //
+        // The ledger entry disappears either way, because `recording` keeps
+        // only what the blueprint declares — so the next plan will not mention
+        // it again.
+        if (orphan.adopted && !purgeAdopted) {
+          notes.add(
+            '${orphan.id}: no longer declared, and left alone — it was '
+            'already here before this blueprint',
+          );
+          continue;
+        }
+
         changes.add(
           ResourceChange(
             id: orphan.id,
