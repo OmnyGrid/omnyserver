@@ -28,7 +28,10 @@ class NodesScreen implements Screen {
 
   /// Builds the screen.
   NodesScreen(this.ctx) {
-    _body = div();
+    // `stack`, so the node cards are spaced rather than stacked flush against
+    // each other. The grants list gets this from the `card stack` it sits
+    // inside; this list is the page's own child, so it has to say so itself.
+    _body = div(classes: 'stack');
     _search = input(id: 'search', placeholder: 'Filter nodes…');
     on(_search, 'input', (_) => _render());
 
