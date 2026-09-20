@@ -247,6 +247,12 @@ class NodeAgent {
       Operations.formulaStatus => (await _formulaStatus(
         FormulaStatusRequest.fromJson(payload),
       )).toJson(),
+      Operations.blueprintPlan => (await _planBlueprint(
+        BlueprintPlanRequest.fromJson(payload),
+      )).toJson(),
+      Operations.blueprintApply => (await _applyBlueprint(
+        BlueprintApplyRequest.fromJson(payload),
+      )).toJson(),
       Operations.preset => (await _applyPreset(
         PresetApply.fromJson(payload),
       )).toJson(),
@@ -299,6 +305,41 @@ class NodeAgent {
     final handler = config.formulaStatusHandler;
     if (handler == null) {
       return FormulaStatusResult(requestId: request.requestId);
+    }
+    return handler(request);
+  }
+
+  /// An empty plan, not a failure, when the node manages nothing: a node with
+  /// no providers has nothing a blueprint could change, and "no changes" is a
+  /// true answer to the question that was asked.
+  Future<BlueprintPlanResult> _planBlueprint(
+    BlueprintPlanRequest request,
+  ) async {
+    final handler = config.blueprintPlanHandler;
+    if (handler == null) {
+      return BlueprintPlanResult(
+        requestId: request.requestId,
+        notes: const ['this node does not manage blueprints'],
+      );
+    }
+    return handler(request);
+  }
+
+  /// Applying, unlike planning, **fails** when the node cannot do it.
+  ///
+  /// An operator who asked for a machine to be changed and was told "fine"
+  /// while nothing happened is worse off than one who was told no — that is the
+  /// same mistake `restart` and `shutdown` used to make.
+  Future<BlueprintApplyResult> _applyBlueprint(
+    BlueprintApplyRequest request,
+  ) async {
+    final handler = config.blueprintApplyHandler;
+    if (handler == null) {
+      return BlueprintApplyResult(
+        requestId: request.requestId,
+        success: false,
+        notes: const ['this node does not manage blueprints'],
+      );
     }
     return handler(request);
   }

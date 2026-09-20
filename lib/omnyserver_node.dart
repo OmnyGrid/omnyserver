@@ -15,12 +15,17 @@ export 'src/application/node/formula_registry.dart';
 export 'src/application/node/log_shipper.dart';
 export 'src/application/node/node_agent.dart';
 export 'src/application/node/node_agent_config.dart';
+export 'src/application/node/node_blueprint_service.dart';
 export 'src/application/node/node_formula_service.dart';
 export 'src/application/node/node_service_handler.dart';
 export 'src/application/node/update_service.dart';
 
 // Service management.
 export 'src/infrastructure/service/service_controller.dart';
+
+// Blueprint providers: what a node knows how to read and change.
+export 'src/infrastructure/blueprint/file_ledger_store.dart';
+export 'src/infrastructure/blueprint/formula_provider.dart';
 
 // Formula engine.
 export 'src/infrastructure/formulas/command_executor.dart';
