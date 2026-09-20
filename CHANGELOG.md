@@ -112,9 +112,21 @@ and keeps it there.
   reported against the text in front of you, and the Hub's own refusals arrive
   as themselves.
 
+  The editor colours the document in whichever language it was written in — a
+  blueprint's YAML, a preset's JSON — from a tokenizer written for those two
+  grammars rather than a highlighting library, since the dashboard ships as one
+  `main.dart.js` with no CDN in front of it and a vendored library would dwarf
+  what it is being asked to do. It is a tokenizer and not a parser: it never
+  fails, and what it emits always reproduces the document exactly, because a
+  document mid-edit is invalid most of the time and a dropped character would
+  slide the colour off everything typed after it.
+
   Assignment is by label and in two steps: **Preview** names every node it
   matched, and **Assign** acts on that list rather than on whatever the label
-  box says by then.
+  box says by then, listing them again on the confirmation with the labels they
+  matched on. Under the input, the selectors the fleet actually carries — the
+  failure worth preventing is not a typo, which matches nothing and is obvious,
+  but `role=web` on a fleet that says `tier=web`.
 
   The Declared state card gains the four things it was missing: a **Dry run**
   beside Reconcile, the node's blueprint as a **link** to its page, a line
@@ -222,7 +234,8 @@ report drift forever that applying does not fix.
   dashboard's editor reads the same documents the CLI does; reading a *file*
   stays in `blueprint_format.dart`, out of that import graph and kept out by
   `web_barrel_dart_io_free_test`. The dashboard bundle grows from 739 KB to
-  818 KB, which is `yaml` and its scanner now actually being reachable.
+  827 KB — mostly `yaml` and its scanner now actually being reachable, and
+  6 KB of syntax highlighting.
 - `omnyserver_web` 0.3.1 → **0.4.0**.
 
 ---

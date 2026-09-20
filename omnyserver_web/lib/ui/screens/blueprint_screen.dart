@@ -150,15 +150,18 @@ class BlueprintScreen implements Screen {
     final editable = ctx.auth.state.value.canOperate;
     if (!editable) {
       _editor = null;
-      _documentBody.appendChild(
-        el('pre', classes: 'screen-capture', text: source.text),
-      );
+      _documentBody.appendChild(highlightedCode(source.text, source.format));
       return;
     }
 
-    final box = textarea(id: 'blueprint-source', value: source.text, rows: 22);
-    _editor = box;
-    _documentBody.appendChild(box);
+    final editor = codeEditor(
+      id: 'blueprint-source',
+      value: source.text,
+      format: source.format,
+      rows: 22,
+    );
+    _editor = editor.input;
+    _documentBody.appendChild(editor.root);
     _documentBody.appendChild(
       el(
         'div',

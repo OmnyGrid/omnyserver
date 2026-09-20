@@ -146,6 +146,86 @@ textarea:focus {
   border-color: var(--accent);
 }
 
+/* Syntax colours, for a blueprint's YAML and a preset's JSON. GitHub's two
+   palettes, which are already carried against these backgrounds in both
+   themes — picking colours by eye is how one of the six ends up unreadable on
+   exactly one of them. */
+:root {
+  --code-key: #0550ae;
+  --code-str: #0a7b34;
+  --code-num: #8250df;
+  --code-com: #6e7781;
+  --code-punct: #57606a;
+}
+[data-theme="dark"] {
+  --code-key: #79c0ff;
+  --code-str: #7ee787;
+  --code-num: #d2a8ff;
+  --code-com: #8b949e;
+  --code-punct: #8b949e;
+}
+.tok-key { color: var(--code-key); }
+.tok-str { color: var(--code-str); }
+.tok-num,
+.tok-lit { color: var(--code-num); }
+.tok-com { color: var(--code-com); font-style: italic; }
+.tok-punct { color: var(--code-punct); }
+
+/* The editor: a transparent textarea over a painted copy of its own text.
+   Every metric below is shared by both, because a single pixel of difference
+   between them is colour sliding off the characters it belongs to. Change one,
+   change both. */
+.code-editor {
+  position: relative;
+}
+.code-editor .code-layer,
+.code-editor .code-input {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  line-height: 1.5;
+  /* Not `pre-wrap`: see `codeEditor`. Indentation is meaning here, and a
+     scrollbar that re-wraps one layer but not the other is worse than a
+     horizontal scrollbar. */
+  white-space: pre;
+  tab-size: 2;
+}
+.code-editor .code-layer {
+  position: absolute;
+  inset: 0;
+  /* Hidden rather than auto: the layer is scrolled from script to follow the
+     textarea, and a scrollbar of its own would both show through and take
+     width the textarea has not lost. */
+  overflow: hidden;
+  background: var(--bg-sunken);
+  color: var(--fg);
+  pointer-events: none;
+}
+.code-editor .code-input {
+  position: relative;
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  overflow: auto;
+  resize: vertical;
+  background: transparent;
+  /* The characters come from the layer below; only the caret and the selection
+     belong to the textarea itself. */
+  color: transparent;
+  caret-color: var(--fg);
+  border-color: var(--border);
+}
+.code-editor .code-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.code-editor .code-input::selection {
+  background: var(--accent-weak);
+}
+
 /* A badge that navigates. It is the only way to reach a blueprint from a node,
    so it has to look reachable rather than like the labels beside it. */
 .badge.link {

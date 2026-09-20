@@ -6,9 +6,12 @@
 /// already duplicated across two screens before it moved here.
 library;
 
+import 'package:omnyserver/omnyserver_client_web.dart' show BlueprintFormat;
 import 'package:omnyshell_web/foundation.dart' show AppError;
 import 'package:omnyshell_web/ui_kit.dart';
 import 'package:web/web.dart' as web;
+
+import 'code_tokens.dart';
 
 /// A multi-line text input.
 ///
@@ -31,6 +34,82 @@ web.HTMLTextAreaElement textarea({
   e.setAttribute('autocorrect', 'off');
   e.autocapitalize = 'off';
   return e;
+}
+
+/// [text] painted as [format], for reading.
+web.HTMLElement highlightedCode(String text, BlueprintFormat format) => el(
+  'pre',
+  classes: 'screen-capture',
+  children: [
+    el(
+      'code',
+      children: [
+        for (final token in tokenizeCode(text, format))
+          if (token.className case final className?)
+            el('span', classes: className, text: token.text)
+          else
+            textNode(token.text),
+      ],
+    ),
+  ],
+);
+
+/// An editor that paints the document underneath the caret.
+///
+/// A transparent textarea over a `<pre>` carrying the same text in spans: the
+/// browser keeps doing selection, undo, spell-check suppression, mobile
+/// keyboards and accessibility, and the only job left is keeping the two in
+/// step. They share one set of metrics in `app.css` for that reason — a font or
+/// a padding that differs between them slides the colour off the characters.
+///
+/// Neither wraps (`white-space: pre`), which is deliberate twice over:
+/// indentation carries meaning in YAML and a wrapped line hides it, and a
+/// scrollbar appearing in the textarea would otherwise narrow it and re-wrap
+/// its text while the layer underneath kept the old wrap points.
+({web.HTMLElement root, web.HTMLTextAreaElement input}) codeEditor({
+  required String id,
+  required String value,
+  required BlueprintFormat format,
+  int rows = 20,
+}) {
+  final input = textarea(id: id, value: value, rows: rows);
+  input.className = 'code-input';
+  input.setAttribute('wrap', 'off');
+
+  final layer = el(
+    'pre',
+    classes: 'code-layer',
+    // It is the textarea that carries the content for a screen reader; this is
+    // the same text again, in colour.
+    attrs: {'aria-hidden': 'true'},
+  );
+
+  void paint() {
+    clearChildren(layer);
+    // A trailing newline has no line of its own to give the layer height, so
+    // the last line would sit a row above the caret. One more newline, and the
+    // two end at the same place.
+    final text = input.value.endsWith('\n') ? '${input.value}\n' : input.value;
+    for (final token in tokenizeCode(text, format)) {
+      layer.appendChild(
+        token.className == null
+            ? textNode(token.text)
+            : el('span', classes: token.className, text: token.text),
+      );
+    }
+  }
+
+  paint();
+  on(input, 'input', (_) => paint());
+  on(input, 'scroll', (_) {
+    layer.scrollTop = input.scrollTop;
+    layer.scrollLeft = input.scrollLeft;
+  });
+
+  return (
+    root: el('div', classes: 'code-editor', children: [layer, input]),
+    input: input,
+  );
 }
 
 /// A `<select>` over [options], each a `(value, label)` pair.

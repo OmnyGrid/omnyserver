@@ -113,14 +113,21 @@ class PresetScreen implements Screen {
 
     if (!ctx.auth.state.value.canOperate) {
       _editor = null;
-      _body.appendChild(el('pre', classes: 'screen-capture', text: document));
+      _body.appendChild(highlightedCode(document, BlueprintFormat.json));
       return;
     }
 
-    final box = textarea(id: 'preset-source', value: document, rows: 16);
-    _editor = box;
+    // JSON, always: a preset has no authored format to preserve, because
+    // `preset save` on the CLI takes JSON and nothing else.
+    final editor = codeEditor(
+      id: 'preset-source',
+      value: document,
+      format: BlueprintFormat.json,
+      rows: 16,
+    );
+    _editor = editor.input;
     _body
-      ..appendChild(box)
+      ..appendChild(editor.root)
       ..appendChild(
         el(
           'div',
