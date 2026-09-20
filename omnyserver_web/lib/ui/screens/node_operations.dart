@@ -386,7 +386,7 @@ class NodeOperations {
   Future<void> _declarePreset(String presetId) async {
     try {
       final preset = _presets.firstWhere((p) => p.id.value == presetId);
-      await ctx.service.declare(nodeId, preset.toJson());
+      await ctx.service.declare(nodeId, preset);
       ctx.toasts.success('Declared. Nothing has run — reconcile to apply.');
       await _loadDrift();
     } on AppError catch (e) {

@@ -135,7 +135,7 @@ Future<void> _assign(HubApiClient hub) async {
 Future<void> _planBeforeAnything(HubApiClient hub) async {
   _heading('The plan');
 
-  for (final node in ['web-1', 'build-1']) {
+  for (final node in ['web-1', 'web-2', 'build-1']) {
     final drift = await hub.get('/nodes/$node/drift') as Map;
     print(
       '  $node — ${drift['converged'] == true ? 'converged' : 'drifted'} '
@@ -179,7 +179,7 @@ Future<void> _apply(HubApiClient hub) async {
 Future<void> _applyAgain(HubApiClient hub) async {
   _heading('Converged, and idempotent');
 
-  for (final node in ['web-1', 'build-1']) {
+  for (final node in ['web-1', 'web-2', 'build-1']) {
     final drift = await hub.get('/nodes/$node/drift') as Map;
     final again = await hub.post('/nodes/$node/reconcile', const {}) as Map;
     print(

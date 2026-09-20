@@ -34,6 +34,7 @@ library;
 
 // The API client and its transport seam.
 export 'src/cli/api_client.dart';
+export 'src/cli/api_results.dart';
 export 'src/cli/api_transport.dart';
 
 // Version.
