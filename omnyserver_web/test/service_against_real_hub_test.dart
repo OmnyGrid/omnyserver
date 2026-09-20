@@ -219,6 +219,55 @@ void main() {
       );
     });
 
+    test('a blueprint saved on the Hub decodes, includes and all', () async {
+      // The dashboard renders what it decodes here. A field the Hub names
+      // differently, or a nested list that does not survive the trip, shows up
+      // as an empty panel rather than as an error — so it is worth asserting
+      // against a real Hub rather than a fixture.
+      await signIn();
+      expect(await service.blueprints(), isEmpty);
+
+      await hub.savePreset(
+        Preset(
+          id: PresetId('dev-tools'),
+          name: 'Dev tools',
+          steps: [PresetStep(formula: FormulaId('dart'))],
+        ),
+      );
+      await hub.saveBlueprint(
+        Blueprint(
+          id: BlueprintId('builder'),
+          name: 'Build host',
+          includes: [PresetId('dev-tools')],
+          resources: [
+            Resource(
+              id: ResourceId('formula', 'nmap'),
+              ensure: Ensure.installed,
+            ),
+          ],
+        ),
+      );
+
+      final blueprints = await service.blueprints();
+      expect(blueprints.single.id.value, 'builder');
+      expect(blueprints.single.includes.single.value, 'dev-tools');
+      expect(blueprints.single.resources.single.ensure, Ensure.installed);
+    });
+
+    test('assigning to a node nobody has registered is a usable error', () async {
+      // What the panel shows in a banner. An exception dropped on the floor
+      // would leave the operator looking at a control that silently did nothing.
+      await signIn();
+      await hub.saveBlueprint(Blueprint(id: BlueprintId('bare'), name: 'Bare'));
+
+      await expectLater(
+        service.assignBlueprint('ghost', 'bare'),
+        throwsA(
+          isA<AppError>().having((e) => e.kind, 'kind', AppErrorKind.notFound),
+        ),
+      );
+    });
+
     test('a preset saved on the Hub comes back', () async {
       await signIn();
       expect(await service.presets(), isEmpty);

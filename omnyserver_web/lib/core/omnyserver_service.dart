@@ -383,12 +383,33 @@ class OmnyServerService {
   });
 
   /// Runs whatever the drift plan says is outstanding. Idempotent.
-  Future<List<FormulaResult>> reconcile(String id) => _guard(() async {
+  ///
+  /// The node may be declared by a blueprint or by preset steps; the Hub runs
+  /// whichever applies and answers in a different shape for each. Both are
+  /// reduced to "how many things changed", which is what the toast says and all
+  /// the caller wants — the detail is in the operations tray.
+  Future<int> reconcile(String id) => _guard(() async {
     final reply = (await client.post('/nodes/$id/reconcile')) as Map;
-    return (reply['results'] as List)
-        .map((r) => FormulaResult.fromJson((r as Map).cast<String, dynamic>()))
-        .toList();
+    // A blueprint apply counts its own changes.
+    if (reply['changed'] case final int changed) return changed;
+    return (reply['results'] as List? ?? const [])
+        .where((r) => (r as Map)['changed'] == true)
+        .length;
   });
+
+  // --- Blueprints -----------------------------------------------------------
+
+  /// Every blueprint saved on the Hub.
+  Future<List<Blueprint>> blueprints() => _guard(
+    () async => ((await client.get('/blueprints')) as List)
+        .map((b) => Blueprint.fromJson((b as Map).cast<String, dynamic>()))
+        .toList(),
+  );
+
+  /// Says a node should be [blueprint]. Runs nothing.
+  Future<void> assignBlueprint(String id, String blueprint) => _guard(
+    () => client.put('/nodes/$id/desired-state', {'blueprint': blueprint}),
+  );
 
   // --- Credentials ---------------------------------------------------------
 

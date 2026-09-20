@@ -33,6 +33,7 @@ class NodeOperations {
 
   List<FormulaSpec> _formulas = const [];
   List<Preset> _presets = const [];
+  List<Blueprint> _blueprints = const [];
 
   /// Builds the panel.
   NodeOperations(this.ctx, this.nodeId) {
@@ -206,16 +207,40 @@ class NodeOperations {
               classes: drift.converged ? 'badge online' : 'badge offline',
               text: drift.converged ? 'converged' : 'drifted',
             ),
-            el(
-              'div',
-              classes: 'grow muted',
-              text: drift.converged
-                  ? 'The node still is what it was declared to be.'
-                  : '${drift.actions.length} step(s) would have to run.',
-            ),
+            el('div', classes: 'grow muted', text: _driftSummary(drift)),
+            if (drift.blueprint != null)
+              el('span', classes: 'badge', text: drift.blueprint!),
           ],
         ),
       );
+
+      // A blueprint answers in resource changes, a preset declaration in steps.
+      // Exactly one is ever filled, so rendering both in turn needs no branch.
+      for (final change in drift.changes) {
+        if (change.kind == ChangeKind.noop) continue;
+        _driftBody.appendChild(
+          el(
+            'div',
+            classes: 'row mono',
+            children: [
+              el(
+                'span',
+                classes: _changeBadge(change.kind),
+                text: change.kind.name,
+              ),
+              el('div', classes: 'grow', text: change.id.toString()),
+              // Where it came from: the first question when a blueprint made of
+              // four presets is not doing what was expected.
+              el('div', classes: 'muted', text: change.origin),
+            ],
+          ),
+        );
+        if (change.reason.isNotEmpty) {
+          _driftBody.appendChild(
+            el('div', classes: 'hint', text: change.reason),
+          );
+        }
+      }
 
       for (final step in drift.actions) {
         _driftBody.appendChild(
@@ -255,57 +280,130 @@ class NodeOperations {
     }
   }
 
-  /// Declaring is done from the preset library: a declaration is "this node is
-  /// one of *these*", and inventing a bespoke one per node is how a fleet stops
-  /// being a fleet.
+  /// What the headline row says, for either kind of declaration.
+  String _driftSummary(Drift drift) {
+    if (drift.converged) return 'The node still is what it was declared to be.';
+    final pending = drift.changes
+        .where((c) => c.kind != ChangeKind.noop)
+        .length;
+    return pending > 0
+        ? '$pending resource(s) would have to change.'
+        : '${drift.actions.length} step(s) would have to run.';
+  }
+
+  /// Green for nothing to do, red for a removal, plain for the rest.
+  ///
+  /// A create is not coloured like a fault: most of a first apply is creates,
+  /// and a wall of red would teach an operator to ignore the colour. A remove
+  /// is, because it is the one that takes something away.
+  String _changeBadge(ChangeKind kind) => switch (kind) {
+    ChangeKind.noop => 'badge online',
+    ChangeKind.remove || ChangeKind.failed => 'badge offline',
+    _ => 'badge',
+  };
+
+  /// Declaring is done from the library, not invented per node: a declaration is
+  /// "this node is one of *these*", and a bespoke one per machine is how a fleet
+  /// stops being a fleet.
+  ///
+  /// Blueprints are offered first. A blueprint is what a *machine* is — it
+  /// composes the shared presets and declares states rather than actions — so a
+  /// preset declaration is the older, narrower choice.
   web.HTMLElement _declareControls() {
     if (!ctx.auth.state.value.canOperate) return div();
-    if (_presets.isEmpty) {
+    if (_blueprints.isEmpty && _presets.isEmpty) {
       return el(
         'div',
         classes: 'hint',
-        text: 'Save a preset on the Hub to declare a state from it.',
+        text:
+            'Save a blueprint or a preset on the Hub to declare a state '
+            'from it.',
       );
     }
 
-    final select = _presetSelect();
-    return el(
-      'div',
-      classes: 'row',
-      children: [
-        select,
-        button(
-          'Declare',
-          onClick: () async {
-            final preset = _presets.firstWhere(
-              (p) => p.id.value == select.value,
-            );
-            try {
-              await ctx.service.declare(nodeId, preset.toJson());
-              // Said explicitly: an operator who expects this to have *done*
-              // something will otherwise wonder why the machine is unchanged.
-              ctx.toasts.success(
-                'Declared. Nothing has run — reconcile to apply.',
-              );
-              await _loadDrift();
-            } on AppError catch (e) {
-              ctx.toasts.error(e.message);
-            }
-          },
+    final rows = <web.HTMLElement>[];
+
+    if (_blueprints.isNotEmpty) {
+      final select = _select(
+        id: 'blueprint',
+        options: [
+          for (final b in _blueprints)
+            (
+              value: b.id.value,
+              label: '${b.name} (${b.resources.length} resources)',
+            ),
+        ],
+      );
+      rows.add(
+        el(
+          'div',
+          classes: 'row',
+          children: [
+            select,
+            button(
+              'Assign blueprint',
+              primary: true,
+              onClick: () => _assignBlueprint(select.value),
+            ),
+          ],
         ),
-      ],
-    );
+      );
+    }
+
+    if (_presets.isNotEmpty) {
+      final select = _presetSelect();
+      rows.add(
+        el(
+          'div',
+          classes: 'row',
+          children: [
+            select,
+            button(
+              'Declare preset',
+              className: 'ghost',
+              onClick: () => _declarePreset(select.value),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return el('div', classes: 'stack', children: rows);
+  }
+
+  Future<void> _assignBlueprint(String blueprint) async {
+    try {
+      await ctx.service.assignBlueprint(nodeId, blueprint);
+      // Said explicitly: an operator who expects this to have *done* something
+      // will otherwise wonder why the machine is unchanged.
+      ctx.toasts.success('Assigned. Nothing has run — reconcile to apply.');
+      await _loadDrift();
+    } on AppError catch (e) {
+      ctx.toasts.error(e.message);
+    }
+  }
+
+  Future<void> _declarePreset(String presetId) async {
+    try {
+      final preset = _presets.firstWhere((p) => p.id.value == presetId);
+      await ctx.service.declare(nodeId, preset.toJson());
+      ctx.toasts.success('Declared. Nothing has run — reconcile to apply.');
+      await _loadDrift();
+    } on AppError catch (e) {
+      ctx.toasts.error(e.message);
+    }
   }
 
   Future<void> _reconcile() async {
     try {
-      final results = await ctx.service.reconcile(nodeId);
+      final changed = await ctx.service.reconcile(nodeId);
       ctx.toasts.success(
-        results.isEmpty
+        changed == 0
             ? 'Already converged — nothing to do.'
-            : 'Ran ${results.length} step(s).',
+            : 'Changed $changed thing(s).',
       );
       await _loadDrift();
+      await _loadSoftware();
     } on AppError catch (e) {
       ctx.toasts.error(e.message);
     }
@@ -403,8 +501,9 @@ class NodeOperations {
     try {
       _formulas = await ctx.service.formulas();
       _presets = await ctx.service.presets();
+      _blueprints = await ctx.service.blueprints();
       _renderRun();
-      // The declare controls need the preset list, which has only just arrived.
+      // The declare controls need both libraries, which have only just arrived.
       await _loadDrift();
     } on AppError catch (e) {
       clearChildren(_runBody);
