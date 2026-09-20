@@ -34,6 +34,7 @@ class BlueprintScreen implements Screen {
   late final web.HTMLElement _title;
   late final web.HTMLElement _documentBody;
   late final web.HTMLElement _assignBody;
+  late final web.HTMLElement _selectorsBody;
   late final web.HTMLElement _matchesBody;
 
   Blueprint? _blueprint;
@@ -50,6 +51,7 @@ class BlueprintScreen implements Screen {
     _title = el('h1', classes: 'grow', text: blueprintId);
     _documentBody = div(classes: 'stack');
     _assignBody = div(classes: 'stack');
+    _selectorsBody = div();
     _matchesBody = div();
 
     element = el(
@@ -331,6 +333,7 @@ class BlueprintScreen implements Screen {
           ],
         ),
       )
+      ..appendChild(_selectorsBody)
       ..appendChild(_matchesBody)
       ..appendChild(
         el(
@@ -341,6 +344,74 @@ class BlueprintScreen implements Screen {
               'reconcile each node to apply it.',
         ),
       );
+
+    unawaited(_loadSelectors(label));
+  }
+
+  /// What the fleet actually calls itself, under the input that asks for it.
+  ///
+  /// A label selector is free text against labels somebody else set months ago
+  /// on a machine you may never have seen, and the failure it invites is not a
+  /// typo — a typo matches nothing and is obvious. It is `role=web` on a fleet
+  /// that says `tier=web`, matching nothing while looking entirely reasonable.
+  /// So the selectors are read off the fleet rather than remembered, each with
+  /// how many nodes carry it, and picking one fills the box and previews.
+  Future<void> _loadSelectors(web.HTMLInputElement label) async {
+    try {
+      final nodes = await ctx.service.listNodes();
+      if (_disposed) return;
+
+      final counts = <String, int>{};
+      for (final node in nodes) {
+        for (final entry in node.labels.entries) {
+          final selector = '${entry.key}=${entry.value}';
+          counts[selector] = (counts[selector] ?? 0) + 1;
+        }
+      }
+
+      clearChildren(_selectorsBody);
+      if (counts.isEmpty) {
+        // Not an error. A fleet with no labels is assigned node by node from
+        // each node's own page, and saying so beats an empty strip.
+        _selectorsBody.appendChild(
+          el(
+            'div',
+            classes: 'hint',
+            text: nodes.isEmpty
+                ? 'No nodes are registered yet.'
+                : 'No node carries a label. Leave the box empty to match the '
+                      'whole fleet, or assign from a node’s own page.',
+          ),
+        );
+        return;
+      }
+
+      final sorted = counts.keys.toList()..sort();
+      _selectorsBody.appendChild(
+        el(
+          'div',
+          classes: 'row wrap',
+          children: [
+            el('div', classes: 'muted', text: 'in this fleet:'),
+            for (final selector in sorted)
+              el(
+                'span',
+                classes: 'badge link mono',
+                text: '$selector (${counts[selector]})',
+                onClick: (_) {
+                  label.value = selector;
+                  _preview(selector);
+                },
+              ),
+          ],
+        ),
+      );
+    } on AppError {
+      // The box still works, and typing a selector is the primary path. A
+      // failed convenience should not put an error banner over a panel that is
+      // otherwise fine.
+      if (!_disposed) clearChildren(_selectorsBody);
+    }
   }
 
   void _preview(String label) {
@@ -402,9 +473,53 @@ class BlueprintScreen implements Screen {
     confirmDialog(
       title: 'Assign $blueprintId to ${nodes.length} node(s)?',
       detail:
-          '${nodes.map((n) => n.id.value).join(', ')} will be declared to be '
-          'this blueprint. Any blueprint or preset already declared for them '
-          'is replaced. Nothing runs until each is reconciled.',
+          'These nodes will be declared to be this blueprint. Any blueprint or '
+          'preset already declared for them is replaced. Nothing runs until '
+          'each is reconciled.',
+      // Named one per line rather than run together in the prose above. This
+      // is the last point at which a selector that matched more than its
+      // author meant can be noticed, and a comma-separated sentence is exactly
+      // the shape a reader skims. Each node carries the labels it matched on,
+      // so "why is that one here" is answered without leaving the dialog.
+      extra: [
+        el(
+          'div',
+          classes: 'stack',
+          children: [
+            for (final node in nodes)
+              el(
+                'div',
+                classes: 'row mono',
+                children: [
+                  el(
+                    'span',
+                    classes: node.online ? 'badge online' : 'badge offline',
+                    text: node.online ? 'online' : 'offline',
+                  ),
+                  el('div', classes: 'grow', text: node.id.value),
+                  el(
+                    'div',
+                    classes: 'muted ellipsis',
+                    text: [
+                      for (final label in node.labels.entries)
+                        '${label.key}=${label.value}',
+                    ].join(' '),
+                  ),
+                ],
+              ),
+          ],
+        ),
+        // An offline node is not a problem — declaring runs nothing — but it
+        // is worth saying so, since the badge above invites the question.
+        if (nodes.any((n) => !n.online))
+          el(
+            'div',
+            classes: 'hint',
+            text:
+                'An offline node can still be declared; it is only reconciling '
+                'that needs it reachable.',
+          ),
+      ],
       action: () async {
         // Sequential on purpose: a partial failure should say which node it
         // stopped at, and a fleet-wide fan-out would make that a race.
