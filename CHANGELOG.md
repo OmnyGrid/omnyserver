@@ -1,3 +1,25 @@
+## 0.17.1
+
+### Fixed
+
+- **`service reinstall` no longer carries the old runtime into the service
+  command.** A service installed while omnyserver ran under the Dart VM had its
+  pub-cache snapshot recorded ahead of `<role> start`. A bare
+  `service reinstall` reused that recording as it was. Once omnyserver ran as
+  a native binary (for example a Dart 3.12 app bundle), the unit became
+  `omnyserver <old snapshot> hub start …`. After an SDK upgrade renamed the
+  snapshot, it ran two snapshots. dart_service_manager 1.4.0 records the
+  script apart from the command, and drops a stale one left in older records.
+  Reinstalling an affected service once repairs it.
+
+- **`service info` shows the full command a Dart VM service runs**, including
+  its script. dart_service_manager 1.4.0 keeps the script out of
+  `entry.arguments`, so `info` now prints `entry.commandLine`.
+
+### Changed
+
+- Requires `dart_service_manager` ^1.4.0.
+
 ## 0.17.0
 
 **Server Blueprints.** A blueprint is what a server *is*: a declaration composed
