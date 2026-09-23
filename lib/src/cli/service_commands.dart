@@ -288,7 +288,7 @@ svc.ServiceDescriptor serviceDescriptor(String role, ArgResults args) {
 /// command, and the native definition the OS actually runs the service from.
 String _formatServiceInfo(String role, svc.ServiceInfo info) {
   final e = info.entry;
-  final command = [e.binaryPath, ...e.arguments].join(' ');
+  final command = [e.binaryPath, ...e.commandLine].join(' ');
   final out = StringBuffer()
     ..writeln('Service "$role" (${e.qualifiedName})')
     ..writeln('  status:      ${info.status.name}')
@@ -427,6 +427,8 @@ class ServiceReinstallCommand extends Command<void> {
       } else {
         // Reuse mode: rebuild the descriptor for *this* executable — so the
         // binary refreshes — from the config already installed.
+        // `entry.arguments` is the command alone (no runtime script), so the
+        // runtime that installed it is never carried over.
         final svc.ServiceInfo info;
         try {
           info = await manager.describe(servicePackage, role);

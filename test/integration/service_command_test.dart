@@ -53,6 +53,37 @@ void main() {
   /// The options a Hub needs to pass validation.
   List<String> hubTls() => ['--cert', certPath, '--key', keyPath];
 
+  /// A pub-cache snapshot a Dart VM install records ahead of its command.
+  const snapshot =
+      '/home/u/.pub-cache/global_packages/omnyserver/bin/'
+      'omnyserver.dart-3.12.1.snapshot';
+
+  /// Seeds an `omnyserver:hub` entry in the shape dart_service_manager 1.3.x
+  /// wrote it: the runtime script inside `args`, and no `script` key.
+  Future<void> seedLegacy({
+    required String binary,
+    required List<String> args,
+  }) => svc.JsonServiceRegistry(serviceStoragePaths!.registryFile).upsert(
+    svc.RegistryEntry.fromJson({
+      'package': servicePackage,
+      'service': 'hub',
+      'platform': Platform.operatingSystem,
+      'scope': 'user',
+      'binary': binary,
+      'installedAt': '2026-01-01T00:00:00.000Z',
+      'status': 'running',
+      'args': args,
+      'restart': 'onFailure',
+    }),
+  );
+
+  /// A rendered definition as plain words — markup dropped, whitespace
+  /// collapsed — so a launchd plist (one `<string>` per argument) and a systemd
+  /// `ExecStart=` line read the same.
+  String flatten(String definition) => definition
+      .replaceAll(RegExp('<[^>]+>'), ' ')
+      .replaceAll(RegExp(r'\s+'), ' ');
+
   group('service install --dry-run', () {
     test('renders a hub definition without installing anything', () async {
       final out = await service([
@@ -369,6 +400,43 @@ void main() {
       expect(out, contains('hub start --ephemeral'));
       expect(out, contains('OMNYSERVER_HOME=${home.path}'));
       expect(out, contains('definition (${Platform.operatingSystem}):'));
+    });
+
+    test('shows the script a Dart VM service runs', () async {
+      await seedLegacy(
+        binary: '/usr/lib/dart/bin/dart',
+        args: [snapshot, 'hub', 'start', '--ephemeral'],
+      );
+      expect(
+        await service(['info', 'hub']),
+        contains('/usr/lib/dart/bin/dart $snapshot hub start --ephemeral'),
+      );
+    });
+  });
+
+  group('a bare reinstall with a stale runtime recorded', () {
+    test('drops the snapshot a native-binary entry carried over', () async {
+      // What a 0.17.0 `service reinstall` left once omnyserver ran as an app
+      // bundle: the old pub-cache snapshot ahead of the command.
+      await seedLegacy(
+        binary:
+            '/home/u/.local/state/Dart/install/app-bundles/omnyserver/'
+            'hosted/0.17.0/bundle/bin/omnyserver',
+        args: [snapshot, 'hub', 'start', '--ephemeral'],
+      );
+      final out = flatten(await service(['reinstall', 'hub', '--dry-run']));
+      expect(out, contains('hub start --ephemeral'));
+      expect(out, isNot(contains(snapshot)));
+    });
+
+    test('replaces the script of a Dart VM entry from 1.3.x', () async {
+      await seedLegacy(
+        binary: '/usr/lib/dart/bin/dart',
+        args: [snapshot, 'hub', 'start', '--ephemeral'],
+      );
+      final out = flatten(await service(['reinstall', 'hub', '--dry-run']));
+      expect(out, contains('hub start --ephemeral'));
+      expect(out, isNot(contains(snapshot)));
     });
   });
 
