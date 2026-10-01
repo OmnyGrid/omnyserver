@@ -1,3 +1,18 @@
+## 0.17.2
+
+### Changed
+
+- **Require [omnyhub](https://pub.dev/packages/omnyhub) `^1.9.2`** (was
+  `^1.7.0`). The Hub's REST API and web surfaces are served by omnyhub's
+  `HttpTransport`. Before 1.9.2, its `204 No Content` and `304 Not Modified`
+  responses carried `dart:io`'s default `Content-Type: text/plain`
+  (dart-lang/sdk#64442). A cache in front of the Hub could merge that type
+  from a `304` into a stored response. omnyhub 1.8–1.9.1 in between are
+  additive (forwarding headers, the HTTP stream parser, cache and relay) plus
+  cache fixes.
+
+---
+
 ## 0.17.1
 
 ### Fixed
