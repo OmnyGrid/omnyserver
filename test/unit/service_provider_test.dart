@@ -1,6 +1,8 @@
 @TestOn('vm')
 library;
 
+import 'dart:io';
+
 import 'package:dart_service_manager/dart_service_manager.dart' as dsm;
 import 'package:omnyserver/omnyserver_node.dart';
 import 'package:test/test.dart';
@@ -178,6 +180,39 @@ void main() {
       );
     });
   });
+
+  group('the real account lookups', () {
+    test('root resolves through getent, by name and by number', () {
+      final sp = ServiceProvider(
+        backend: backend,
+        probe: probe,
+        canSwitchUser: true,
+      );
+      expect(
+        sp.runningAsRoot,
+        '${Process.runSync('id', ['-u']).stdout}'.trim() == '0',
+      );
+      final byName = sp.descriptorFor(
+        service({'user': 'root', 'group': 'root'}),
+      );
+      expect(byName.arguments.take(2), ['--reuid=0', '--regid=0']);
+      expect(byName.environment['HOME'], '/root');
+      final byNumber = sp.descriptorFor(
+        service({'user': 'root', 'group': '0'}),
+      );
+      expect(byNumber.arguments[1], '--regid=0');
+      expect(
+        () => sp.descriptorFor(
+          service({'user': 'root', 'group': 'no-such-group-x'}),
+        ),
+        throwsArgumentError,
+      );
+      expect(
+        () => sp.descriptorFor(service({'user': 'no-such-user-x'})),
+        throwsArgumentError,
+      );
+    });
+  }, testOn: 'linux');
 
   group('splitArguments', () {
     test('splits like a shell, and only like a shell', () {

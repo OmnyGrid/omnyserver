@@ -9,6 +9,16 @@ import 'package:test/test.dart';
 class World {
   String? release;
   final Set<String> healthyOn = {};
+
+  /// Per-service health, overriding [healthyOn] for the services it names.
+  final Map<String, Set<String>> healthyFor = {};
+
+  /// Services whose restart throws instead of answering.
+  final Set<String> refreshThrows = {};
+
+  /// Whether a revert throws instead of answering.
+  bool revertThrows = false;
+
   final Map<String, FormulaStatus> services = {};
   final List<String> log = [];
 }
@@ -73,6 +83,7 @@ class FakeRelease
     FormulaContext c,
   ) async {
     world.log.add('revert to ${before.version}');
+    if (world.revertThrows) throw StateError('the disk went read-only');
     if (!before.isPresent) {
       return ResourceChange(
         id: r.id,
@@ -117,7 +128,9 @@ class FakeService implements ResourceProvider, RefreshableProvider {
       );
 
   ResourceChange _healthy(ResolvedResource r, ChangeKind kind, String did) {
-    final ok = world.healthyOn.contains(world.release);
+    final ok = (world.healthyFor[r.id.name] ?? world.healthyOn).contains(
+      world.release,
+    );
     return ResourceChange(
       id: r.id,
       kind: ok ? kind : ChangeKind.failed,
@@ -144,8 +157,43 @@ class FakeService implements ResourceProvider, RefreshableProvider {
   @override
   Future<ResourceChange> refresh(ResolvedResource r, FormulaContext c) async {
     world.log.add('restart ${r.id.name}');
+    if (world.refreshThrows.contains(r.id.name)) {
+      throw StateError('systemctl hung up');
+    }
     return _healthy(r, ChangeKind.update, 'restarted');
   }
+}
+
+/// Present, but never what was declared — drift in the contents.
+class _ContentsJudge implements ResourceProvider, ConvergenceJudge {
+  _ContentsJudge({required this.message});
+
+  final String message;
+
+  @override
+  String get type => 'unit';
+
+  @override
+  Set<Ensure> get supportedEnsure => {Ensure.present};
+
+  @override
+  Future<ResourceState> read(ResolvedResource r, FormulaContext c) async =>
+      ResourceState(
+        id: r.id,
+        status: FormulaStatus.installed,
+        message: message,
+        checkedAt: c.now(),
+      );
+
+  @override
+  bool satisfies(ResolvedResource r, ResourceState s) => false;
+
+  @override
+  Future<ResourceChange> apply(
+    ResolvedResource r,
+    ResourceState current,
+    FormulaContext c,
+  ) async => ResourceChange(id: r.id, kind: ChangeKind.update, reason: 'ok');
 }
 
 /// A formula-like type with no refresh at all.
@@ -466,6 +514,89 @@ void main() {
         contains('could not be rolled back: nothing to roll back to'),
       );
     });
+  });
+
+  group('when the providers themselves throw', () {
+    test(
+      'a restart that throws is a failed change, and triggers the rollback',
+      () async {
+        deployed('1.0');
+        world.healthyOn.add('1.1');
+        world.refreshThrows.add('api');
+        final result = await apply(
+          planner(),
+          blueprint([rel('1.1'), svc('api')]),
+        );
+        expect(result.success, isFalse);
+        expect(world.release, '1.0');
+        expect(result.changes.last.reason, contains('systemctl hung up'));
+      },
+    );
+
+    test(
+      'a revert that throws says the machine is on the new version',
+      () async {
+        deployed('1.0');
+        world.revertThrows = true;
+        final result = await apply(
+          planner(),
+          blueprint([rel('1.1'), svc('api')]),
+        );
+        expect(result.success, isFalse);
+        expect(world.release, '1.1');
+        expect(
+          result.changes.first.reason,
+          allOf(contains('could not be rolled back'), contains('read-only')),
+        );
+      },
+    );
+
+    test('a sibling that fails on the restored version says so', () async {
+      deployed('1.0');
+      world.services['worker'] = FormulaStatus.running;
+      // worker only works on 1.1; api never does. After the rollback to 1.0,
+      // worker is restarted again — and now it is the one failing.
+      world.healthyFor['worker'] = {'1.1'};
+      world.healthyFor['api'] = {};
+      final result = await apply(
+        planner(),
+        blueprint([rel('1.1'), svc('worker'), svc('api')]),
+      );
+      expect(result.success, isFalse);
+      final worker = result.changes.firstWhere(
+        (c) => c.id == ResourceId('service', 'worker'),
+      );
+      expect(worker.kind, ChangeKind.failed);
+      expect(worker.reason, contains('not healthy on 1.0'));
+    });
+  });
+
+  test('drift with no version to compare says what the provider saw', () async {
+    // A judge that rejects on contents alone — a service's unit — gets the
+    // provider's own message as the reason, or a plain one when it has none.
+    final judged = _ContentsJudge(message: 'unit runs --old-flag');
+    final silent = _ContentsJudge(message: '');
+    for (final (judge, reason) in [
+      (judged, 'unit runs --old-flag'),
+      (silent, 'differs from what is declared'),
+    ]) {
+      final result =
+          await NodeBlueprintService(
+            providers: ProviderRegistry.of([judge]),
+          ).plan(
+            BlueprintPlanRequest(
+              requestId: 'r',
+              blueprint: blueprint([
+                ResolvedResource(
+                  resource: Resource(id: ResourceId('unit', 'api')),
+                  origin: 'local',
+                ),
+              ]),
+            ),
+          );
+      expect(result.changes.single.kind, ChangeKind.update);
+      expect(result.changes.single.reason, reason);
+    }
   });
 
   test('the capability names providers, refreshable types and features', () {
