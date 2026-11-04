@@ -204,7 +204,12 @@ void main() {
     test('nothing listening is not healthy', () async {
       final url = at('/health');
       await server.close(force: true);
-      expect(await probe.check(HealthCheck(url: url)), contains('failed'));
+      // Refused at once on Linux and macOS; Windows retries the connection
+      // until the attempt times out. Either way: not healthy, and why.
+      expect(
+        await probe.check(HealthCheck(url: url)),
+        anyOf(contains('failed'), contains('did not answer within')),
+      );
     });
 
     test('a command passes on exit 0 and fails with its exit code', () async {

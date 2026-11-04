@@ -54,7 +54,10 @@ class DefaultHealthProbe implements HealthProbe {
       final ok = response.statusCode >= 200 && response.statusCode < 300;
       return ok ? null : 'GET $url answered HTTP ${response.statusCode}';
     } on TimeoutException {
-      return 'GET $url did not answer within ${attemptTimeout.inSeconds}s';
+      final within = attemptTimeout.inMilliseconds < 1000
+          ? '${attemptTimeout.inMilliseconds}ms'
+          : '${attemptTimeout.inSeconds}s';
+      return 'GET $url did not answer within $within';
     } on Object catch (e) {
       return 'GET $url failed: $e';
     } finally {
