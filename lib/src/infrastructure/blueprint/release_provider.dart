@@ -2,7 +2,8 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 
-import 'package:archive/archive_io.dart';
+import 'package:archive/archive_io.dart'
+    show ArchiveFile, InputFileStream, OutputFileStream, ZipDecoder;
 import 'package:path/path.dart' as p;
 
 import '../../domain/blueprint/resolved_blueprint.dart';
@@ -207,7 +208,10 @@ class ReleaseProvider
     if (!state.isPresent) return false;
     final params = resource.resource.params;
     if (params['version'] != state.version) return false;
-    final sha = params['sha256']?.toLowerCase();
+    // Trimmed as the install trims it: a digest with a trailing newline (a
+    // YAML `|` block) must not read as a different build on every plan — that
+    // would reinstall it, and restart the service, on every apply.
+    final sha = params['sha256']?.trim().toLowerCase();
     // A declared digest is part of what "this version" means: the same version
     // number rebuilt is a different release, and should be redeployed.
     return sha == null || sha.isEmpty || sha == state.fingerprint;
@@ -247,16 +251,22 @@ class ReleaseProvider
     }
     try {
       final root = rootOf(resource);
-      final dir = p.join(root, 'releases', previous);
-      if (_readMarker(dir) == null) {
+      // By version *and* digest: a rebuilt 1.0.141 sits beside the original
+      // under another name, and the one to go back to is the one that ran.
+      final dir = _findInstalled(root, previous, before.fingerprint);
+      if (dir == null) {
         return _failed(resource, '$previous is no longer on disk');
       }
-      _swapCurrent(root, previous);
-      final declared = resource.resource.version;
-      if (declared != null) {
+      // What is being rolled back from — read before the swap, so the record
+      // names the exact build that failed, and an apply of that same build is
+      // refused rather than retried into the same outage.
+      final failed = _currentMarker(root);
+      _swapCurrent(root, dir);
+      if (failed != null) {
         File(p.join(root, rolledBackFile)).writeAsStringSync(
           jsonEncode({
-            'version': declared,
+            'version': failed.version,
+            'sha256': failed.sha256,
             'to': previous,
             'at': context.now().toUtc().toIso8601String(),
           }),
@@ -308,30 +318,64 @@ class ReleaseProvider
       return _failed(resource, 'sha256 "$declaredSha" is not a SHA-256 digest');
     }
     final keep = int.tryParse(params['keep'] ?? '3') ?? 3;
+    final sha = declaredSha == null || declaredSha.isEmpty ? null : declaredSha;
+
+    // Nothing is fetched into a root whose `current` is not ours: a real
+    // directory there, or a link to something that is not a release, is left
+    // exactly as it is — and found out before the download, not after it.
+    final currentPath = p.join(root, 'current');
+    final currentKind = FileSystemEntity.typeSync(
+      currentPath,
+      followLinks: false,
+    );
+    if (currentKind != FileSystemEntityType.notFound) {
+      if (currentKind != FileSystemEntityType.link) {
+        return _failed(
+          resource,
+          '$currentPath exists and is not a symlink — not touching it',
+        );
+      }
+      if (_currentMarker(root) == null) {
+        return _failed(
+          resource,
+          '$currentPath points at something that is not a release — not '
+          'touching it',
+        );
+      }
+    }
+
+    // The build this node has already rolled back from is not deployed again
+    // by itself: an apply on a timer would otherwise reinstall it, fail the
+    // same health check and roll back, over and over — an outage on every
+    // interval. A different build (a new version, or a rebuild with a new
+    // digest) goes ahead.
+    final rolledBackFrom = _readJson(p.join(root, rolledBackFile));
+    if (rolledBackFrom != null &&
+        rolledBackFrom['version'] == version &&
+        (sha == null || rolledBackFrom['sha256'] == sha)) {
+      return _failed(
+        resource,
+        'not retried: $version was rolled back at ${rolledBackFrom['at']} — '
+        'deploy a fixed build, or delete ${p.join(root, rolledBackFile)} to '
+        'try this one again',
+      );
+    }
 
     Directory(p.join(root, 'releases')).createSync(recursive: true);
-    final target = p.join(root, 'releases', version);
-    final existing = _readMarker(target);
+    final previousDir = _currentDir(root);
     final previous = current.isPresent ? current.version : null;
 
     // Already unpacked — a downgrade, or the previous version coming back. The
     // marker's digest says whether it is the *same* bundle: a rebuilt 1.0.141
     // is not the 1.0.141 on disk.
-    final reusable =
-        existing != null &&
-        existing.version == version &&
-        (declaredSha == null ||
-            declaredSha.isEmpty ||
-            existing.sha256 == declaredSha);
-
-    if (!reusable) {
-      await _download(
+    var dir = _findInstalled(root, version, sha);
+    if (dir == null) {
+      dir = await _download(
         resource,
         root: root,
-        target: target,
         url: url,
         version: version,
-        declaredSha: declaredSha,
+        declaredSha: sha,
         verify: verify,
         context: context,
       );
@@ -339,15 +383,10 @@ class ReleaseProvider
       context.log('$version is already on disk — reusing it');
     }
 
-    _swapCurrent(root, version);
+    _swapCurrent(root, dir);
     final rolledBack = File(p.join(root, rolledBackFile));
     if (rolledBack.existsSync()) rolledBack.deleteSync();
-    _prune(
-      root,
-      keep: keep,
-      keepVersions: {version, ?previous},
-      log: context.log,
-    );
+    _prune(root, keep: keep, keepDirs: {dir, ?previousDir}, log: context.log);
 
     context.log('current is now $version');
     return ResourceChange(
@@ -362,10 +401,16 @@ class ReleaseProvider
     );
   }
 
-  Future<void> _download(
+  /// Downloads, verifies and unpacks a build, returning the name of the
+  /// directory under `releases/` it now lives in.
+  ///
+  /// Never the directory `current` points at. A rebuilt 1.0.141 goes beside
+  /// the original (`1.0.141~<digest>`) rather than over it: replacing it in
+  /// place would leave `current` pointing at nothing for a moment, and would
+  /// destroy the very build a rollback goes back to.
+  Future<String> _download(
     ResolvedResource resource, {
     required String root,
-    required String target,
     required String url,
     required String version,
     required String? declaredSha,
@@ -417,11 +462,9 @@ class ReleaseProvider
         }),
       );
 
-      // A directory already at the target is a broken or different build of
-      // the same version: replaced, but only after the new one is complete.
-      final dest = Directory(target);
-      if (dest.existsSync()) dest.deleteSync(recursive: true);
-      staging.renameSync(target);
+      final name = _freeName(root, version, sha);
+      staging.renameSync(p.join(root, 'releases', name));
+      return name;
     } finally {
       if (zip.existsSync()) zip.deleteSync();
       if (staging.existsSync()) staging.deleteSync(recursive: true);
@@ -445,39 +488,67 @@ class ReleaseProvider
       final archive = ZipDecoder().decodeStream(input);
       final byMode = <String, List<String>>{};
       var count = 0;
+      final base = p.normalize(outDir);
 
+      // Every entry is checked before anything is written, because the checks
+      // are about the archive as a whole. Path text alone cannot catch an
+      // escape built out of the archive's own symlinks: `x/y/z -> ..`, then
+      // `x/y/z/w -> ../..`, then a file under `x/y/z/w/…` — each is inside the
+      // release on paper, and together they write outside it once the links
+      // exist on disk. So nothing may pass *through* a symlink the archive
+      // declares, and the links themselves are made last, once every file is
+      // already where it belongs.
+      final entries = <({ArchiveFile file, String name, String path})>[];
+      final links = <String>{};
       for (final file in archive.files) {
-        var name = file.name.replaceAll('\\', '/');
+        var name = p.posix.normalize(file.name.replaceAll('\\', '/'));
         if (strip > 0) {
           final parts = name.split('/').where((s) => s.isNotEmpty).toList();
           if (parts.length <= strip) continue;
           name = parts.sublist(strip).join('/');
         }
-        if (name.isEmpty || name == '/') continue;
+        if (name.isEmpty || name == '/' || name == '.') continue;
 
         final outPath = p.normalize(p.join(outDir, name));
         // `./` — the archive's own root, which is outDir itself.
-        if (outPath == p.normalize(outDir)) continue;
-        if (!p.isWithin(outDir, outPath)) {
+        if (outPath == base) continue;
+        if (p.isAbsolute(name) || !p.isWithin(base, outPath)) {
           throw StateError('zip entry "${file.name}" escapes the release');
         }
-
         if (file.isSymbolicLink) {
-          final link = file.symbolicLink!;
-          final resolved = p.normalize(p.join(p.dirname(outPath), link));
-          if (p.isAbsolute(link) || !p.isWithin(outDir, resolved)) {
+          final target = file.symbolicLink!;
+          final resolved = p.normalize(p.join(p.dirname(outPath), target));
+          if (p.isAbsolute(target) || !p.isWithin(base, resolved)) {
             throw StateError(
-              'zip entry "${file.name}" links outside the release ($link)',
+              'zip entry "${file.name}" links outside the release ($target)',
             );
           }
-          Directory(p.dirname(outPath)).createSync(recursive: true);
-          Link(outPath).createSync(link);
+          links.add(name);
+        }
+        entries.add((file: file, name: name, path: outPath));
+      }
+      for (final e in entries) {
+        final parts = e.name.split('/');
+        for (var i = 1; i < parts.length; i++) {
+          final ancestor = parts.sublist(0, i).join('/');
+          if (links.contains(ancestor)) {
+            throw StateError(
+              'zip entry "${e.file.name}" is inside the symlink "$ancestor" — '
+              'refused, since writing through it could leave the release',
+            );
+          }
+        }
+      }
+
+      for (final e in entries) {
+        if (e.file.isSymbolicLink) continue;
+        if (!e.file.isFile) {
+          Directory(e.path).createSync(recursive: true);
           continue;
         }
-        if (!file.isFile) {
-          Directory(outPath).createSync(recursive: true);
-          continue;
-        }
+        final outPath = e.path;
+        final name = e.name;
+        final file = e.file;
 
         Directory(p.dirname(outPath)).createSync(recursive: true);
         final output = OutputFileStream(outPath);
@@ -497,6 +568,13 @@ class ReleaseProvider
         if (mode != 0x1a4) {
           (byMode[mode.toRadixString(8)] ??= []).add(outPath);
         }
+      }
+
+      // Last: the links, now that nothing else will be written beneath them.
+      for (final e in entries) {
+        if (!e.file.isSymbolicLink) continue;
+        Directory(p.dirname(e.path)).createSync(recursive: true);
+        Link(e.path).createSync(e.file.symbolicLink!);
       }
 
       for (final entry in byMode.entries) {
@@ -551,12 +629,12 @@ class ReleaseProvider
     return RegExp(buffer.toString());
   }
 
-  /// Points `current` at `releases/<version>`, atomically.
-  void _swapCurrent(String root, String version) {
+  /// Points `current` at `releases/<dir>`, atomically.
+  void _swapCurrent(String root, String dir) {
     final staged = Link(p.join(root, '.current-${_nonce()}'));
     // Relative, so the whole root can be moved or mounted elsewhere and still
     // make sense.
-    staged.createSync(p.join('releases', version));
+    staged.createSync(p.join('releases', dir));
     try {
       staged.renameSync(p.join(root, 'current'));
     } on Object {
@@ -565,11 +643,72 @@ class ReleaseProvider
     }
   }
 
-  /// Deletes old versions beyond [keep], never one in [keepVersions].
+  /// The directory under `releases/` holding [version] — with digest [sha],
+  /// when one is given — or `null`.
+  ///
+  /// Looked up by marker, not by name: a rebuild lives beside the original
+  /// under a suffixed name.
+  String? _findInstalled(String root, String version, String? sha) {
+    final dir = Directory(p.join(root, 'releases'));
+    if (!dir.existsSync()) return null;
+    // The plain name first, so an unverified install reuses the usual place.
+    final names = [
+      version,
+      for (final e in dir.listSync(followLinks: false))
+        if (e is Directory && p.basename(e.path) != version) p.basename(e.path),
+    ];
+    for (final name in names) {
+      final marker = _readMarker(p.join(dir.path, name));
+      if (marker == null || marker.version != version) continue;
+      if (sha == null || marker.sha256 == sha) return name;
+    }
+    return null;
+  }
+
+  /// A name under `releases/` for a new build of [version]: the version
+  /// itself when free, the version and the start of its digest otherwise.
+  String _freeName(String root, String version, String sha) {
+    bool free(String name) =>
+        FileSystemEntity.typeSync(
+          p.join(root, 'releases', name),
+          followLinks: false,
+        ) ==
+        FileSystemEntityType.notFound;
+    if (free(version)) return version;
+    final suffixed = '$version~${sha.substring(0, 12)}';
+    if (free(suffixed)) return suffixed;
+    // The same digest under the suffixed name without a marker: a leftover
+    // of an interrupted install, never what `current` points at (that one
+    // has a marker, or it would have been reused).
+    final leftover = p.join(root, 'releases', suffixed);
+    if (_currentDir(root) != suffixed) {
+      Directory(leftover).deleteSync(recursive: true);
+      return suffixed;
+    }
+    return '$suffixed~${_nonce()}';
+  }
+
+  /// The directory name under `releases/` that `current` points at.
+  String? _currentDir(String root) {
+    final current = p.join(root, 'current');
+    if (FileSystemEntity.typeSync(current, followLinks: false) !=
+        FileSystemEntityType.link) {
+      return null;
+    }
+    return p.basename(p.normalize(Link(current).targetSync()));
+  }
+
+  /// The marker of the release `current` points at.
+  _Marker? _currentMarker(String root) {
+    final dir = _currentDir(root);
+    return dir == null ? null : _readMarker(p.join(root, 'releases', dir));
+  }
+
+  /// Deletes old builds beyond [keep], never one in [keepDirs].
   void _prune(
     String root, {
     required int keep,
-    required Set<String> keepVersions,
+    required Set<String> keepDirs,
     required void Function(String) log,
   }) {
     final dir = Directory(p.join(root, 'releases'));
@@ -589,7 +728,7 @@ class ReleaseProvider
     final limit = max(keep, 2);
     var kept = 0;
     for (final r in installed) {
-      if (keepVersions.contains(r.version) || kept < limit) {
+      if (keepDirs.contains(p.basename(r.dir.path)) || kept < limit) {
         kept++;
         continue;
       }

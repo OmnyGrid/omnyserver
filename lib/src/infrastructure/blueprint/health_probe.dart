@@ -65,12 +65,21 @@ class DefaultHealthProbe implements HealthProbe {
   Future<String?> _command(String command) async {
     final shell = Platform.isWindows ? 'cmd' : '/bin/sh';
     final args = Platform.isWindows ? ['/c', command] : ['-c', command];
+    // Started rather than run, so an attempt that hangs can be killed: a
+    // timeout on `Process.run` stops waiting but leaves the child behind, one
+    // more on every attempt of every apply.
+    final process = await Process.start(shell, args);
+    final stderrText = process.stderr
+        .transform(const SystemEncoding().decoder)
+        .join();
+    unawaited(process.stdout.drain<void>());
     try {
-      final result = await Process.run(shell, args).timeout(attemptTimeout * 6);
-      if (result.exitCode == 0) return null;
-      final err = '${result.stderr}'.trim();
-      return '`$command` exited ${result.exitCode}${err.isEmpty ? '' : ': $err'}';
+      final code = await process.exitCode.timeout(attemptTimeout * 6);
+      if (code == 0) return null;
+      final err = (await stderrText).trim();
+      return '`$command` exited $code${err.isEmpty ? '' : ': $err'}';
     } on TimeoutException {
+      process.kill(ProcessSignal.sigkill);
       return '`$command` did not finish';
     }
   }

@@ -17,7 +17,7 @@ executables:
 dependencies:
   # Unpacks the bundle a `release` resource installs. Pure Dart, and the same
   # zip reader release_updater uses to write those bundles.
-  archive: ^4.0.7
+  archive: ^4.5.2
   args: ^2.7.0
   cryptography: ^2.9.0
   # Used by 'ai test' to make a live provider request.

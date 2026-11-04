@@ -477,14 +477,17 @@ omnyserver blueprint apply --label app=nfeflash \
 - **Rollback.** A service that fails its health check right after its release
   changed puts the previous release back and restarts onto it. The apply
   reports failure, and the next `plan` still shows the drift ("1.0.141 was
-  rolled back at …"). Opt out with `rollback: none` on the release.
+  rolled back at …"). That build is not reinstalled by itself — an apply on a
+  timer fails fast instead of repeating the outage — but a fixed build (a new
+  version or digest) goes ahead. Opt out with `rollback: none` on the release.
 - **`--set` is stored.** It changes the node's vars on its assignment, so a
   later plain `apply`, or one on a timer, keeps the node on 1.0.141 instead of
   going back to the blueprint's default. `--unset` drops an override, and
   `blueprint resolved <id> --node <node>` shows what a node is actually sent.
-- **`--wait`** dispatches the apply and follows it to the end, however long it
-  takes, up to `--timeout`. It exits **0** when converged, **1** when it failed,
-  and **3** when it timed out. `--output json` prints one object per node.
+- **`blueprint apply` waits for the node**, however long the apply takes, up
+  to `--timeout` (30m). It exits **0** when converged, **1** when anything
+  failed, and **3** when the only trouble was a timeout. `--output json`
+  prints one object per node, and `--async` returns at once instead.
 
 Nothing here is on by default. A node offers `release` and `service` only when
 started with `--allow-provider`, confined to its `--allow-root` directories,

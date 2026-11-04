@@ -30,12 +30,20 @@ class ReleaseFetcher {
   /// How long a connection may take to open.
   final Duration connectTimeout;
 
+  /// How long a download may go without receiving a byte.
+  ///
+  /// Not a limit on the whole download — a large bundle over a slow link is
+  /// fine — but a stalled one must end, or it holds the node's apply forever
+  /// after the Hub has stopped waiting for it.
+  final Duration idleTimeout;
+
   /// Creates a fetcher.
   ReleaseFetcher({
     Uri? storageBase,
     Uri? metadataBase,
     HttpClient Function()? httpClientFactory,
     this.connectTimeout = const Duration(seconds: 30),
+    this.idleTimeout = const Duration(minutes: 2),
   }) : storageBase =
            storageBase ?? Uri.parse('https://storage.googleapis.com/'),
        metadataBase =
@@ -105,11 +113,17 @@ class ReleaseFetcher {
       final sink = destination.openWrite();
       var bytes = 0;
       try {
-        await for (final chunk in response) {
+        await for (final chunk in response.timeout(idleTimeout)) {
           hasher.add(chunk);
           sink.add(chunk);
           bytes += chunk.length;
         }
+      } on TimeoutException {
+        throw HttpException(
+          'GET $location stalled: nothing received for '
+          '${idleTimeout.inSeconds}s after ${_size(bytes)}',
+          uri: uri,
+        );
       } finally {
         await sink.close();
       }

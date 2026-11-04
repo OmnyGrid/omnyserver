@@ -247,7 +247,7 @@ class NodeBlueprintService {
       // branches that do not depend on the failure carry on: a blueprint of
       // forty resources with one bad package should report the other
       // thirty-nine, not stop at the third.
-      final declaration = _resourceFor(resolved, change.id);
+      final declaration = _resourceFor(resolved, change.id, ledger);
       final blocker = _blockedBy(declaration, failed);
       if (blocker != null) {
         done[change.id] = change.completed(
@@ -356,7 +356,7 @@ class NodeBlueprintService {
         continue;
       }
 
-      final resource = _resourceFor(resolved, id);
+      final resource = _resourceFor(resolved, id, ledger);
       if (!provider.supportedEnsure.contains(resource.ensure)) {
         states[id] = ResourceState.unknown(
           id,
@@ -391,12 +391,24 @@ class NodeBlueprintService {
   /// last declared as. Carrying the old value forward would be reading the
   /// ledger as a second blueprint, and the apply would dutifully reinstall the
   /// very thing it was asked to remove.
-  ResolvedResource _resourceFor(ResolvedBlueprint resolved, ResourceId id) {
+  ///
+  /// Its params, though, *are* carried forward from [ledger]: they say where
+  /// the thing is. A release installed under a non-default `root` has to be
+  /// looked for, and removed, there.
+  ResolvedResource _resourceFor(
+    ResolvedBlueprint resolved,
+    ResourceId id, [
+    Ledger? ledger,
+  ]) {
     for (final resource in resolved.resources) {
       if (resource.id == id) return resource;
     }
     return ResolvedResource(
-      resource: Resource(id: id, ensure: Ensure.absent),
+      resource: Resource(
+        id: id,
+        ensure: Ensure.absent,
+        params: ledger?.entries[id]?.params ?? const {},
+      ),
       origin: 'ledger',
     );
   }

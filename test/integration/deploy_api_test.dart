@@ -230,7 +230,7 @@ void main() {
           throwsA(isA<CliError>()),
         );
         await expectLater(
-          cli(['blueprint', 'apply', 'n1', '--follow-logs']),
+          cli(['blueprint', 'apply', 'n1', '--async', '--follow-logs']),
           throwsA(isA<CliError>()),
         );
         await expectLater(
@@ -239,6 +239,84 @@ void main() {
         );
       },
     );
+
+    test(
+      'a blueprint save that would strand a node\'s vars is refused',
+      () async {
+        await client.assignBlueprint('n1', 'app', vars: {'channel': 'beta'});
+        final withoutChannel = Blueprint.fromJson({
+          ...app.toJson(),
+          'vars': {'version': '1.0.0'},
+        });
+        await expectLater(
+          client.saveBlueprint(withoutChannel),
+          throwsA(
+            isA<HubApiException>()
+                .having((e) => e.statusCode, 'status', 400)
+                .having(
+                  (e) => e.message,
+                  'message',
+                  allOf(contains('n1 (channel)'), contains('--unset')),
+                ),
+          ),
+        );
+
+        // Unset first, and the same save goes through.
+        await client.reconcile('n1', unset: ['channel']);
+        await client.saveBlueprint(withoutChannel);
+        expect((await client.blueprint('app')).vars, {'version': '1.0.0'});
+      },
+    );
+  });
+
+  group('a Hub too old for --set', () {
+    late HttpServer old;
+    late String oldBase;
+
+    setUp(() async {
+      await startApi(); // for the shared tearDown; this test never uses it
+      // Answers only what a 0.17 Hub would: its version. Anything else it is
+      // asked is a failure of the test — nothing may be dispatched.
+      old = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      old.listen((request) async {
+        request.response.headers.contentType = ContentType.json;
+        if (request.uri.path == '/api/v1/openapi.json') {
+          request.response.write('{"info":{"version":"0.17.2"}}');
+        } else {
+          request.response.statusCode = 500;
+          request.response.write('{"error":{"message":"must not be called"}}');
+        }
+        await request.response.close();
+      });
+      oldBase = 'http://127.0.0.1:${old.port}';
+    });
+
+    tearDown(() => old.close(force: true));
+
+    test('is refused before anything is dispatched', () async {
+      await expectLater(
+        captureStdout(
+          () => buildRunner().run([
+            'blueprint',
+            'apply',
+            'n1',
+            '--set',
+            'version=2',
+            '--api',
+            oldBase,
+            '--token',
+            't',
+          ]),
+        ),
+        throwsA(
+          isA<CliError>().having(
+            (e) => e.message,
+            'message',
+            contains('runs omnyserver 0.17.2, which ignores --set'),
+          ),
+        ),
+      );
+    });
   });
 
   group('exit codes', () {
@@ -348,10 +426,57 @@ void main() {
         throwsA(isA<HubApiException>()),
       );
 
-      // Dispatched, it is given the operation timeout, and finishes.
-      final out = await cli(['blueprint', 'apply', 'slow', '--wait']);
+      // Dispatched, it is given the operation timeout, and finishes — and that
+      // is what a plain `blueprint apply` does too, with no --wait.
+      final out = await cli(['blueprint', 'apply', 'slow']);
       expect(exitCode, 0, reason: out);
       expect(out, contains('applied — 1 changed'));
+    });
+
+    group('a timeout and a failure in one run', () {
+      setUp(() async {
+        await startApi();
+        await cluster.startNode(
+          id: 'bad',
+          labels: {'role': 'x'},
+          blueprintApplyHandler: (r) async => answer(r, success: false),
+        );
+        await cluster.startNode(
+          id: 'slow',
+          labels: {'role': 'x'},
+          blueprintApplyHandler: (r) async {
+            await Future<void>.delayed(const Duration(seconds: 3));
+            return answer(r);
+          },
+        );
+        await client.assignBlueprint('bad', 'app');
+        await client.assignBlueprint('slow', 'app');
+      });
+
+      test('exit 1: the definite failure wins over "unknown"', () async {
+        final out = await cli([
+          'blueprint',
+          'apply',
+          '--label',
+          'role=x',
+          '--timeout',
+          '1s',
+        ]);
+        expect(exitCode, 1, reason: out);
+        expect(out, contains('FAILED'));
+        expect(out, contains('TIMED OUT'));
+      });
+
+      test('exit 3 when the only trouble is the timeout', () async {
+        final out = await cli([
+          'blueprint',
+          'apply',
+          'slow',
+          '--timeout',
+          '1s',
+        ]);
+        expect(exitCode, BlueprintApplyCommand.timedOutExitCode, reason: out);
+      });
     });
   });
 

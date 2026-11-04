@@ -1197,6 +1197,28 @@ class OmnyServerHub {
     String principal = 'system',
   }) async {
     final resolved = await _resolve(blueprint);
+    // Every node already on this blueprint must still resolve: one whose
+    // `--set` names a var this version drops would fail every plan and apply
+    // from now on, and every later `--set`, until somebody unset it. Refused
+    // here, naming the nodes, while the author can still see why.
+    final stranded = <String>[];
+    for (final entry in (await config.desiredStateRepository.all()).entries) {
+      final desired = entry.value;
+      if (desired.blueprint != blueprint.id || desired.vars.isEmpty) continue;
+      final gone = [
+        for (final name in desired.vars.keys)
+          if (!blueprint.vars.containsKey(name)) name,
+      ]..sort();
+      if (gone.isNotEmpty) stranded.add('${entry.key} (${gone.join(', ')})');
+    }
+    if (stranded.isNotEmpty) {
+      stranded.sort();
+      throw ProtocolException(
+        'Blueprint "${blueprint.id}" no longer declares vars that assigned '
+        'nodes override: ${stranded.join('; ')} — unset them first '
+        '(blueprint apply <node> --unset <var>), or keep the var',
+      );
+    }
     await config.blueprintRepository.save(blueprint);
     await audit.record(
       principal: principal,

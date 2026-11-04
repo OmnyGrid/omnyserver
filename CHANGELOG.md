@@ -17,7 +17,12 @@ back a release whose service does not come up healthy. A CI job deploys with
   the zip and from `executables:` globs (`bin/*`). Entries or symlinks that
   escape the release are refused, and `strip` drops leading path components.
   The previous version is always kept on disk for a rollback (`keep`,
-  minimum 2). Linux and macOS only.
+  minimum 2). No entry may pass through a symlink the archive itself
+  declares, and links are created only after every file is written, so a
+  chain of links cannot carry a file out of the release. A rebuild of the same
+  version is unpacked beside the original (`1.0.141~<digest>`), never over the
+  build `current` points at. A download that receives nothing for two minutes
+  fails instead of hanging. Linux and macOS only.
 - **`service` resources.** These install a systemd unit or launchd job through
   `dart_service_manager`, under a package of their own
   (`omnyserver-managed`), so a blueprint can never name the agent's own
@@ -33,8 +38,15 @@ back a release whose service does not come up healthy. A CI job deploys with
 - **Rollback.** A resource that fails right after something in its
   `restartOn` changed puts that resource back (`RevertibleProvider`), then
   restarts everything already moved onto the new version. The apply reports
-  failure, and the next plan says "1.0.141 was rolled back at …".
+  failure, and the next plan says "1.0.141 was rolled back at …". The build
+  that was rolled back from is not deployed again by itself: an apply on a
+  timer fails fast ("not retried") instead of repeating the outage every
+  interval. A fixed build (a new version, or a new digest) goes ahead, and
+  deleting `<root>/.omnyserver-rolled-back.json` retries the same one.
   `rollback: none` opts out.
+- **The ledger remembers each resource's params.** A resource dropped from a
+  blueprint is removed from where it was installed — a release under a
+  non-default `root` is taken out of that root, not out of `/opt/<name>`.
 - **Per-node vars: `blueprint apply|assign --set name=value`, `--unset`.**
   Overrides are stored on the node's assignment rather than passed for one
   run, so a later plain apply keeps them. Only declared vars can be set, so a
@@ -42,11 +54,17 @@ back a release whose service does not come up healthy. A CI job deploys with
   the same blueprint without `vars` keeps the node's overrides.
   `POST /nodes/{id}/reconcile` takes `vars`/`unset` and applies them in the
   same request. `GET /blueprints/{id}/resolved?node=` and
-  `blueprint resolved --node` show a node's resolution.
-- **`blueprint apply --wait [--timeout 30m] [--follow-logs]`.** It dispatches,
-  follows the operation to its end, and streams the node's log. It exits 0 when
-  converged, 1 when it failed and 3 when it timed out. `--output json` prints
-  one object per node.
+  `blueprint resolved --node` show a node's resolution. Saving a blueprint
+  that drops a var an assigned node still overrides is refused, naming the
+  nodes. `--set` against a Hub older than 0.18.0 is refused before anything is
+  dispatched, because such a Hub would ignore it and apply the old version.
+- **`blueprint apply` follows the apply to its end.** It always dispatches and
+  waits, up to `--timeout` (default 30m), instead of holding one HTTP request
+  open that the Hub drops after 30 seconds while the node carries on.
+  `--follow-logs` streams the node's log, `--wait` says it is waiting, and
+  `--async` still returns at once. It exits 0 when converged, 1 when anything
+  failed, and 3 when the only trouble was a timeout. `--output json` prints
+  one object per node, with `success` judged from the result.
 - **Connection from the environment.** `OMNYSERVER_API`, `OMNYSERVER_TOKEN`,
   `OMNYSERVER_PRINCIPAL`, `OMNYSERVER_CA` (a path) and `OMNYSERVER_CA_PEM`
   (the PEM itself) stand in for the client flags. Flags win, and `--help`
@@ -75,6 +93,8 @@ back a release whose service does not come up healthy. A CI job deploys with
   `FAILED` and exited 0, because only a transport error counted as a failure.
   `state reconcile` also reported "already converged" for an apply in which
   everything failed.
+- A `health_cmd` that hangs is killed when its attempt times out, instead of
+  being left running.
 - **A dispatched operation whose work failed is `failed`, not `succeeded`.**
   A blueprint apply or preset that answered `success: false`, or a formula
   whose result failed, finished as succeeded, so `ops show --wait` exited 0

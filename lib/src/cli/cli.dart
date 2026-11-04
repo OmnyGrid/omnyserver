@@ -281,7 +281,7 @@ class NodeFailed implements Exception {
 ///
 /// [raw] prints each outcome as it is — one JSON object per line, for
 /// `--output json` — with no node column and no summary, so the output parses.
-Future<void> _fanOut(
+Future<int> _fanOut(
   List<String> nodes,
   Future<String> Function(String nodeId) action, {
   bool raw = false,
@@ -310,6 +310,7 @@ Future<void> _fanOut(
     stdout.writeln('\n${nodes.length - failed}/${nodes.length} succeeded');
   }
   if (failed > 0) exitCode = 1;
+  return failed;
 }
 
 /// Reads a Server-Sent Events response, calling [onEvent] with each payload.
@@ -1952,19 +1953,19 @@ class BlueprintApplyCommand extends Command<void> {
         'wait',
         negatable: false,
         help:
-            'Dispatch, then wait for the node to finish — however long that '
-            'takes, up to --timeout. The form to use in CI: exits 0 when it '
-            'converged, 1 when it failed, 3 when it timed out.',
+            'Say so while waiting. An apply is always dispatched and followed '
+            'to its end, however long that takes, up to --timeout: exits 0 '
+            'when it converged, 1 when it failed, 3 when it timed out.',
       )
       ..addOption(
         'timeout',
         defaultsTo: '30m',
-        help: 'How long --wait waits (e.g. 90s, 20m, 1h).',
+        help: 'How long to wait for the node (e.g. 90s, 20m, 1h).',
       )
       ..addFlag(
         'follow-logs',
         negatable: false,
-        help: "With --wait, stream the node's log while it works.",
+        help: "Stream the node's log while it works.",
       )
       ..addOption(
         'output',
@@ -1994,13 +1995,13 @@ class BlueprintApplyCommand extends Command<void> {
     final args = argResults!;
     final dryRun = args['dry-run'] as bool;
     final async = args['async'] as bool;
-    final wait = args['wait'] as bool;
+    final announce = args['wait'] as bool;
     final json = args['output'] == 'json';
-    if (async && wait) {
+    if (async && announce) {
       throw CliError('--async and --wait contradict each other');
     }
-    if (args['follow-logs'] as bool && !wait) {
-      throw CliError('--follow-logs needs --wait');
+    if (args['follow-logs'] as bool && async) {
+      throw CliError('--follow-logs needs to wait — drop --async');
     }
     final set = _parseVars(args);
     final unset = args['unset'] as List<String>;
@@ -2013,90 +2014,82 @@ class BlueprintApplyCommand extends Command<void> {
     final timeout = _parseDuration(args['timeout'] as String, 'timeout');
 
     final client = _apiClientFrom(args);
-    var timedOut = false;
+    var timeouts = 0;
+    var failures = 0;
     try {
+      // A Hub from before per-node vars accepts the request and ignores them:
+      // the apply runs the old version and reports success. Asked first, so a
+      // deploy against it is refused rather than quietly wrong.
+      if (set.isNotEmpty || unset.isNotEmpty) await _requireVars(client);
+
       final nodes = await _selectNodes(client, args, positional: args.rest);
-      await _fanOut(nodes, (node) async {
+      failures = await _fanOut(nodes, (node) async {
+        // Dispatched and followed, always — never held open over one HTTP
+        // request, which the Hub gives up on after its request timeout while
+        // the node carries on downloading, restarting and health-checking.
+        final operation = await client.reconcileAsync(
+          node,
+          dryRun: dryRun,
+          vars: set,
+          unset: unset,
+        );
         if (async) {
-          final operation = await client.reconcileAsync(
-            node,
-            dryRun: dryRun,
-            vars: set,
-            unset: unset,
-          );
           if (json) {
             return jsonEncode({'node': node, 'operation': operation.toJson()});
           }
           return 'dispatched — ops show ${operation.id}';
         }
+        if (announce && !json) {
+          stdout.writeln(
+            '${node.padRight(20)} dispatched ${operation.id}, waiting…',
+          );
+        }
 
-        ConvergeResult reply;
-        if (wait) {
-          final operation = await client.reconcileAsync(
-            node,
-            dryRun: dryRun,
-            vars: set,
-            unset: unset,
+        final finished = await _await(
+          client,
+          args,
+          node,
+          operation,
+          timeout: timeout,
+          followLogs: args['follow-logs'] as bool,
+        );
+        if (finished == null) {
+          timeouts++;
+          throw NodeFailed(
+            json
+                ? jsonEncode({
+                    'node': node,
+                    'timedOut': true,
+                    'operation': operation.toJson(),
+                  })
+                : 'TIMED OUT after ${_humanizeDuration(timeout)} — still '
+                      'running on the node; ops show ${operation.id} --wait',
           );
-          if (!json) {
-            stdout.writeln(
-              '${node.padRight(20)} dispatched ${operation.id}, waiting…',
-            );
-          }
-          final finished = await _await(
-            client,
-            args,
-            node,
-            operation,
-            timeout: timeout,
-            followLogs: args['follow-logs'] as bool,
-          );
-          if (finished == null) {
-            timedOut = true;
-            final message =
-                'TIMED OUT after ${_humanizeDuration(timeout)} — still running '
-                'on the node; ops show ${operation.id} --wait';
-            throw NodeFailed(
-              json
-                  ? jsonEncode({
-                      'node': node,
-                      'timedOut': true,
-                      'operation': operation.toJson(),
-                    })
-                  : message,
-            );
-          }
-          if (json) {
-            final line = jsonEncode({
-              'node': node,
-              'operation': finished.toJson(),
-            });
-            if (finished.status == OperationStatus.failed) {
-              throw NodeFailed(line);
-            }
-            return line;
-          }
-          final result = finished.result;
-          if (result == null) {
-            throw NodeFailed('FAILED — ${finished.error ?? 'no result'}');
-          }
-          reply = ConvergeResult.fromJson(result);
-        } else {
-          reply = await client.reconcile(
-            node,
-            dryRun: dryRun,
-            vars: set,
-            unset: unset,
-          );
-          if (json) {
-            final line = jsonEncode({'node': node, ...reply.toJson()});
-            if (!reply.success) throw NodeFailed(line);
-            return line;
-          }
+        }
+
+        final result = finished.result;
+        final reply = result == null ? null : ConvergeResult.fromJson(result);
+        // The result, not only the status: a Hub from before 0.18 marks an
+        // operation succeeded whatever the work answered.
+        final ok =
+            finished.status != OperationStatus.failed &&
+            reply != null &&
+            reply.success;
+        if (json) {
+          final line = jsonEncode({
+            'node': node,
+            'success': ok,
+            'operation': finished.toJson(),
+          });
+          if (!ok) throw NodeFailed(line);
+          return line;
+        }
+        if (reply == null) {
+          throw NodeFailed('FAILED — ${finished.error ?? 'no result'}');
         }
 
         final detail = _describeChanges(reply);
-        if (!reply.success) {
+        if (!ok) {
           throw NodeFailed(
             'FAILED — ${reply.changed} changed, ${reply.skipped} skipped$detail',
           );
@@ -2108,7 +2101,40 @@ class BlueprintApplyCommand extends Command<void> {
     } finally {
       client.close();
     }
-    if (timedOut) exitCode = timedOutExitCode;
+    // A timeout is "unknown", a failure is "broken" — and broken wins: a run
+    // where one node failed and another timed out has a definite failure in
+    // it, and a pipeline that retries on 3 must not retry past it.
+    if (timeouts > 0 && failures == timeouts) exitCode = timedOutExitCode;
+  }
+
+  /// Refuses `--set` / `--unset` against a Hub too old to store them.
+  static Future<void> _requireVars(HubApiClient client) async {
+    String? version;
+    try {
+      version = await client.hubVersion();
+    } on HubApiException {
+      version = null;
+    }
+    if (version != null && _olderThan(version, const [0, 18, 0])) {
+      throw CliError(
+        'this Hub runs omnyserver $version, which ignores --set/--unset — '
+        'upgrade it to 0.18.0 or later',
+      );
+    }
+  }
+
+  static bool _olderThan(String version, List<int> floor) {
+    final parts = [
+      for (final s in version.split(RegExp(r'[.+-]')).take(3))
+        int.tryParse(s) ?? 0,
+    ];
+    while (parts.length < 3) {
+      parts.add(0);
+    }
+    for (var i = 0; i < 3; i++) {
+      if (parts[i] != floor[i]) return parts[i] < floor[i];
+    }
+    return false;
   }
 
   /// Polls [operation] until it is no longer running, or [timeout] passes.
@@ -2142,10 +2168,15 @@ class BlueprintApplyCommand extends Command<void> {
 
     final deadline = DateTime.now().add(timeout);
     var op = operation;
+    // Quick at first — most applies of a converged node finish in moments —
+    // then backing off to [poll], so a twenty-minute deploy is not a
+    // twelve-thousand-request one.
+    var delay = const Duration(milliseconds: 100);
     try {
       while (op.isRunning) {
         if (!DateTime.now().isBefore(deadline)) return null;
-        await Future<void>.delayed(poll);
+        await Future<void>.delayed(delay);
+        delay = delay * 2 > poll ? poll : delay * 2;
         op = await client.operation(operation.id);
       }
       return op;

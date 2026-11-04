@@ -298,29 +298,17 @@ void main() {
       );
       await client.assignBlueprint('plain-01', 'app');
 
-      final out = await captureStdout(
-        () => IOOverrides.runZoned(
-          () => buildRunner().run([
-            'blueprint',
-            'apply',
-            'plain-01',
-            '--api',
-            base,
-            '--token',
-            'api-secret',
-          ]),
-          stderr: () => BufferedStdout(_stderr),
-        ),
-      );
+      // Refused by the Hub inside the dispatched operation, before anything
+      // reaches the node: the operation fails, naming what is missing.
+      final out = await cli(['blueprint', 'apply', 'plain-01']);
       expect(exitCode, 1, reason: out);
       expect(
-        _stderr.toString(),
+        out,
         allOf(
           contains('has no release, service provider'),
           contains('--allow-provider release,service'),
         ),
       );
-      _stderr.clear();
     },
   );
 
@@ -371,7 +359,6 @@ void main() {
 }
 
 final Map<String, List<int>> _served = {};
-final StringBuffer _stderr = StringBuffer();
 
 Future<void> _until(bool Function() condition) async {
   final deadline = DateTime.now().add(const Duration(seconds: 10));

@@ -502,6 +502,20 @@ class HubApiClient {
   Future<List<AuditEntry>> audit() async =>
       _list(await get('/audit'), AuditEntry.fromJson);
 
+  /// The omnyserver version the Hub runs, as its OpenAPI document says — or
+  /// `null` when it does not say.
+  ///
+  /// For a client that is about to use something only a newer Hub honours, and
+  /// would otherwise be ignored without a word: `--set` sent to a Hub that
+  /// predates per-node vars applies the old version and reports success.
+  Future<String?> hubVersion() async {
+    final doc = await get('/openapi.json');
+    if (doc is! Map) return null;
+    final info = doc['info'];
+    final version = info is Map ? info['version'] : null;
+    return version is String ? version : null;
+  }
+
   /// Whether the Hub is up. Unauthenticated, and outside the versioned API.
   Future<bool> healthz() async {
     try {
