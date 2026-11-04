@@ -82,6 +82,10 @@ back a release whose service does not come up healthy. A CI job deploys with
   they honour. The Hub refuses a blueprint the node would apply wrongly — a
   type it lacks, or a `restartOn` an older agent would ignore — and names the
   flag or upgrade that fixes it.
+- `BuiltInProvider`, an enum of the shipped resource types (`release`,
+  `service`) and the `ensure` values each accepts. The Hub validates
+  blueprints against it, and the node providers take their `supportedEnsure`
+  from it, so the two cannot disagree.
 - `ConvergenceJudge`, `RefreshableProvider` and `RevertibleProvider`: optional
   interfaces a `ResourceProvider` can implement. A provider written as
   `implements ResourceProvider` keeps compiling.

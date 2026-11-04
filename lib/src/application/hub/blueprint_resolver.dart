@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:cryptography/cryptography.dart';
 
 import '../../domain/blueprint/blueprint.dart';
+import '../../domain/blueprint/built_in_provider.dart';
 import '../../domain/blueprint/resolved_blueprint.dart';
 import '../../domain/blueprint/resource.dart';
 import '../../domain/entities/preset.dart';
@@ -35,23 +36,6 @@ import '../../shared/errors/omnyserver_exception.dart';
 class BlueprintResolver {
   /// Creates a resolver.
   const BlueprintResolver();
-
-  /// The `ensure` values each built-in non-formula provider accepts.
-  ///
-  /// Mirrors the providers' own `supportedEnsure`, which live on the node and
-  /// which the Hub cannot import. Kept beside the resolver so a blueprint that
-  /// asks a release to be `running` is refused at `blueprint save`, while its
-  /// author is still looking at it.
-  static const Map<String, Set<Ensure>> builtInProviderEnsure = {
-    'release': {Ensure.present, Ensure.installed, Ensure.absent},
-    'service': {
-      Ensure.present,
-      Ensure.installed,
-      Ensure.running,
-      Ensure.stopped,
-      Ensure.absent,
-    },
-  };
 
   /// Resolves [blueprint] against the [presets] it includes.
   ///
@@ -280,10 +264,11 @@ class BlueprintResolver {
     List<String> notes,
   ) {
     for (final resource in resources) {
-      final builtIn = builtInProviderEnsure[resource.id.type];
+      final builtIn = BuiltInProvider.byType(resource.id.type);
       if (builtIn != null) {
-        if (!builtIn.contains(resource.ensure)) {
-          final allowed = [for (final e in builtIn) e.name]..sort();
+        if (!builtIn.supportedEnsure.contains(resource.ensure)) {
+          final allowed = [for (final e in builtIn.supportedEnsure) e.name]
+            ..sort();
           throw ProtocolException(
             'Blueprint "${blueprint.id}": ${resource.id} asks for '
             'ensure=${resource.ensure.name}, but a ${resource.id.type} can only '

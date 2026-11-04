@@ -6,6 +6,7 @@ import 'package:archive/archive_io.dart'
     show ArchiveFile, InputFileStream, OutputFileStream, ZipDecoder;
 import 'package:path/path.dart' as p;
 
+import '../../domain/blueprint/built_in_provider.dart';
 import '../../domain/blueprint/resolved_blueprint.dart';
 import '../../domain/blueprint/resource.dart';
 import '../../domain/blueprint/resource_change.dart';
@@ -98,14 +99,10 @@ class ReleaseProvider
   static final RegExp _validVersion = RegExp(r'^[A-Za-z0-9][A-Za-z0-9._+-]*$');
 
   @override
-  String get type => 'release';
+  String get type => BuiltInProvider.release.type;
 
   @override
-  Set<Ensure> get supportedEnsure => const {
-    Ensure.present,
-    Ensure.installed,
-    Ensure.absent,
-  };
+  Set<Ensure> get supportedEnsure => BuiltInProvider.release.supportedEnsure;
 
   /// Where [resource] lives.
   String rootOf(ResolvedResource resource) {

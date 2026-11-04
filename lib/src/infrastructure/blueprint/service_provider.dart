@@ -6,6 +6,7 @@ import 'package:cryptography/cryptography.dart';
 import 'package:dart_service_manager/dart_service_manager.dart' as dsm;
 import 'package:path/path.dart' as p;
 
+import '../../domain/blueprint/built_in_provider.dart';
 import '../../domain/blueprint/resolved_blueprint.dart';
 import '../../domain/blueprint/resource.dart';
 import '../../domain/blueprint/resource_change.dart';
@@ -102,16 +103,10 @@ class ServiceProvider
        delay = delay ?? Future<void>.delayed;
 
   @override
-  String get type => 'service';
+  String get type => BuiltInProvider.service.type;
 
   @override
-  Set<Ensure> get supportedEnsure => const {
-    Ensure.present,
-    Ensure.installed,
-    Ensure.running,
-    Ensure.stopped,
-    Ensure.absent,
-  };
+  Set<Ensure> get supportedEnsure => BuiltInProvider.service.supportedEnsure;
 
   @override
   Future<ResourceState> read(
