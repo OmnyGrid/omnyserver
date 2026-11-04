@@ -1,6 +1,7 @@
 @TestOn('vm')
 library;
 
+import 'dart:async';
 import 'dart:io';
 
 import 'package:args/args.dart';
@@ -187,6 +188,22 @@ void main() {
         containsAllInOrder(['--operation-timeout', '2h']),
       );
     });
+  });
+
+  group('the exit code', () {
+    test('goes to the zone sink when there is one', () async {
+      int? seen;
+      await runZoned(
+        () => runOmnyServerCli(['not-a-command']),
+        zoneValues: {cliExitCodeZoneKey: (int c) => seen = c},
+        zoneSpecification: ZoneSpecification(print: (_, _, _, _) {}),
+      );
+      expect(seen, 64);
+    });
+    // Neither "the process was left alone" nor the no-sink fallback is
+    // asserted here: both mean reading or writing the process-wide exit code,
+    // which other test files share — the very race this routing removes. The
+    // fallback is what every older CLI test reads anyway.
   });
 
   group('ApiConnection', () {

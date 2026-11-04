@@ -10,6 +10,11 @@ import 'package:test/test.dart';
 
 import '../support/captured_stdout.dart';
 import '../support/harness.dart';
+import '../support/run_cli.dart';
+
+/// The exit code the last `cli` call set — its own, never another test
+/// file's (see `runCli`).
+int cliExit = 0;
 
 /// The Hub and CLI surface a deploy pipeline stands on: per-node vars, what a
 /// dispatched operation reports, how long the Hub waits, which nodes it will
@@ -76,16 +81,19 @@ void main() {
     client.close();
     await api.close();
     await cluster.dispose();
-    exitCode = 0;
+    cliExit = 0;
     cliEnvironment = () => Platform.environment;
   });
 
-  Future<String> cli(List<String> args, {bool flags = true}) => captureStdout(
-    () => buildRunner().run([
+  /// Runs the CLI, keeping the exit code it set in [cliExit].
+  Future<String> cli(List<String> args, {bool flags = true}) async {
+    final run = await runCli([
       ...args,
       if (flags) ...['--api', base, '--token', 'api-secret'],
-    ]),
-  );
+    ]);
+    cliExit = run.code;
+    return run.out;
+  }
 
   group('per-node vars', () {
     final sent = <ResolvedBlueprint>[];
@@ -209,7 +217,7 @@ void main() {
         '--unset',
         'version',
       ]);
-      expect(exitCode, 0, reason: out);
+      expect(cliExit, 0, reason: out);
       expect((await client.desiredState('n1'))!.vars, {'channel': 'beta'});
     });
 
@@ -351,33 +359,33 @@ void main() {
 
     test('a failed blueprint apply exits 1, and says what failed', () async {
       final out = await cli(['blueprint', 'apply', 'n1']);
-      expect(exitCode, 1);
+      expect(cliExit, 1);
       expect(out, contains('FAILED'));
       expect(out, contains('formula:dart  — the package server said no'));
     });
 
     test('so does a failed --wait, and the operation is failed', () async {
       final out = await cli(['blueprint', 'apply', 'n1', '--wait']);
-      expect(exitCode, 1, reason: out);
+      expect(cliExit, 1, reason: out);
       final op = (await client.operations()).first;
       expect(op.status, OperationStatus.failed);
       expect(op.error, 'formula:dart: the package server said no');
 
-      exitCode = 0;
+      cliExit = 0;
       await cli(['ops', 'show', op.id, '--wait']);
-      expect(exitCode, 1);
+      expect(cliExit, 1);
     });
 
     test('state reconcile, formula run and preset apply exit 1 too', () async {
       await cli(['state', 'reconcile', 'n1']);
-      expect(exitCode, 1);
+      expect(cliExit, 1);
 
-      exitCode = 0;
+      cliExit = 0;
       final run = await cli(['formula', 'run', 'dart', 'n1']);
-      expect(exitCode, 1, reason: run);
+      expect(cliExit, 1, reason: run);
       expect(run, contains('dart verify: FAILED'));
 
-      exitCode = 0;
+      cliExit = 0;
       await client.savePreset(
         Preset(
           id: PresetId('p'),
@@ -386,7 +394,7 @@ void main() {
         ),
       );
       await cli(['preset', 'apply', 'p', 'n1']);
-      expect(exitCode, 1);
+      expect(cliExit, 1);
     });
 
     test('a failed async formula run is a failed operation', () async {
@@ -429,7 +437,7 @@ void main() {
       // Dispatched, it is given the operation timeout, and finishes — and that
       // is what a plain `blueprint apply` does too, with no --wait.
       final out = await cli(['blueprint', 'apply', 'slow']);
-      expect(exitCode, 0, reason: out);
+      expect(cliExit, 0, reason: out);
       expect(out, contains('applied — 1 changed'));
     });
 
@@ -462,7 +470,7 @@ void main() {
           '--timeout',
           '1s',
         ]);
-        expect(exitCode, 1, reason: out);
+        expect(cliExit, 1, reason: out);
         expect(out, contains('FAILED'));
         expect(out, contains('TIMED OUT'));
       });
@@ -475,7 +483,7 @@ void main() {
           '--timeout',
           '1s',
         ]);
-        expect(exitCode, BlueprintApplyCommand.timedOutExitCode, reason: out);
+        expect(cliExit, BlueprintApplyCommand.timedOutExitCode, reason: out);
       });
     });
   });

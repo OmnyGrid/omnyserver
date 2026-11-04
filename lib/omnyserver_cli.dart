@@ -19,6 +19,8 @@ export 'src/cli/ai_command.dart';
 // a document should be able to parse it without holding a path.
 export 'src/cli/blueprint_format.dart';
 export 'src/cli/blueprint_source.dart';
-export 'src/cli/cli.dart';
+// `exitCode` is the CLI's own routing setter (see `cliExitCodeZoneKey`), not
+// API: exported, it would clash with `dart:io`'s in every importer.
+export 'src/cli/cli.dart' hide exitCode;
 export 'src/cli/service_commands.dart';
 export 'src/cli/start_options.dart';

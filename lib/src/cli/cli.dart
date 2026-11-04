@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
+import 'dart:io' hide exitCode;
+import 'dart:io' as io show exitCode;
 
 import 'package:args/args.dart';
 import 'package:args/command_runner.dart';
@@ -20,6 +21,32 @@ import 'service_commands.dart';
 import 'start_options.dart';
 
 export 'cli_error.dart';
+
+/// The zone key under which a caller can receive the CLI's exit code itself,
+/// instead of reading `dart:io`'s process-wide [io.exitCode].
+///
+/// The process value is shared by every isolate in the process — and
+/// `dart test` runs every test file as an isolate in one process, so a test
+/// asserting a command exited 0 can read the 1 another file's command set a
+/// moment earlier. A caller that runs the CLI with a `void Function(int)`
+/// under this key gets exactly its own command's code.
+@visibleForTesting
+const Symbol cliExitCodeZoneKey = #omnyserver.cli.exitCode;
+
+/// The exit code the CLI reports — every `exitCode = …` in this library.
+///
+/// Declared here, so it takes the place of `dart:io`'s (hidden in the import
+/// above) for the whole library, current code and future: it goes to the
+/// zone's sink when one was given ([cliExitCodeZoneKey]), and to the process
+/// otherwise — which is all production ever sees.
+set exitCode(int code) {
+  final sink = Zone.current[cliExitCodeZoneKey];
+  if (sink is void Function(int)) {
+    sink(code);
+  } else {
+    io.exitCode = code;
+  }
+}
 
 /// Builds the OmnyServer [CommandRunner] with every command wired to the public
 /// runtimes and the Hub HTTP API.

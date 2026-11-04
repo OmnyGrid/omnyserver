@@ -11,9 +11,9 @@ import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
 import '../support/bundles.dart';
-import '../support/captured_stdout.dart';
 import '../support/fake_service_backend.dart';
 import '../support/harness.dart';
+import '../support/run_cli.dart';
 
 /// Healthy when the current release says so in its `HEALTH` file — so one
 /// bundle can be built to deploy cleanly and another to fail its check.
@@ -159,12 +159,15 @@ void main() {
     sandbox.deleteSync(recursive: true);
     _served.clear();
     shas.clear();
-    exitCode = 0;
+    cliExit = 0;
   });
 
-  Future<String> cli(List<String> args) => captureStdout(
-    () => buildRunner().run([...args, '--api', base, '--token', 'api-secret']),
-  );
+  /// Runs the CLI, keeping the exit code it set in [cliExit].
+  Future<String> cli(List<String> args) async {
+    final run = await runCli([...args, '--api', base, '--token', 'api-secret']);
+    cliExit = run.code;
+    return run.out;
+  }
 
   String current() => Link(p.join(root(), 'current')).targetSync();
 
@@ -193,7 +196,7 @@ void main() {
 
     // First deploy.
     var out = await cli(['blueprint', 'apply', 'app-01', '--wait']);
-    expect(exitCode, 0, reason: out);
+    expect(cliExit, 0, reason: out);
     expect(out, contains('applied — 2 changed'));
     expect(current(), 'releases/1.0.0');
     expect(services.calls, ['install app-api', 'start app-api']);
@@ -207,7 +210,7 @@ void main() {
       '--wait',
       ...setVersion('1.1.0'),
     ]);
-    expect(exitCode, 0, reason: out);
+    expect(cliExit, 0, reason: out);
     expect(out, contains('installed 1.1.0 (was 1.0.0)'));
     expect(out, contains('restarted: release:app changed'));
     expect(current(), 'releases/1.1.0');
@@ -217,7 +220,7 @@ void main() {
     // runs — keeps the node on 1.1.0 and changes nothing.
     services.calls.clear();
     out = await cli(['blueprint', 'apply', 'app-01']);
-    expect(exitCode, 0, reason: out);
+    expect(cliExit, 0, reason: out);
     expect(out, contains('applied — 0 changed'));
     expect(current(), 'releases/1.1.0');
     expect(services.calls, isEmpty);
@@ -232,16 +235,16 @@ void main() {
       '--wait',
       ...setVersion('1.2.0'),
     ]);
-    expect(exitCode, 1, reason: out);
+    expect(cliExit, 1, reason: out);
     expect(out, contains('FAILED'));
     expect(out, contains('rolled back (back on 1.1.0)'));
     expect(out, contains('restarted on the previous version'));
     expect(current(), 'releases/1.1.0');
 
     // And the next plan says so, rather than claiming convergence.
-    exitCode = 0;
+    cliExit = 0;
     out = await cli(['blueprint', 'plan', 'app-01']);
-    expect(exitCode, 2, reason: out);
+    expect(cliExit, 2, reason: out);
     expect(out, contains('1.2.0 was rolled back at'));
 
     // The failed deploy is a failed operation, too.
@@ -265,7 +268,7 @@ void main() {
       '--output',
       'json',
     ]);
-    expect(exitCode, 0, reason: out);
+    expect(cliExit, 0, reason: out);
     final line = jsonDecode(out.trim()) as Map<String, dynamic>;
     expect(line['node'], 'app-01');
     expect((line['operation'] as Map)['status'], 'succeeded');
@@ -301,7 +304,7 @@ void main() {
       // Refused by the Hub inside the dispatched operation, before anything
       // reaches the node: the operation fails, naming what is missing.
       final out = await cli(['blueprint', 'apply', 'plain-01']);
-      expect(exitCode, 1, reason: out);
+      expect(cliExit, 1, reason: out);
       expect(
         out,
         allOf(
@@ -352,13 +355,17 @@ void main() {
         '--timeout',
         '1s',
       ]);
-      expect(exitCode, BlueprintApplyCommand.timedOutExitCode, reason: out);
+      expect(cliExit, BlueprintApplyCommand.timedOutExitCode, reason: out);
       expect(out, contains('TIMED OUT after 1s — still running on the node'));
     },
   );
 }
 
 final Map<String, List<int>> _served = {};
+
+/// The exit code the last [main]'s `cli` call set — its own, never another
+/// test file's (see `runCli`).
+int cliExit = 0;
 
 Future<void> _until(bool Function() condition) async {
   final deadline = DateTime.now().add(const Duration(seconds: 10));
