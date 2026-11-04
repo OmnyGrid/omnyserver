@@ -77,8 +77,20 @@ class HubConfig {
   /// How long without a heartbeat before a node is considered stale/offline.
   final Duration heartbeatTimeout;
 
-  /// How long to wait for a node to answer a dispatched operation.
+  /// How long to wait for a node to answer a request somebody is holding open —
+  /// an HTTP call waiting on its reply.
   final Duration requestTimeout;
+
+  /// How long to wait for a node to finish a *dispatched* operation — the
+  /// `async: true` form of a formula run, a preset, a reconcile or a blueprint
+  /// apply, which nobody is holding a connection open for.
+  ///
+  /// Far longer than [requestTimeout] on purpose. The point of dispatching is
+  /// that the work may take minutes — a release download, a package install, a
+  /// service that takes a while to report healthy — and an operation that gave
+  /// up after [requestTimeout] would be marked failed while the node carried on
+  /// and finished it.
+  final Duration operationTimeout;
 
   /// Time source.
   final Clock clock;
@@ -176,6 +188,7 @@ class HubConfig {
     this.heartbeatInterval = const Duration(seconds: 15),
     this.heartbeatTimeout = const Duration(seconds: 45),
     this.requestTimeout = const Duration(seconds: 30),
+    this.operationTimeout = const Duration(minutes: 30),
     this.clock = const SystemClock(),
     this.idGenerator = const UuidGenerator(),
     EventBus? eventBus,

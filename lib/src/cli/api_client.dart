@@ -224,8 +224,17 @@ class HubApiClient {
   }
 
   /// Says [id] should be [blueprint]. Runs nothing.
-  Future<void> assignBlueprint(String id, String blueprint) async =>
-      put('/nodes/$id/desired-state', {'blueprint': blueprint});
+  ///
+  /// [vars] — the node's own values for the blueprint's `vars` — *replace* the
+  /// ones it has when given. Left out, re-assigning the blueprint a node already
+  /// has keeps its overrides, so a fleet-wide `assign` cannot reset every node
+  /// to the document's default version.
+  Future<void> assignBlueprint(
+    String id,
+    String blueprint, {
+    Map<String, String>? vars,
+  }) async =>
+      put('/nodes/$id/desired-state', {'blueprint': blueprint, 'vars': ?vars});
 
   /// Says [id] should be [preset]. Runs nothing.
   Future<void> declarePreset(String id, Preset preset) async =>
@@ -275,16 +284,21 @@ class HubApiClient {
   /// Idempotent: a converged node has nothing outstanding, so this changes
   /// nothing the second time — which is what makes it safe on a timer.
   /// [dryRun] plans without touching anything.
+  ///
+  /// [vars] and [unset] change the node's blueprint overrides first — merged
+  /// into what it has, and *stored*, so the next plain apply keeps them.
   Future<ConvergeResult> reconcile(
     String id, {
     bool dryRun = false,
     bool purgeAdopted = false,
+    Map<String, String> vars = const {},
+    List<String> unset = const [],
   }) async => ConvergeResult.fromJson(
     await _object(
-      await post('/nodes/$id/reconcile', {
-        if (dryRun) 'dryRun': true,
-        if (purgeAdopted) 'purgeAdopted': true,
-      }),
+      await post(
+        '/nodes/$id/reconcile',
+        _reconcileBody(dryRun, purgeAdopted, vars, unset),
+      ),
     ),
   );
 
@@ -293,15 +307,28 @@ class HubApiClient {
     String id, {
     bool dryRun = false,
     bool purgeAdopted = false,
+    Map<String, String> vars = const {},
+    List<String> unset = const [],
   }) async => Operation.fromJson(
     await _object(
       await post('/nodes/$id/reconcile', {
-        if (dryRun) 'dryRun': true,
-        if (purgeAdopted) 'purgeAdopted': true,
+        ..._reconcileBody(dryRun, purgeAdopted, vars, unset),
         'async': true,
       }),
     ),
   );
+
+  static Map<String, dynamic> _reconcileBody(
+    bool dryRun,
+    bool purgeAdopted,
+    Map<String, String> vars,
+    List<String> unset,
+  ) => {
+    if (dryRun) 'dryRun': true,
+    if (purgeAdopted) 'purgeAdopted': true,
+    if (vars.isNotEmpty) 'vars': vars,
+    if (unset.isNotEmpty) 'unset': unset,
+  };
 
   // ---------------------------------------------------------------------------
   // The catalogue, and the library
@@ -327,10 +354,21 @@ class HubApiClient {
   /// What a node is actually sent, and what to read when a blueprint composed
   /// from several presets is not doing what was expected — every resource names
   /// where it came from.
-  Future<ResolvedBlueprint> resolvedBlueprint(String id) async =>
-      ResolvedBlueprint.fromJson(
-        await _object(await get('/blueprints/$id/resolved')),
-      );
+  ///
+  /// With [node], resolved with that node's own `vars` — exactly what it is
+  /// sent.
+  Future<ResolvedBlueprint> resolvedBlueprint(
+    String id, {
+    String? node,
+  }) async => ResolvedBlueprint.fromJson(
+    await _object(
+      await get(
+        node == null
+            ? '/blueprints/$id/resolved'
+            : '/blueprints/$id/resolved?node=${Uri.encodeQueryComponent(node)}',
+      ),
+    ),
+  );
 
   /// Saves a blueprint on the Hub.
   ///

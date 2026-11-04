@@ -36,12 +36,41 @@ class BlueprintResolver {
   /// Creates a resolver.
   const BlueprintResolver();
 
+  /// The `ensure` values each built-in non-formula provider accepts.
+  ///
+  /// Mirrors the providers' own `supportedEnsure`, which live on the node and
+  /// which the Hub cannot import. Kept beside the resolver so a blueprint that
+  /// asks a release to be `running` is refused at `blueprint save`, while its
+  /// author is still looking at it.
+  static const Map<String, Set<Ensure>> builtInProviderEnsure = {
+    'release': {Ensure.present, Ensure.installed, Ensure.absent},
+    'service': {
+      Ensure.present,
+      Ensure.installed,
+      Ensure.running,
+      Ensure.stopped,
+      Ensure.absent,
+    },
+  };
+
   /// Resolves [blueprint] against the [presets] it includes.
   ///
   /// [presets] is looked up by id; an include naming a preset that is not there
   /// is an error rather than a silent omission, because a blueprint that half
   /// applies is worse than one that refuses to.
-  ResolvedBlueprint resolve(Blueprint blueprint, List<Preset> presets) {
+  ///
+  /// [overrides] are one node's values for the blueprint's `vars` — what
+  /// `blueprint apply --set version=1.0.141` stores on the assignment. Only a
+  /// name the blueprint declares may be overridden: `--set verison=…` is a typo,
+  /// and a typo that resolved quietly would deploy the default and report
+  /// success.
+  ResolvedBlueprint resolve(
+    Blueprint blueprint,
+    List<Preset> presets, {
+    Map<String, String> overrides = const {},
+  }) {
+    checkOverrides(blueprint, overrides);
+    final vars = {...blueprint.vars, ...overrides};
     final byId = {for (final preset in presets) preset.id.value: preset};
     final notes = <String>[];
 
@@ -97,7 +126,7 @@ class BlueprintResolver {
     // the including blueprint declares, which is what makes a shared fragment
     // parameterisable at all.
     final substituted = [
-      for (final r in merged.values) _substitute(r, blueprint),
+      for (final r in merged.values) _substitute(r, blueprint, vars),
     ];
 
     _checkRequires(blueprint, substituted);
@@ -136,11 +165,21 @@ class BlueprintResolver {
   /// that survived into a file path would be created on a real machine as a
   /// directory with a dollar sign in its name, and nobody would find out until
   /// they went looking for why the deploy was empty.
-  ResolvedResource _substitute(ResolvedResource resource, Blueprint blueprint) {
+  ResolvedResource _substitute(
+    ResolvedResource resource,
+    Blueprint blueprint,
+    Map<String, String> vars,
+  ) {
     if (resource.resource.params.isEmpty) return resource;
     final params = {
       for (final entry in resource.resource.params.entries)
-        entry.key: _expand(entry.value, blueprint, resource.id, entry.key),
+        entry.key: _expand(
+          entry.value,
+          blueprint,
+          vars,
+          resource.id,
+          entry.key,
+        ),
     };
     return ResolvedResource(
       resource: resource.resource.withParams(params),
@@ -152,11 +191,12 @@ class BlueprintResolver {
   String _expand(
     String value,
     Blueprint blueprint,
+    Map<String, String> vars,
     ResourceId id,
     String field,
   ) => value.replaceAllMapped(_varPattern, (match) {
     final name = match.group(1)!;
-    final replacement = blueprint.vars[name];
+    final replacement = vars[name];
     if (replacement == null) {
       throw ProtocolException(
         'Blueprint "${blueprint.id}" uses \${$name} in $id.$field, '
@@ -168,7 +208,30 @@ class BlueprintResolver {
 
   static final RegExp _varPattern = RegExp(r'\$\{([A-Za-z0-9_.-]+)\}');
 
-  /// Every `requires` has to name something the blueprint declares.
+  /// Refuses an override for a variable [blueprint] does not declare.
+  ///
+  /// Public because the Hub checks it when the override is *stored*, not only
+  /// when it is next resolved: `assign --set` with a typo should fail at the
+  /// command that has the typo in it.
+  static void checkOverrides(
+    Blueprint blueprint,
+    Map<String, String> overrides,
+  ) {
+    final unknown = [
+      for (final name in overrides.keys)
+        if (!blueprint.vars.containsKey(name)) name,
+    ]..sort();
+    if (unknown.isEmpty) return;
+    final declared = blueprint.vars.keys.toList()..sort();
+    throw ProtocolException(
+      'Blueprint "${blueprint.id}" declares no var '
+      '${unknown.map((n) => '"$n"').join(', ')} — '
+      '${declared.isEmpty ? 'it declares none' : 'it declares ${declared.join(', ')}'}',
+    );
+  }
+
+  /// Every `requires` and `restartOn` has to name something the blueprint
+  /// declares, and nothing may restart on itself.
   ///
   /// Caught here rather than on the node: a dangling edge means the author meant
   /// an ordering that will not happen, and finding that out during an apply —
@@ -180,6 +243,19 @@ class BlueprintResolver {
         if (!declared.contains(need)) {
           throw ProtocolException(
             'Blueprint "${blueprint.id}": ${resource.id} requires $need, '
+            'which nothing declares',
+          );
+        }
+      }
+      for (final trigger in resource.resource.restartOn) {
+        if (trigger == resource.id) {
+          throw ProtocolException(
+            'Blueprint "${blueprint.id}": ${resource.id} restarts on itself',
+          );
+        }
+        if (!declared.contains(trigger)) {
+          throw ProtocolException(
+            'Blueprint "${blueprint.id}": ${resource.id} restarts on $trigger, '
             'which nothing declares',
           );
         }
@@ -204,6 +280,18 @@ class BlueprintResolver {
     List<String> notes,
   ) {
     for (final resource in resources) {
+      final builtIn = builtInProviderEnsure[resource.id.type];
+      if (builtIn != null) {
+        if (!builtIn.contains(resource.ensure)) {
+          final allowed = [for (final e in builtIn) e.name]..sort();
+          throw ProtocolException(
+            'Blueprint "${blueprint.id}": ${resource.id} asks for '
+            'ensure=${resource.ensure.name}, but a ${resource.id.type} can only '
+            'be ${allowed.join(', ')}',
+          );
+        }
+        continue;
+      }
       if (resource.id.type != 'formula') continue;
       final matches = standardFormulaSpecs.where(
         (s) => s.id.value == resource.id.name,
@@ -242,8 +330,10 @@ class BlueprintResolver {
     final ordered = <ResolvedResource>[];
 
     while (remaining.isNotEmpty) {
+      // `dependencies`, not `requires`: a restart is only meaningful after the
+      // thing it restarts on has settled.
       final ready = remaining
-          .where((r) => r.resource.requires.every(settled.contains))
+          .where((r) => r.resource.dependencies.every(settled.contains))
           .toList();
 
       if (ready.isEmpty) {

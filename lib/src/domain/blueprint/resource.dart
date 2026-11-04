@@ -170,20 +170,46 @@ class Resource {
   /// accident and break when somebody sorts the list.
   final List<ResourceId> requires;
 
+  /// Resources whose change, in the same apply, means this one must be
+  /// refreshed — a service restarted because the release it runs was replaced.
+  ///
+  /// Implies [requires]: a restart triggered by something that has not been
+  /// settled yet would restart into the old version. The resolver adds the edge,
+  /// so an author does not have to say it twice.
+  ///
+  /// Only a change triggers it. A release that was already right is a no-op, and
+  /// a service that is already running stays exactly as it is — which is what
+  /// keeps an apply on a timer from bouncing production every fifteen minutes.
+  final List<ResourceId> restartOn;
+
   /// Creates a resource.
   const Resource({
     required this.id,
     this.ensure = Ensure.present,
     this.params = const {},
     this.requires = const [],
+    this.restartOn = const [],
   });
 
   /// The pinned version, when one was given.
   String? get version => params['version'];
 
+  /// Everything that must be settled before this one: [requires] and
+  /// [restartOn] together, each once.
+  List<ResourceId> get dependencies => [
+    ...requires,
+    for (final r in restartOn)
+      if (!requires.contains(r)) r,
+  ];
+
   /// A copy with [params] substituted — used by the resolver for `${var}`.
-  Resource withParams(Map<String, String> params) =>
-      Resource(id: id, ensure: ensure, params: params, requires: requires);
+  Resource withParams(Map<String, String> params) => Resource(
+    id: id,
+    ensure: ensure,
+    params: params,
+    requires: requires,
+    restartOn: restartOn,
+  );
 
   /// JSON form.
   ///
@@ -197,6 +223,8 @@ class Resource {
     if (params.isNotEmpty) 'params': params,
     if (requires.isNotEmpty)
       'requires': [for (final r in requires) r.toString()],
+    if (restartOn.isNotEmpty)
+      'restartOn': [for (final r in restartOn) r.toString()],
   };
 
   /// Decodes from JSON.
@@ -225,15 +253,29 @@ class Resource {
         for (final r in Json.optStringList(json, 'requires'))
           ResourceId.parse(r),
       ],
+      restartOn: [
+        for (final r in Json.optStringList(json, 'restartOn'))
+          ResourceId.parse(r),
+      ],
     );
   }
 
+  /// Keys that are part of the resource itself, never folded into [params].
+  ///
+  /// `origin` and `overrides` are here although a [Resource] has neither: they
+  /// are the resolved form's provenance, and a resource decoded from that form
+  /// must not come out carrying `params: {origin: local}` — which a provider
+  /// would read as a setting, and which would make every resolved resource look
+  /// different from the one that was declared.
   static const Set<String> _reserved = {
     'type',
     'name',
     'ensure',
     'params',
     'requires',
+    'restartOn',
+    'origin',
+    'overrides',
   };
 
   @override

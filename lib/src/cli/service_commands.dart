@@ -43,6 +43,7 @@ const Set<String> _hubOnlyOptions = {
   'cors-origin',
   'ephemeral',
   'ai-config',
+  'operation-timeout',
 };
 
 /// The `node start` options — used to reject them on `service install hub`.
@@ -57,6 +58,8 @@ const Set<String> _nodeOnlyOptions = {
   'ship-logs',
   'label',
   'shell-label',
+  'allow-provider',
+  'allow-root',
 };
 
 /// `omnyserver service …`
@@ -224,6 +227,11 @@ List<String> serviceStartArgs(String role, ArgResults args) {
     emitMultiOption(out, 'alert', args['alert'] as List<String>);
     emitMultiOption(out, 'cors-origin', args['cors-origin'] as List<String>);
     emitPathOption(out, 'ai-config', args['ai-config']);
+    // Only when changed: a unit that spells out every default stops picking
+    // up a better one from the next release.
+    if (args['operation-timeout'] != '30m') {
+      emitOption(out, 'operation-timeout', args['operation-timeout']);
+    }
     final root = resolveDataDir(args, systemScope: systemScope);
     if (root == null) {
       emitFlag(out, 'ephemeral', true);
@@ -242,6 +250,13 @@ List<String> serviceStartArgs(String role, ArgResults args) {
     emitNegatableFlag(out, 'ship-logs', args['ship-logs'] as bool);
     emitMultiOption(out, 'label', args['label'] as List<String>);
     emitMultiOption(out, 'shell-label', args['shell-label'] as List<String>);
+    emitMultiOption(
+      out,
+      'allow-provider',
+      args['allow-provider'] as List<String>,
+    );
+    // Paths, but already required to be absolute — emitted as given.
+    emitMultiOption(out, 'allow-root', args['allow-root'] as List<String>);
     // `node start` has no --data-dir; the node's state rides in
     // OMNYSERVER_HOME, set in the descriptor's environment.
   }
@@ -255,8 +270,10 @@ svc.ServiceDescriptor serviceDescriptor(String role, ArgResults args) {
   rejectForeignOptions(role, args);
   if (role == 'hub') {
     validateHubTls(args);
+    parseOperationTimeout(args);
   } else {
     validateNodeStartArgs(args);
+    validateNodeProviderArgs(args);
   }
   final systemScope = args['system'] as bool;
   final scope = systemScope ? svc.ServiceScope.system : svc.ServiceScope.user;

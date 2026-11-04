@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'package:args/args.dart';
 import 'package:args/command_runner.dart';
+import 'package:meta/meta.dart';
 import 'package:omnyshell/omnyshell_hub.dart' as omnyshell;
 import 'package:omnyshell/omnyshell_node.dart' as omnyshell;
 
@@ -11,6 +12,7 @@ import '../../omnyserver_hub.dart';
 import '../../omnyserver_node.dart';
 import 'ai_command.dart';
 import 'api_client.dart';
+import 'api_results.dart';
 import 'api_transport_io.dart';
 import 'blueprint_format.dart';
 import 'cli_error.dart';
@@ -84,26 +86,44 @@ Future<void> runOmnyServerCli(List<String> args) async {
 // API connection options shared by client commands.
 // ---------------------------------------------------------------------------
 
+/// The default Hub API URL, when neither `--api` nor `OMNYSERVER_API` says.
+const String defaultApiUrl = 'https://127.0.0.1:8443';
+
+/// The environment the client commands read their connection from.
+///
+/// A seam for tests; the process environment otherwise.
+@visibleForTesting
+Map<String, String> Function() cliEnvironment = () => Platform.environment;
+
 void _addApiOptions(ArgParser parser) {
+  // No `defaultsTo` for anything read from the environment: `--help` prints
+  // defaults, and a token printed in a CI log is a token leaked.
   parser
     ..addOption(
       'api',
-      help: 'Hub HTTP API base URL (shares the Hub port).',
-      defaultsTo: 'https://127.0.0.1:8443',
+      help:
+          'Hub HTTP API base URL (shares the Hub port). '
+          'Env: OMNYSERVER_API. Default: $defaultApiUrl.',
     )
     ..addOption(
       'token',
       help:
           "Bearer token for the Hub HTTP API: the Hub's --api-token, or a "
-          'token granted to --principal.',
+          'token granted to --principal. Env: OMNYSERVER_TOKEN.',
     )
     ..addOption(
       'principal',
       help:
           'Principal the --token was granted to (--grant principal:token:roles). '
-          'The Hub verifies the pair and takes your roles from the grant.',
+          'The Hub verifies the pair and takes your roles from the grant. '
+          'Env: OMNYSERVER_PRINCIPAL.',
     )
-    ..addOption('ca', help: "CA certificate (PEM) trusting the Hub's cert.")
+    ..addOption(
+      'ca',
+      help:
+          "CA certificate (PEM file) trusting the Hub's cert. "
+          'Env: OMNYSERVER_CA (a path) or OMNYSERVER_CA_PEM (the PEM itself).',
+    )
     ..addFlag(
       'insecure',
       negatable: false,
@@ -111,20 +131,75 @@ void _addApiOptions(ArgParser parser) {
     );
 }
 
+/// How a client command reaches the Hub: its flags, falling back to the
+/// environment — which is how a CI job passes a secret without putting it on a
+/// command line that the runner echoes into the log.
+class ApiConnection {
+  /// The Hub's API base URL.
+  final Uri api;
+
+  /// The bearer token, if any.
+  final String? token;
+
+  /// The principal the token was granted to, if any.
+  final String? principal;
+
+  /// The TLS context trusting the Hub's CA, when one was given.
+  final SecurityContext? securityContext;
+
+  /// Whether to skip TLS verification.
+  final bool insecure;
+
+  /// Creates a connection description.
+  const ApiConnection({
+    required this.api,
+    this.token,
+    this.principal,
+    this.securityContext,
+    this.insecure = false,
+  });
+
+  /// Resolves [args] against [environment]; a flag always wins.
+  factory ApiConnection.from(ArgResults args, Map<String, String> environment) {
+    String? pick(String option, String env) {
+      final flag = args[option] as String?;
+      if (flag != null && flag.isNotEmpty) return flag;
+      final value = environment[env];
+      return value == null || value.isEmpty ? null : value;
+    }
+
+    final caPath = pick('ca', 'OMNYSERVER_CA');
+    final caPem = environment['OMNYSERVER_CA_PEM'];
+    SecurityContext? context;
+    if (caPath != null) {
+      context = SecurityContext(withTrustedRoots: true)
+        ..setTrustedCertificates(caPath);
+    } else if (caPem != null && caPem.trim().isNotEmpty) {
+      context = SecurityContext(withTrustedRoots: true)
+        ..setTrustedCertificatesBytes(utf8.encode(caPem));
+    }
+
+    return ApiConnection(
+      api: Uri.parse(pick('api', 'OMNYSERVER_API') ?? defaultApiUrl),
+      token: pick('token', 'OMNYSERVER_TOKEN'),
+      principal: pick('principal', 'OMNYSERVER_PRINCIPAL'),
+      securityContext: context,
+      insecure: args['insecure'] as bool,
+    );
+  }
+}
+
 HubApiClient _apiClientFrom(ArgResults args) {
-  final ca = args['ca'] as String?;
+  final connection = ApiConnection.from(args, cliEnvironment());
   return HubApiClient(
-    Uri.parse(args['api'] as String),
-    token: args['token'] as String?,
-    principal: args['principal'] as String?,
+    connection.api,
+    token: connection.token,
+    principal: connection.principal,
     // TLS is a property of the transport, not of the API: a browser cannot be
     // handed a SecurityContext, so those knobs live on the VM transport.
     transport: IoApiTransport(
-      securityContext: ca == null
-          ? null
-          : (SecurityContext(withTrustedRoots: true)
-              ..setTrustedCertificates(ca)),
-      allowBadCertificate: args['insecure'] as bool,
+      securityContext: connection.securityContext,
+      allowBadCertificate: connection.insecure,
     ),
   );
 }
@@ -182,27 +257,56 @@ Future<List<String>> _selectNodes(
   return matched.toSet().toList()..sort();
 }
 
+/// Thrown by a [_fanOut] action whose node answered that the work failed.
+///
+/// Distinct from a [HubApiException] — the request worked; what it asked for
+/// did not — but counted the same, so the command exits non-zero.
+class NodeFailed implements Exception {
+  /// The outcome line to print for the node.
+  final String message;
+
+  /// Creates the signal.
+  const NodeFailed(this.message);
+
+  @override
+  String toString() => message;
+}
+
 /// Runs [action] against every selected node, printing a result per node.
 ///
 /// Sequential on purpose: these are fleet-changing operations, and a failure
 /// halfway through a hundred nodes is far easier to reason about when the ones
 /// before it are known to have finished. Each line is printed as it lands, so a
 /// long run is not a silent wait.
+///
+/// [raw] prints each outcome as it is — one JSON object per line, for
+/// `--output json` — with no node column and no summary, so the output parses.
 Future<void> _fanOut(
   List<String> nodes,
-  Future<String> Function(String nodeId) action,
-) async {
+  Future<String> Function(String nodeId) action, {
+  bool raw = false,
+}) async {
   var failed = 0;
   for (final node in nodes) {
     try {
       final outcome = await action(node);
-      stdout.writeln('${node.padRight(20)} $outcome');
+      stdout.writeln(raw ? outcome : '${node.padRight(20)} $outcome');
+    } on NodeFailed catch (e) {
+      // The Hub answered, and the answer was that the work failed. Printed like
+      // any other outcome, and counted: a pipeline that reads the exit code
+      // must not see a failed deploy as a zero.
+      failed++;
+      stdout.writeln(raw ? e.message : '${node.padRight(20)} ${e.message}');
     } on HubApiException catch (e) {
       failed++;
-      stderr.writeln('${node.padRight(20)} failed: ${e.message}');
+      if (raw) {
+        stdout.writeln(jsonEncode({'node': node, 'error': e.message}));
+      } else {
+        stderr.writeln('${node.padRight(20)} failed: ${e.message}');
+      }
     }
   }
-  if (nodes.length > 1) {
+  if (nodes.length > 1 && !raw) {
     stdout.writeln('\n${nodes.length - failed}/${nodes.length} succeeded');
   }
   if (failed > 0) exitCode = 1;
@@ -218,22 +322,28 @@ Future<void> _streamSse(
   String path, {
   required void Function(Map<dynamic, dynamic> payload) onEvent,
   String? banner,
+  Future<void>? until,
 }) async {
-  final base = Uri.parse(args['api'] as String);
-  final ca = args['ca'] as String?;
-  final http = HttpClient(
-    context: ca == null
-        ? null
-        : (SecurityContext(withTrustedRoots: true)..setTrustedCertificates(ca)),
-  );
-  if (args['insecure'] as bool) {
+  final connection = ApiConnection.from(args, cliEnvironment());
+  final base = connection.api;
+  final http = HttpClient(context: connection.securityContext);
+  if (connection.insecure) {
     http.badCertificateCallback = (_, _, _) => true;
   }
+  // A stream designed never to end is ended from outside: closing the client
+  // tears the socket down, and the read loop below stops.
+  var stopped = false;
+  unawaited(
+    until?.then((_) {
+      stopped = true;
+      http.close(force: true);
+    }),
+  );
 
   try {
     final request = await http.getUrl(base.replace(path: path));
-    final token = args['token'] as String?;
-    final principal = args['principal'] as String?;
+    final token = connection.token;
+    final principal = connection.principal;
     if (token != null) request.headers.set('authorization', 'Bearer $token');
     if (principal != null) {
       request.headers.set('x-omny-principal', principal);
@@ -255,6 +365,10 @@ Future<void> _streamSse(
       final payload = jsonDecode(line.substring(6));
       if (payload is Map) onEvent(payload);
     }
+  } on Object {
+    // Asked to stop, and the socket went away as a result: that is the end,
+    // not an error.
+    if (!stopped) rethrow;
   } finally {
     http.close(force: true);
   }
@@ -334,6 +448,7 @@ class HubStartCommand extends Command<void> {
     final args = argResults!;
     // Either a directory the Hub reloads on renewal, or a static cert/key pair.
     final tlsDir = validateHubTls(args);
+    final operationTimeout = parseOperationTimeout(args);
     final context = tlsDir != null
         ? null
         : (SecurityContext()
@@ -384,6 +499,7 @@ class HubStartCommand extends Command<void> {
             ? JsonDesiredStateRepository(dataDir)
             : null,
         corsOrigins: args['cors-origin'] as List<String>,
+        operationTimeout: operationTimeout,
         alertRules: [
           for (final raw in args['alert'] as List<String>) AlertRule.parse(raw),
         ],
@@ -538,6 +654,19 @@ class NodeCommand extends Command<void> {
   String get description => 'Manage and run OmnyServer Node agents.';
 }
 
+/// The blueprint providers a node agent offers: formulas always, and each of
+/// [allow] — confined to [roots].
+@visibleForTesting
+ProviderRegistry nodeProviders(
+  FormulaRegistry registry, {
+  List<String> allow = const [],
+  List<String> roots = const [],
+}) => ProviderRegistry.of([
+  FormulaProvider(registry: registry),
+  if (allow.contains('release')) ReleaseProvider(allowedRoots: roots),
+  if (allow.contains('service')) ServiceProvider(allowedRoots: roots),
+]);
+
 /// `omnyserver node start`
 class NodeStartCommand extends Command<void> {
   /// What the command waits on before shutting the agent down.
@@ -579,6 +708,7 @@ class NodeStartCommand extends Command<void> {
   Future<void> run() async {
     final args = argResults!;
     validateNodeStartArgs(args);
+    validateNodeProviderArgs(args);
     final hub = args['hub'] as String;
     final id = args['id'] as String;
     final token = args['token'] as String;
@@ -627,8 +757,16 @@ class NodeStartCommand extends Command<void> {
     // node owns on every restart, and a node that has forgotten what it owns can
     // never really have a blueprint unassigned from it — it would adopt
     // everything it found and remove nothing.
+    //
+    // `release` and `service` only when the operator who started this agent
+    // asked for them: between them they run a program on this machine, and
+    // that is the agent owner's decision, not the blueprint author's.
     final blueprintService = NodeBlueprintService(
-      providers: ProviderRegistry.of([FormulaProvider(registry: registry)]),
+      providers: nodeProviders(
+        registry,
+        allow: args['allow-provider'] as List<String>,
+        roots: args['allow-root'] as List<String>,
+      ),
       ledgers: FileLedgerStore(OmnyServerHome.ensure().path),
       onLog: log,
     );
@@ -646,7 +784,15 @@ class NodeStartCommand extends Command<void> {
           : null,
       labels: _parseLabels(args['label'] as List<String>, 'label'),
       statusProvider: monitor.snapshot,
-      capabilityProvider: scanner.scan,
+      // What the machine has, plus what this agent can do with a blueprint —
+      // so the Hub can refuse one this node would apply wrongly.
+      capabilityProvider: () async {
+        final scanned = await scanner.scan();
+        return NodeCapabilities([
+          ...scanned.capabilities,
+          blueprintService.capability,
+        ]);
+      },
       formulaHandler: formulaService.runFormula,
       formulaStatusHandler: formulaService.reportStatus,
       blueprintPlanHandler: blueprintService.plan,
@@ -1277,9 +1423,10 @@ class PresetApplyCommand extends Command<void> {
         );
         final failed = reply.results.where((r) => !r.success).length;
         final changed = reply.results.where((r) => r.changed).length;
-        return failed == 0
-            ? 'applied ${reply.results.length} steps ($changed changed)'
-            : 'FAILED $failed/${reply.results.length} steps';
+        if (failed != 0) {
+          throw NodeFailed('FAILED $failed/${reply.results.length} steps');
+        }
+        return 'applied ${reply.results.length} steps ($changed changed)';
       });
     } finally {
       client.close();
@@ -1554,6 +1701,10 @@ class BlueprintResolvedCommand extends Command<void> {
   /// Creates the blueprint-resolved command.
   BlueprintResolvedCommand() {
     _addApiOptions(argParser);
+    argParser.addOption(
+      'node',
+      help: "Resolve with this node's own --set vars: what it is sent.",
+    );
   }
 
   @override
@@ -1566,11 +1717,24 @@ class BlueprintResolvedCommand extends Command<void> {
   @override
   Future<void> run() async {
     final rest = argResults!.rest;
-    if (rest.isEmpty) throw CliError('usage: blueprint resolved <id>');
+    if (rest.isEmpty) {
+      throw CliError('usage: blueprint resolved <id> [--node <node>]');
+    }
 
     final client = _apiClientFrom(argResults!);
     try {
-      final resolved = await client.resolvedBlueprint(rest.first);
+      final node = argResults!['node'] as String?;
+      if (node != null) {
+        final desired = await client.desiredState(node);
+        final vars = desired?.vars ?? const <String, String>{};
+        if (vars.isNotEmpty) {
+          final keys = vars.keys.toList()..sort();
+          stdout.writeln(
+            'vars on $node: ${[for (final k in keys) '$k=${vars[k]}'].join(' ')}',
+          );
+        }
+      }
+      final resolved = await client.resolvedBlueprint(rest.first, node: node);
 
       stdout.writeln(resolved.hash);
       stdout.writeln('RESOURCE                       ENSURE     FROM');
@@ -1625,6 +1789,7 @@ class BlueprintAssignCommand extends Command<void> {
   BlueprintAssignCommand() {
     _addApiOptions(argParser);
     _addSelectorOptions(argParser);
+    _addVarOptions(argParser, unset: false);
   }
 
   @override
@@ -1640,10 +1805,12 @@ class BlueprintAssignCommand extends Command<void> {
     final rest = args.rest;
     if (rest.isEmpty) {
       throw CliError(
-        'usage: blueprint assign <id> [<node>] [--label env=prod | --all]',
+        'usage: blueprint assign <id> [<node>] [--label env=prod | --all] '
+        '[--set name=value]',
       );
     }
     final blueprint = rest.first;
+    final set = _parseVars(args);
 
     final client = _apiClientFrom(args);
     try {
@@ -1653,8 +1820,16 @@ class BlueprintAssignCommand extends Command<void> {
         positional: rest.skip(1).toList(),
       );
       await _fanOut(nodes, (node) async {
-        await client.assignBlueprint(node, blueprint);
-        return 'assigned $blueprint';
+        // With --set, these become the node's vars, replacing any it had.
+        // Without, the node keeps its vars if it already had this blueprint.
+        await client.assignBlueprint(
+          node,
+          blueprint,
+          vars: set.isEmpty ? null : set,
+        );
+        return set.isEmpty
+            ? 'assigned $blueprint'
+            : 'assigned $blueprint (${_describeVars(set)})';
       });
       // Said plainly: an operator who expects this to have *done* something will
       // otherwise wonder why the machine is unchanged.
@@ -1700,7 +1875,9 @@ class BlueprintUnassignCommand extends Command<void> {
         if (!result.success) {
           // Still assigned, on purpose: the declaration is the only record of
           // what is left to clean up.
-          return 'FAILED — ${result.changed} removed, still assigned';
+          throw NodeFailed(
+            'FAILED — ${result.changed} removed, still assigned',
+          );
         }
         return 'unassigned — ${result.changed} removed';
       });
@@ -1758,17 +1935,52 @@ class BlueprintPlanCommand extends Command<void> {
 /// `omnyserver blueprint apply <node>`
 class BlueprintApplyCommand extends Command<void> {
   /// Creates the blueprint-apply command.
-  BlueprintApplyCommand() {
+  ///
+  /// [poll] is how often `--wait` asks after the operation; a seam for tests.
+  BlueprintApplyCommand({this.poll = const Duration(seconds: 1)}) {
     _addApiOptions(argParser);
     _addSelectorOptions(argParser);
+    _addVarOptions(argParser, unset: true);
     argParser
       ..addFlag('dry-run', negatable: false, help: 'Plan, and change nothing.')
       ..addFlag(
         'async',
         negatable: false,
         help: 'Do not wait. Prints an operation id to ask about later.',
+      )
+      ..addFlag(
+        'wait',
+        negatable: false,
+        help:
+            'Dispatch, then wait for the node to finish — however long that '
+            'takes, up to --timeout. The form to use in CI: exits 0 when it '
+            'converged, 1 when it failed, 3 when it timed out.',
+      )
+      ..addOption(
+        'timeout',
+        defaultsTo: '30m',
+        help: 'How long --wait waits (e.g. 90s, 20m, 1h).',
+      )
+      ..addFlag(
+        'follow-logs',
+        negatable: false,
+        help: "With --wait, stream the node's log while it works.",
+      )
+      ..addOption(
+        'output',
+        allowed: ['text', 'json'],
+        defaultsTo: 'text',
+        help: 'json prints each result as a JSON object, one per node.',
       );
   }
+
+  /// How often `--wait` checks on the operation.
+  final Duration poll;
+
+  /// Exit code for a `--wait` that ran out of time. Distinct from a failure:
+  /// the work may yet succeed on the node, and a pipeline should say "unknown",
+  /// not "broken".
+  static const int timedOutExitCode = 3;
 
   @override
   String get name => 'apply';
@@ -1782,27 +1994,245 @@ class BlueprintApplyCommand extends Command<void> {
     final args = argResults!;
     final dryRun = args['dry-run'] as bool;
     final async = args['async'] as bool;
+    final wait = args['wait'] as bool;
+    final json = args['output'] == 'json';
+    if (async && wait) {
+      throw CliError('--async and --wait contradict each other');
+    }
+    if (args['follow-logs'] as bool && !wait) {
+      throw CliError('--follow-logs needs --wait');
+    }
+    final set = _parseVars(args);
+    final unset = args['unset'] as List<String>;
+    if (dryRun && (set.isNotEmpty || unset.isNotEmpty)) {
+      throw CliError(
+        '--set/--unset store the change, and a --dry-run changes nothing — '
+        'run blueprint resolved --node <node> to see what they would resolve to',
+      );
+    }
+    final timeout = _parseDuration(args['timeout'] as String, 'timeout');
 
     final client = _apiClientFrom(args);
+    var timedOut = false;
     try {
       final nodes = await _selectNodes(client, args, positional: args.rest);
       await _fanOut(nodes, (node) async {
         if (async) {
-          final operation = await client.reconcileAsync(node, dryRun: dryRun);
+          final operation = await client.reconcileAsync(
+            node,
+            dryRun: dryRun,
+            vars: set,
+            unset: unset,
+          );
+          if (json) {
+            return jsonEncode({'node': node, 'operation': operation.toJson()});
+          }
           return 'dispatched — ops show ${operation.id}';
         }
-        final reply = await client.reconcile(node, dryRun: dryRun);
+
+        ConvergeResult reply;
+        if (wait) {
+          final operation = await client.reconcileAsync(
+            node,
+            dryRun: dryRun,
+            vars: set,
+            unset: unset,
+          );
+          if (!json) {
+            stdout.writeln(
+              '${node.padRight(20)} dispatched ${operation.id}, waiting…',
+            );
+          }
+          final finished = await _await(
+            client,
+            args,
+            node,
+            operation,
+            timeout: timeout,
+            followLogs: args['follow-logs'] as bool,
+          );
+          if (finished == null) {
+            timedOut = true;
+            final message =
+                'TIMED OUT after ${_humanizeDuration(timeout)} — still running '
+                'on the node; ops show ${operation.id} --wait';
+            throw NodeFailed(
+              json
+                  ? jsonEncode({
+                      'node': node,
+                      'timedOut': true,
+                      'operation': operation.toJson(),
+                    })
+                  : message,
+            );
+          }
+          if (json) {
+            final line = jsonEncode({
+              'node': node,
+              'operation': finished.toJson(),
+            });
+            if (finished.status == OperationStatus.failed) {
+              throw NodeFailed(line);
+            }
+            return line;
+          }
+          final result = finished.result;
+          if (result == null) {
+            throw NodeFailed('FAILED — ${finished.error ?? 'no result'}');
+          }
+          reply = ConvergeResult.fromJson(result);
+        } else {
+          reply = await client.reconcile(
+            node,
+            dryRun: dryRun,
+            vars: set,
+            unset: unset,
+          );
+          if (json) {
+            final line = jsonEncode({'node': node, ...reply.toJson()});
+            if (!reply.success) throw NodeFailed(line);
+            return line;
+          }
+        }
+
+        final detail = _describeChanges(reply);
         if (!reply.success) {
-          return 'FAILED — ${reply.changed} changed, ${reply.skipped} skipped';
+          throw NodeFailed(
+            'FAILED — ${reply.changed} changed, ${reply.skipped} skipped$detail',
+          );
         }
         return dryRun
-            ? 'would change ${reply.changed}'
-            : 'applied — ${reply.changed} changed';
-      });
+            ? 'would change ${reply.changed}$detail'
+            : 'applied — ${reply.changed} changed$detail';
+      }, raw: json);
     } finally {
       client.close();
     }
+    if (timedOut) exitCode = timedOutExitCode;
   }
+
+  /// Polls [operation] until it is no longer running, or [timeout] passes.
+  ///
+  /// Returns `null` on a timeout. With [followLogs], the node's log is streamed
+  /// for as long as the wait lasts.
+  Future<Operation?> _await(
+    HubApiClient client,
+    ArgResults args,
+    String node,
+    Operation operation, {
+    required Duration timeout,
+    required bool followLogs,
+  }) async {
+    final done = Completer<void>();
+    Future<void>? logs;
+    if (followLogs) {
+      logs =
+          _streamSse(
+            args,
+            '/api/v1/nodes/$node/logs/stream',
+            until: done.future,
+            onEvent: (payload) {
+              final line = LogLine.fromJson(payload.cast<String, dynamic>());
+              stdout.writeln('${node.padRight(20)} | ${line.message}');
+            },
+          ).catchError((Object e) {
+            stderr.writeln('${node.padRight(20)} log stream ended: $e');
+          });
+    }
+
+    final deadline = DateTime.now().add(timeout);
+    var op = operation;
+    try {
+      while (op.isRunning) {
+        if (!DateTime.now().isBefore(deadline)) return null;
+        await Future<void>.delayed(poll);
+        op = await client.operation(operation.id);
+      }
+      return op;
+    } finally {
+      if (!done.isCompleted) done.complete();
+      await logs;
+    }
+  }
+
+  /// The changes worth a line each — everything that was not a no-op — with
+  /// the tail of a failed one's output, so a red CI job says why on its face.
+  static String _describeChanges(ConvergeResult reply) {
+    final lines = <String>[];
+    for (final c in reply.changes) {
+      if (c.kind == ChangeKind.noop) continue;
+      lines.add('    ${c.kind.name.padRight(8)} ${c.id}  — ${c.reason}');
+      if (c.kind == ChangeKind.failed && c.logs.isNotEmpty) {
+        final tail = c.logs.length > 15
+            ? c.logs.sublist(c.logs.length - 15)
+            : c.logs;
+        for (final l in tail) {
+          lines.add('        | $l');
+        }
+      }
+    }
+    for (final note in reply.notes) {
+      lines.add('    note: $note');
+    }
+    return lines.isEmpty ? '' : '\n${lines.join('\n')}';
+  }
+}
+
+/// Adds `--set name=value` (and, when [unset], `--unset name`) to a command
+/// that changes a node's blueprint vars.
+void _addVarOptions(ArgParser parser, {required bool unset}) {
+  parser.addMultiOption(
+    'set',
+    splitCommas: false,
+    help:
+        "Set one of the blueprint's vars for these nodes (repeatable), e.g. "
+        '--set version=1.0.141. Stored on the assignment, so later applies keep '
+        'it until it is set again.',
+  );
+  if (unset) {
+    parser.addMultiOption(
+      'unset',
+      help:
+          "Drop a node's override for a var, back to the blueprint's default "
+          '(repeatable).',
+    );
+  }
+}
+
+/// `--set` as a map, refusing anything that is not `name=value`.
+Map<String, String> _parseVars(ArgResults args) {
+  final vars = <String, String>{};
+  for (final entry in args['set'] as List<String>) {
+    final i = entry.indexOf('=');
+    if (i <= 0) throw CliError('invalid --set "$entry" (want name=value)');
+    vars[entry.substring(0, i)] = entry.substring(i + 1);
+  }
+  return vars;
+}
+
+String _describeVars(Map<String, String> vars) {
+  final keys = vars.keys.toList()..sort();
+  return [for (final k in keys) '$k=${vars[k]}'].join(', ');
+}
+
+/// `90s`, `20m`, `1h` — or a bare number of seconds.
+Duration _parseDuration(String raw, String option) {
+  final match = RegExp(r'^(\d+)\s*([smh]?)$').firstMatch(raw.trim());
+  if (match == null) {
+    throw CliError('invalid --$option "$raw" (want e.g. 90s, 20m, 1h)');
+  }
+  final n = int.parse(match.group(1)!);
+  return switch (match.group(2)) {
+    'm' => Duration(minutes: n),
+    'h' => Duration(hours: n),
+    _ => Duration(seconds: n),
+  };
+}
+
+String _humanizeDuration(Duration d) {
+  if (d.inHours > 0 && d.inMinutes % 60 == 0) return '${d.inHours}h';
+  if (d.inMinutes > 0 && d.inSeconds % 60 == 0) return '${d.inMinutes}m';
+  return '${d.inSeconds}s';
 }
 
 // ---------------------------------------------------------------------------
@@ -1925,8 +2355,11 @@ class FormulaRunCommand extends Command<void> {
         final detail = (result.message.isEmpty || result.message == 'ok')
             ? ''
             : '  ${result.message}';
-        return '$formula $action: ${result.success ? 'ok' : 'FAILED'}'
+        final line =
+            '$formula $action: ${result.success ? 'ok' : 'FAILED'}'
             '${result.changed ? ' (changed)' : ''}$detail';
+        if (!result.success) throw NodeFailed(line);
+        return line;
       });
     } finally {
       client.close();
@@ -2274,9 +2707,16 @@ class StateReconcileCommand extends Command<void> {
         final ran = reply.results.isEmpty
             ? reply.changed
             : reply.results.length;
+        // Success first: an apply whose every change failed has changed
+        // nothing, and "already converged" would be a lie about it.
+        if (!reply.success) {
+          final failed = reply.results.isEmpty
+              ? reply.changes.where((c) => c.kind == ChangeKind.failed).length
+              : reply.results.where((r) => !r.success).length;
+          throw NodeFailed('FAILED $failed/${ran == 0 ? failed : ran}');
+        }
         if (ran == 0) return 'already converged — nothing to do';
-        final failed = reply.results.where((r) => !r.success).length;
-        return reply.success ? 'converged ($ran ran)' : 'FAILED $failed/$ran';
+        return 'converged ($ran ran)';
       });
     } finally {
       client.close();

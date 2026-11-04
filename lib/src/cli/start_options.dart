@@ -94,8 +94,36 @@ void addHubStartOptions(
           'Pass "*" to allow any origin: callers still need a token (the Hub '
           'sends no allow-credentials), but any page may then ask.',
     )
-    ..addOption('ai-config', help: aiConfigHelp);
+    ..addOption('ai-config', help: aiConfigHelp)
+    ..addOption(
+      'operation-timeout',
+      defaultsTo: '30m',
+      help:
+          'How long a dispatched operation (--async, blueprint apply --wait) '
+          'may take on a node before the Hub gives up on it (e.g. 45m, 2h). '
+          'Calls held open over HTTP keep the shorter request timeout.',
+    );
 }
+
+/// `--operation-timeout` as a [Duration]: `90s`, `45m`, `2h`, or seconds.
+Duration parseOperationTimeout(ArgResults args) {
+  final raw = (args['operation-timeout'] as String).trim();
+  final match = RegExp(r'^(\d+)\s*([smh]?)$').firstMatch(raw);
+  final n = match == null ? null : int.parse(match.group(1)!);
+  if (n == null || n <= 0) {
+    throw CliError(
+      'invalid --operation-timeout "$raw" (want e.g. 90s, 45m, 2h)',
+    );
+  }
+  return switch (match!.group(2)) {
+    'm' => Duration(minutes: n),
+    'h' => Duration(hours: n),
+    _ => Duration(seconds: n),
+  };
+}
+
+/// The allowed values of `node start --allow-provider`.
+const List<String> optionalProviders = ['release', 'service'];
 
 /// The help text for `--ai-config`, shared with the `service` parser.
 const String aiConfigHelp =
@@ -166,7 +194,47 @@ void addNodeStartOptions(ArgParser parser, {bool includeShellPath = true}) {
       help:
           'OmnyShell node label "key=value" (repeatable), e.g. '
           'allow-roles=admin.',
+    )
+    ..addMultiOption(
+      'allow-provider',
+      allowed: optionalProviders,
+      help:
+          'Let blueprints manage these resource types on this machine '
+          '(repeatable or comma-separated): "release" downloads and unpacks '
+          'application bundles, "service" installs and runs OS services. Off by '
+          'default — together they let whoever may apply a blueprint run a '
+          'program here, as this agent. Needs --allow-root.',
+    )
+    ..addMultiOption(
+      'allow-root',
+      help:
+          'A directory blueprints may install releases into and run services '
+          'from (repeatable), e.g. /opt/myapp. A release root, a service exec '
+          'and its working dir must be inside one.',
     );
+}
+
+/// Checks `--allow-provider` / `--allow-root` make sense together.
+void validateNodeProviderArgs(ArgResults args) {
+  final providers = args['allow-provider'] as List<String>;
+  final roots = args['allow-root'] as List<String>;
+  if (providers.isNotEmpty && roots.isEmpty) {
+    throw CliError(
+      '--allow-provider ${providers.join(',')} needs at least one --allow-root '
+      '— the directories its blueprints may install into and run from',
+    );
+  }
+  for (final root in roots) {
+    if (!p.isAbsolute(root)) {
+      throw CliError('--allow-root "$root" must be an absolute path');
+    }
+    if (p.normalize(root) == p.rootPrefix(p.normalize(root))) {
+      throw CliError(
+        '--allow-root "$root" is the filesystem root — name the directories '
+        'an application lives in',
+      );
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------

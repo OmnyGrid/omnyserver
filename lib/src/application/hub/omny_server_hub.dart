@@ -35,6 +35,7 @@ import '../../shared/errors/error_codes.dart';
 import '../../shared/errors/omnyserver_exception.dart';
 import '../../shared/utils/clock.dart';
 import '../../shared/utils/id_generator.dart';
+import '../../version.dart';
 import 'alert_monitor.dart';
 import 'audit_log.dart';
 import 'operation_store.dart';
@@ -295,6 +296,7 @@ class OmnyServerHub {
     String? version,
     Map<String, String> parameters = const {},
     String principal = 'system',
+    Duration? timeout,
   }) async {
     final requestId = config.idGenerator.next();
     config.eventBus.publish(
@@ -310,6 +312,7 @@ class OmnyServerHub {
         version: version,
         parameters: parameters,
       ).toJson(),
+      timeout: timeout,
     );
     final result = FormulaRunResult.fromJson(reply);
     final ok = result.result.success;
@@ -355,12 +358,14 @@ class OmnyServerHub {
     NodeId id,
     Preset preset, {
     String principal = 'system',
+    Duration? timeout,
   }) async {
     final requestId = config.idGenerator.next();
     final reply = await _call(
       id,
       Operations.preset,
       PresetApply(requestId: requestId, preset: preset).toJson(),
+      timeout: timeout,
     );
     final result = PresetApplyResult.fromJson(reply);
     config.eventBus.publish(
@@ -406,8 +411,9 @@ class OmnyServerHub {
   Future<Map<String, dynamic>> _call(
     NodeId id,
     String action,
-    Map<String, dynamic> payload,
-  ) async {
+    Map<String, dynamic> payload, {
+    Duration? timeout,
+  }) async {
     _requireOnline(id);
     final omnyhub.NodeResponse reply;
     try {
@@ -415,7 +421,7 @@ class OmnyServerHub {
         toHubId(id),
         action,
         payload: payload,
-        timeout: config.requestTimeout,
+        timeout: timeout ?? config.requestTimeout,
       );
     } on omnyhub.HubTimeoutException {
       throw const OmnyServerTimeoutException('node did not reply in time');
@@ -702,10 +708,17 @@ class OmnyServerHub {
     unawaited(
       work()
           .then(
+            // The node answering is not the work succeeding. A blueprint apply
+            // whose release failed to install replies perfectly well — with
+            // `success: false` — and an operation that called that a success
+            // would let `ops show --wait` exit 0 on a failed deploy.
             (result) => _finishOperation(
               operation,
-              status: OperationStatus.succeeded,
+              status: _reportsFailure(result)
+                  ? OperationStatus.failed
+                  : OperationStatus.succeeded,
               result: result,
+              error: _reportsFailure(result) ? _failureSummary(result) : null,
             ),
           )
           .catchError((Object error) {
@@ -723,6 +736,41 @@ class OmnyServerHub {
     );
 
     return operation;
+  }
+
+  /// Whether a dispatched work's result says the work itself failed: a
+  /// top-level `success: false` (preset, reconcile, blueprint apply), or a
+  /// formula run's nested `result.success: false`.
+  static bool _reportsFailure(Map<String, dynamic> result) {
+    if (result['success'] == false) return true;
+    final inner = result['result'];
+    return inner is Map && inner['success'] == false;
+  }
+
+  /// What failed, from a result that says `success: false` — the first failed
+  /// change of a blueprint apply, or the result's own message.
+  static String _failureSummary(Map<String, dynamic> result) {
+    final inner = result['result'];
+    if (inner is Map && inner['message'] is String) {
+      return inner['message'] as String;
+    }
+    final changes = result['changes'];
+    if (changes is List) {
+      final failed = [
+        for (final c in changes)
+          if (c is Map && c['kind'] == 'failed')
+            '${c['resource']}: ${c['reason']}',
+      ];
+      if (failed.isNotEmpty) {
+        return failed.length == 1
+            ? failed.first
+            : '${failed.first} (and ${failed.length - 1} more)';
+      }
+    }
+    final message = result['message'] ?? result['error'];
+    return message is String && message.isNotEmpty
+        ? message
+        : 'the node reported failure';
   }
 
   void _finishOperation(
@@ -822,6 +870,16 @@ class OmnyServerHub {
     DesiredState state, {
     String principal = 'system',
   }) async {
+    final blueprintId = state.blueprint;
+    if (blueprintId != null && state.vars.isNotEmpty) {
+      final blueprint = await config.blueprintRepository.find(blueprintId);
+      if (blueprint == null) {
+        throw NotFoundException('unknown blueprint ${blueprintId.value}');
+      }
+      // Refused when stored, not when next resolved: the command with the typo
+      // in it is the one that should fail.
+      BlueprintResolver.checkOverrides(blueprint, state.vars);
+    }
     await config.desiredStateRepository.save(id, state);
     await audit.record(
       principal: principal,
@@ -835,6 +893,37 @@ class OmnyServerHub {
   /// The state [id] should be in, or `null` if none was ever declared.
   Future<DesiredState?> desiredStateFor(NodeId id) =>
       config.desiredStateRepository.find(id);
+
+  /// Changes some of the `vars` of the blueprint assigned to [id]: [set] are
+  /// added or replaced, [unset] removed, and every other override is kept.
+  ///
+  /// What `blueprint apply --set version=1.0.141` does before it applies — a
+  /// merge, so that bumping the version does not also forget the `sha256` or
+  /// anything else the node was told. Returns the assignment as stored, and
+  /// stores nothing when nothing would change.
+  Future<DesiredState> setBlueprintVars(
+    NodeId id, {
+    Map<String, String> set = const {},
+    Iterable<String> unset = const [],
+    String principal = 'system',
+  }) async {
+    final desired = await config.desiredStateRepository.find(id);
+    final assigned = desired?.blueprint;
+    if (desired == null || assigned == null) {
+      throw NotFoundException('no blueprint assigned to ${id.value}');
+    }
+    final vars = {...desired.vars, ...set};
+    for (final name in unset) {
+      vars.remove(name);
+    }
+    if (_sameVars(vars, desired.vars)) return desired;
+    final next = DesiredState.fromBlueprint(assigned, vars: vars);
+    await setDesiredState(id, next, principal: principal);
+    return next;
+  }
+
+  static bool _sameVars(Map<String, String> a, Map<String, String> b) =>
+      a.length == b.length && a.entries.every((e) => b[e.key] == e.value);
 
   /// Stops expecting anything of [id], and leaves the machine exactly as it is.
   ///
@@ -868,6 +957,7 @@ class OmnyServerHub {
     NodeId id, {
     bool purgeAdopted = false,
     String principal = 'system',
+    Duration? timeout,
   }) async {
     final desired = await config.desiredStateRepository.find(id);
     final assigned = desired?.blueprint;
@@ -893,6 +983,7 @@ class OmnyServerHub {
         blueprint: empty,
         purgeAdopted: purgeAdopted,
       ).toJson(),
+      timeout: timeout,
     );
     final result = BlueprintApplyResult.fromJson(reply);
 
@@ -951,6 +1042,7 @@ class OmnyServerHub {
   /// reason blueprints exist.
   Future<BlueprintPlanResult> planBlueprint(NodeId id) async {
     final resolved = await _resolvedFor(id);
+    _checkNodeSupports(id, resolved);
     final reply = await _call(
       id,
       Operations.blueprintPlan,
@@ -967,13 +1059,21 @@ class OmnyServerHub {
   /// Idempotent by construction: a converged node plans no work, so applying
   /// twice changes nothing the second time. That is what makes it safe on a
   /// timer or in a pipeline.
+  ///
+  /// [timeout] is how long to wait for the node: the request timeout by
+  /// default, which is right for a caller holding an HTTP request open, and
+  /// [HubConfig.operationTimeout] for a dispatched operation — a release
+  /// download and a health-checked restart take minutes, and a Hub that gave up
+  /// after thirty seconds would report a failure while the node carried on.
   Future<BlueprintApplyResult> applyBlueprint(
     NodeId id, {
     bool dryRun = false,
     bool purgeAdopted = false,
     String principal = 'system',
+    Duration? timeout,
   }) async {
     final resolved = await _resolvedFor(id);
+    _checkNodeSupports(id, resolved);
     final reply = await _call(
       id,
       Operations.blueprintApply,
@@ -983,6 +1083,7 @@ class OmnyServerHub {
         dryRun: dryRun,
         purgeAdopted: purgeAdopted,
       ).toJson(),
+      timeout: timeout,
     );
     final result = BlueprintApplyResult.fromJson(reply);
 
@@ -1014,7 +1115,71 @@ class OmnyServerHub {
     if (assigned == null) {
       throw NotFoundException('no blueprint assigned to ${id.value}');
     }
-    return resolvedBlueprint(assigned);
+    return resolvedBlueprint(assigned, overrides: desired!.vars);
+  }
+
+  /// Refuses to send [resolved] to a node that would apply it wrongly.
+  ///
+  /// Wrongly, not "not at all". A resource type the node has no provider for is
+  /// still sent when the node cannot say what it has — it comes back `unknown`,
+  /// which is honest. But a node that *does* say, and lacks the type, would
+  /// report a deploy as a success that installed nothing; and a node from
+  /// before `restartOn` would decode the field as nothing and never restart the
+  /// service onto the new release. Both are refused here, naming what is
+  /// missing.
+  void _checkNodeSupports(NodeId id, ResolvedBlueprint resolved) {
+    final node = getNode(id);
+    if (node == null) return;
+    final cap = node.capabilities.named('blueprint');
+
+    Set<String> list(String key) => {
+      for (final v in (cap?.details[key] ?? '').split(','))
+        if (v.trim().isNotEmpty) v.trim(),
+    };
+
+    final usesRestart = resolved.resources.any(
+      (r) => r.resource.restartOn.isNotEmpty,
+    );
+    if (cap == null) {
+      if (usesRestart) {
+        throw OperationException(
+          '${id.value} runs an agent that does not support restartOn — '
+          'upgrade it to omnyserver $omnyServerVersion or later',
+        );
+      }
+      return;
+    }
+
+    final providers = list('providers');
+    final missing = {
+      for (final r in resolved.resources)
+        if (!providers.contains(r.id.type)) r.id.type,
+    }.toList()..sort();
+    if (missing.isNotEmpty) {
+      throw OperationException(
+        '${id.value} has no ${missing.join(', ')} provider '
+        '(it offers ${providers.isEmpty ? 'none' : (providers.toList()..sort()).join(', ')})'
+        '${missing.any((m) => m == 'release' || m == 'service') ? ' — start the agent with --allow-provider ${missing.join(',')}' : ''}',
+      );
+    }
+
+    if (usesRestart) {
+      if (!list('features').contains('restartOn')) {
+        throw OperationException(
+          '${id.value} runs an agent that does not support restartOn',
+        );
+      }
+      final refreshable = list('refreshable');
+      for (final r in resolved.resources) {
+        if (r.resource.restartOn.isNotEmpty &&
+            !refreshable.contains(r.id.type)) {
+          throw OperationException(
+            '${r.id} has restartOn, but ${id.value} cannot restart a '
+            '"${r.id.type}"',
+          );
+        }
+      }
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -1071,13 +1236,23 @@ class OmnyServerHub {
 
   /// The blueprint with [id], flattened: includes expanded, variables
   /// substituted, resources ordered, hashed.
-  Future<ResolvedBlueprint> resolvedBlueprint(BlueprintId id) async {
+  ///
+  /// With [overrides] — a node's own `vars` — it is that node's resolution: what
+  /// it is actually sent.
+  Future<ResolvedBlueprint> resolvedBlueprint(
+    BlueprintId id, {
+    Map<String, String> overrides = const {},
+  }) async {
     final blueprint = await config.blueprintRepository.find(id);
     if (blueprint == null) {
       throw NotFoundException('unknown blueprint ${id.value}');
     }
-    return _resolve(blueprint);
+    return _resolve(blueprint, overrides: overrides);
   }
+
+  /// [id]'s assigned blueprint, resolved with its own vars — exactly what
+  /// [applyBlueprint] would send it.
+  Future<ResolvedBlueprint> resolvedFor(NodeId id) => _resolvedFor(id);
 
   /// Resolves [blueprint] against every preset this Hub holds.
   ///
@@ -1085,11 +1260,14 @@ class OmnyServerHub {
   /// and handing it the whole library is cheaper than reading them one at a time
   /// — and means a missing include is reported by the resolver, which can say
   /// which blueprint asked for it.
-  Future<ResolvedBlueprint> _resolve(Blueprint blueprint) async =>
-      const BlueprintResolver().resolve(
-        blueprint,
-        await config.presetRepository.all(),
-      );
+  Future<ResolvedBlueprint> _resolve(
+    Blueprint blueprint, {
+    Map<String, String> overrides = const {},
+  }) async => const BlueprintResolver().resolve(
+    blueprint,
+    await config.presetRepository.all(),
+    overrides: overrides,
+  );
 
   /// Runs whatever [drift] says is outstanding, and returns what happened.
   ///
@@ -1099,6 +1277,7 @@ class OmnyServerHub {
   Future<PresetApplyResult> reconcile(
     NodeId id, {
     String principal = 'system',
+    Duration? timeout,
   }) async {
     final plan = await drift(id);
     if (plan.converged) {
@@ -1119,6 +1298,7 @@ class OmnyServerHub {
         steps: plan.actions,
       ),
       principal: principal,
+      timeout: timeout,
     );
   }
 
