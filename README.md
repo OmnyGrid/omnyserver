@@ -97,6 +97,11 @@ See the [API Documentation][api_doc] for the full list of classes and APIs.
   twice does nothing, drift is the same check with the apply left off, and a
   resource you delete from the blueprint is removed from the node. See
   [Blueprints](#blueprints--what-a-server-is).
+- **Application deploys** — a `release` resource installs a versioned bundle
+  atomically, a `service` resource runs it as an OS service with a health
+  check, and a failed deploy rolls itself back. `blueprint apply --set
+  version=… --wait` is the CI step. See
+  [Deploying an application](#deploying-an-application).
 - **Runs as an OS service** — `omnyserver service install hub|node` installs the
   Hub or an agent as a systemd unit, a launchd job or a Windows scheduled task,
   so it survives a reboot. See [Run as an OS service](#run-as-an-os-service).
@@ -417,6 +422,76 @@ is something other people also touch.
 
 `blueprint plan` exits **2** when a node has drifted, so it works as a check in
 a pipeline without parsing output.
+
+### Deploying an application
+
+Two more resource types turn a blueprint into a deploy: `release` installs a
+versioned application bundle, and `service` runs it as a native OS service.
+`restartOn` ties them together.
+
+```yaml
+# app.yaml
+blueprint: nfeflash-api
+vars: { version: "1.0.140", sha256: "" }
+resources:
+  - type: release
+    name: nfeflash_api
+    version: "${version}"
+    url: "gs://nfeflash_releases/nfeflash_api/nfeflash_api-${version}-linux-x64.zip"
+    sha256: "${sha256}"
+    root: /opt/nfeflash
+    executables: "api_server,nfeflash_cli,bin/*"
+  - type: service
+    name: nfeflash-api
+    ensure: running
+    restartOn: [ "release:nfeflash_api" ]
+    exec: /opt/nfeflash/current/api_server
+    args: "--config /etc/nfeflash/api.yaml"
+    working_dir: /opt/nfeflash/current
+    user: nfeflash
+    health_url: http://127.0.0.1:8080/
+```
+
+```sh
+# On the server, once — the agent owner decides what blueprints may do here:
+omnyserver service install node --system … --label app=nfeflash \
+  --allow-provider release,service --allow-root /opt/nfeflash
+
+# From CI, every release:
+export OMNYSERVER_API=https://hub:8443 OMNYSERVER_PRINCIPAL=ci OMNYSERVER_TOKEN=…
+omnyserver blueprint apply --label app=nfeflash \
+  --set version=1.0.141 --set sha256=$SHA --wait --follow-logs
+```
+
+- **`release`** downloads the bundle (`https://`, or `gs://` with the VM's own
+  service account from the metadata server), checks its `sha256`, unpacks it
+  into `root/releases/<version>/`, and swaps `root/current` to it with one
+  `rename(2)`. A half-installed version is never current, and the previous
+  versions stay on disk (`keep`, default 3).
+- **`service`** installs a systemd unit or launchd job, compares it with what
+  the declaration would install, and reconfigures it when they differ. With
+  `health_url` or `health_cmd`, every start waits until the service says it
+  works. `user:` runs it as that account (through `setpriv`, on Linux).
+- **`restartOn`** restarts the service when the release *changed* in this apply,
+  and only then. An apply on a timer bounces nothing.
+- **Rollback.** A service that fails its health check right after its release
+  changed puts the previous release back and restarts onto it. The apply
+  reports failure, and the next `plan` still shows the drift ("1.0.141 was
+  rolled back at …"). Opt out with `rollback: none` on the release.
+- **`--set` is stored.** It changes the node's vars on its assignment, so a
+  later plain `apply`, or one on a timer, keeps the node on 1.0.141 instead of
+  going back to the blueprint's default. `--unset` drops an override, and
+  `blueprint resolved <id> --node <node>` shows what a node is actually sent.
+- **`--wait`** dispatches the apply and follows it to the end, however long it
+  takes, up to `--timeout`. It exits **0** when converged, **1** when it failed,
+  and **3** when it timed out. `--output json` prints one object per node.
+
+Nothing here is on by default. A node offers `release` and `service` only when
+started with `--allow-provider`, confined to its `--allow-root` directories,
+because together they let whoever may apply a blueprint run a program on that
+machine as the agent. The Hub refuses to send a blueprint to a node that lacks
+a type it uses, or that would ignore its `restartOn`, and names the flag that
+fixes it.
 
 ### Desired state, and drift
 
