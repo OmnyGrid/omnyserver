@@ -506,7 +506,10 @@ class NodeBlueprintService {
     final want = resource.resource.version;
     final have = state.version;
     if (want != null && want != have) {
-      return 'is ${have ?? 'unversioned'}, should be $want';
+      // The provider's own note, when it has one, is the part an operator
+      // needs — "1.2.0 was rolled back at …" is why it is not 1.2.0.
+      final note = state.message.isEmpty ? '' : ' — ${state.message}';
+      return 'is ${have ?? 'unversioned'}, should be $want$note';
     }
     return state.message.isNotEmpty
         ? state.message

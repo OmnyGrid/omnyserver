@@ -29,7 +29,12 @@ import 'release_fetcher.dart';
 ///     root: /opt/nfeflash
 ///     keep: "3"
 ///     executables: "api_server,nfeflash_cli,bin/*"
+///     strip: "0"       # leading path components to drop, as tar's
 /// ```
+///
+/// Other params: `auth` (`none`, `metadata` — the default for `gs://` — or
+/// `bearer-file:/path`), `verify: none` to install without a digest, and
+/// `rollback: none` to keep a new version even when what runs it fails.
 ///
 /// On disk, under `root`:
 ///
@@ -178,9 +183,10 @@ class ReleaseProvider
             declared != null &&
             rolledBack['version'] == declared &&
             marker.version != declared
+        // Only when there is something to add: the planner already says "is
+        // 1.1.0, should be 1.2.0", and appends this to it.
         ? '$declared was rolled back at ${rolledBack['at']}'
-              '${rolledBack['reason'] is String ? ': ${rolledBack['reason']}' : ''}'
-        : 'current is ${marker.version}';
+        : '';
 
     return ResourceState(
       id: resource.id,
@@ -386,9 +392,17 @@ class ReleaseProvider
       context.log('sha256 $sha${verify == 'none' ? ' (not verified)' : ' ok'}');
 
       staging.createSync(recursive: true);
+      final strip = int.tryParse(resource.resource.params['strip'] ?? '0');
+      if (strip == null || strip < 0) {
+        throw ArgumentError(
+          'strip "${resource.resource.params['strip']}" — want a number of '
+          'leading path components, like tar --strip-components',
+        );
+      }
       final count = await _extract(
         zip.path,
         staging.path,
+        strip: strip,
         executables: _patterns(resource.resource.params['executables']),
       );
       context.log('unpacked $count files');
@@ -415,24 +429,30 @@ class ReleaseProvider
   }
 
   /// Unpacks [zipPath] into [outDir], returning how many files it wrote.
+  ///
+  /// [strip] drops that many leading path components from every entry — `1`
+  /// unpacks `myapp-1.2.3/bin/app` as `bin/app` — and skips an entry that has
+  /// no more than that. Explicit, never guessed: a bundle that happens to hold
+  /// only `bin/` must keep its `bin/`, or every `exec:` pointing into it breaks.
   Future<int> _extract(
     String zipPath,
     String outDir, {
+    required int strip,
     required List<RegExp> executables,
   }) async {
     final input = InputFileStream(zipPath);
     try {
       final archive = ZipDecoder().decodeStream(input);
-      final names = [
-        for (final f in archive.files) f.name.replaceAll('\\', '/'),
-      ];
-      final strip = _commonRoot(names);
       final byMode = <String, List<String>>{};
       var count = 0;
 
       for (final file in archive.files) {
         var name = file.name.replaceAll('\\', '/');
-        if (strip != null) name = name.substring(strip.length);
+        if (strip > 0) {
+          final parts = name.split('/').where((s) => s.isNotEmpty).toList();
+          if (parts.length <= strip) continue;
+          name = parts.sublist(strip).join('/');
+        }
         if (name.isEmpty || name == '/') continue;
 
         final outPath = p.normalize(p.join(outDir, name));
@@ -497,23 +517,6 @@ class ReleaseProvider
     } finally {
       input.closeSync();
     }
-  }
-
-  /// The single top-level directory every entry shares, if there is one.
-  ///
-  /// A bundle zipped as `myapp-1.2.3/bin/…` unpacks as `bin/…`, so `current`
-  /// always points at the directory the executables are in — whichever way the
-  /// zip was made.
-  static String? _commonRoot(List<String> names) {
-    String? root;
-    for (final name in names) {
-      final slash = name.indexOf('/');
-      if (slash <= 0) return null;
-      final first = name.substring(0, slash + 1);
-      root ??= first;
-      if (first != root) return null;
-    }
-    return root;
   }
 
   /// `api_server,bin/*` as patterns over a release-relative path.

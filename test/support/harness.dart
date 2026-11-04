@@ -76,6 +76,8 @@ class TestCluster {
     List<String> corsOrigins = const [],
     List<AlertRule> alertRules = const [],
     void Function(String message)? logger,
+    Duration requestTimeout = const Duration(seconds: 30),
+    Duration operationTimeout = const Duration(minutes: 30),
   }) async {
     final grants =
         tokens ??
@@ -106,6 +108,8 @@ class TestCluster {
         alertRules: alertRules,
         heartbeatInterval: heartbeatInterval,
         heartbeatTimeout: heartbeatTimeout,
+        requestTimeout: requestTimeout,
+        operationTimeout: operationTimeout,
         clock: clock ?? const SystemClock(),
         eventBus: eventBus,
         nodeRepository: nodeRepository,
