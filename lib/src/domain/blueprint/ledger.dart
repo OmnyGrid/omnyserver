@@ -31,6 +31,14 @@ class LedgerEntry {
   /// story.
   final String? fingerprint;
 
+  /// The params it was last declared with.
+  ///
+  /// What a removal needs once the blueprint has stopped saying: a release
+  /// installed under `root: /srv/apps/api` has to be taken out of
+  /// `/srv/apps/api`, not out of the default `/opt/api`, and the only record
+  /// of where it went is this one.
+  final Map<String, String> params;
+
   /// Creates a ledger entry.
   const LedgerEntry({
     required this.id,
@@ -38,6 +46,7 @@ class LedgerEntry {
     this.origin = 'local',
     this.adopted = false,
     this.fingerprint,
+    this.params = const {},
   });
 
   /// JSON form.
@@ -47,6 +56,7 @@ class LedgerEntry {
     'origin': origin,
     if (adopted) 'adopted': true,
     if (fingerprint != null) 'fingerprint': fingerprint,
+    if (params.isNotEmpty) 'params': params,
   };
 
   /// Decodes from JSON.
@@ -56,6 +66,7 @@ class LedgerEntry {
     origin: Json.optString(json, 'origin') ?? 'local',
     adopted: Json.optBool(json, 'adopted'),
     fingerprint: Json.optString(json, 'fingerprint'),
+    params: Json.optStringMap(json, 'params'),
   );
 
   @override
@@ -149,6 +160,7 @@ class Ledger {
             adopted:
                 adopted.contains(r.id) || (entries[r.id]?.adopted ?? false),
             fingerprint: states[r.id]?.fingerprint,
+            params: r.resource.params,
           ),
       // Kept exactly as they were — including `adopted`, which must not flip
       // just because a teardown failed.

@@ -1,3 +1,121 @@
+## 0.18.0
+
+**Application deploys.** A blueprint can now install a versioned application
+bundle, run it as an OS service, restart it when the bundle changes, and roll
+back a release whose service does not come up healthy. A CI job deploys with
+`blueprint apply --set version=… --wait`. See
+[Deploying an application](README.md#deploying-an-application).
+
+### Added
+
+- **`release` resources.** These download a bundle (`https://`, or `gs://`
+  through the GCS JSON API with the VM's metadata-server token, or
+  `auth: bearer-file:…`). The `sha256` is checked over the bytes as written,
+  and `verify: none` skips it explicitly. The bundle unpacks into
+  `root/releases/<version>/`, and `root/current` is swapped to it with one
+  rename, so a half-installed version is never current. Exec bits come from
+  the zip and from `executables:` globs (`bin/*`). Entries or symlinks that
+  escape the release are refused, and `strip` drops leading path components.
+  The previous version is always kept on disk for a rollback (`keep`,
+  minimum 2). No entry may pass through a symlink the archive itself
+  declares, and links are created only after every file is written, so a
+  chain of links cannot carry a file out of the release. A rebuild of the same
+  version is unpacked beside the original (`1.0.141~<digest>`), never over the
+  build `current` points at. A download that receives nothing for two minutes
+  fails instead of hanging. Linux and macOS only.
+- **`service` resources.** These install a systemd unit or launchd job through
+  `dart_service_manager`, under a package of their own
+  (`omnyserver-managed`), so a blueprint can never name the agent's own
+  services. The unit is compared with what the declaration would install
+  (exec, args, environment, working dir, env file, restart policy, scope), and
+  a difference is drift that the apply fixes by reconfiguring the unit.
+  `health_url` / `health_cmd` make every start wait until the service is
+  healthy, up to `health_timeout`. `user:` runs the service as that account
+  via `setpriv` on Linux, and is refused anywhere it cannot be honoured.
+- **`restartOn`.** It restarts a resource when something it depends on
+  *changed* in the same apply, and implies `requires`. A no-op release
+  restarts nothing. Plans and dry runs show the restart a change will cause.
+- **Rollback.** A resource that fails right after something in its
+  `restartOn` changed puts that resource back (`RevertibleProvider`), then
+  restarts everything already moved onto the new version. The apply reports
+  failure, and the next plan says "1.0.141 was rolled back at …". The build
+  that was rolled back from is not deployed again by itself: an apply on a
+  timer fails fast ("not retried") instead of repeating the outage every
+  interval. A fixed build (a new version, or a new digest) goes ahead, and
+  deleting `<root>/.omnyserver-rolled-back.json` retries the same one.
+  `rollback: none` opts out.
+- **The ledger remembers each resource's params.** A resource dropped from a
+  blueprint is removed from where it was installed — a release under a
+  non-default `root` is taken out of that root, not out of `/opt/<name>`.
+- **Per-node vars: `blueprint apply|assign --set name=value`, `--unset`.**
+  Overrides are stored on the node's assignment rather than passed for one
+  run, so a later plain apply keeps them. Only declared vars can be set, so a
+  typo is a 400. `PUT /nodes/{id}/desired-state` takes `vars`. Re-assigning
+  the same blueprint without `vars` keeps the node's overrides.
+  `POST /nodes/{id}/reconcile` takes `vars`/`unset` and applies them in the
+  same request. `GET /blueprints/{id}/resolved?node=` and
+  `blueprint resolved --node` show a node's resolution. Saving a blueprint
+  that drops a var an assigned node still overrides is refused, naming the
+  nodes. `--set` against a Hub older than 0.18.0 is refused before anything is
+  dispatched, because such a Hub would ignore it and apply the old version.
+- **`blueprint apply` follows the apply to its end.** It always dispatches and
+  waits, up to `--timeout` (default 30m), instead of holding one HTTP request
+  open that the Hub drops after 30 seconds while the node carries on.
+  `--follow-logs` streams the node's log, `--wait` says it is waiting, and
+  `--async` still returns at once. It exits 0 when converged, 1 when anything
+  failed, and 3 when the only trouble was a timeout. `--output json` prints
+  one object per node, with `success` judged from the result.
+- **Connection from the environment.** `OMNYSERVER_API`, `OMNYSERVER_TOKEN`,
+  `OMNYSERVER_PRINCIPAL`, `OMNYSERVER_CA` (a path) and `OMNYSERVER_CA_PEM`
+  (the PEM itself) stand in for the client flags. Flags win, and `--help`
+  never prints a token.
+- **`node start --allow-provider release,service --allow-root <dir>`.**
+  Release and service resources are off unless the agent's owner turns them
+  on: between them they let whoever may apply a blueprint run a program as the
+  agent. Release roots, service `exec` and `working_dir` must sit under an
+  allowed root. `service install node` bakes both flags into the unit.
+- **`hub start --operation-timeout` (default 30m).** This is how long a
+  dispatched operation may take on a node. Calls held open over HTTP keep the
+  30s request timeout.
+- **What a node can do, advertised.** Nodes report a `blueprint` capability
+  naming their providers, the types that can be restarted and the features
+  they honour. The Hub refuses a blueprint the node would apply wrongly — a
+  type it lacks, or a `restartOn` an older agent would ignore — and names the
+  flag or upgrade that fixes it.
+- `BuiltInProvider`, an enum of the shipped resource types (`release`,
+  `service`) and the `ensure` values each accepts. The Hub validates
+  blueprints against it, and the node providers take their `supportedEnsure`
+  from it, so the two cannot disagree.
+- `ConvergenceJudge`, `RefreshableProvider` and `RevertibleProvider`: optional
+  interfaces a `ResourceProvider` can implement. A provider written as
+  `implements ResourceProvider` keeps compiling.
+
+### Fixed
+
+- **A failed apply no longer exits 0.** `blueprint apply`, `blueprint
+  unassign`, `state reconcile`, `formula run` and `preset apply` printed
+  `FAILED` and exited 0, because only a transport error counted as a failure.
+  `state reconcile` also reported "already converged" for an apply in which
+  everything failed.
+- A `health_cmd` that hangs is killed when its attempt times out, instead of
+  being left running.
+- **A dispatched operation whose work failed is `failed`, not `succeeded`.**
+  A blueprint apply or preset that answered `success: false`, or a formula
+  whose result failed, finished as succeeded, so `ops show --wait` exited 0
+  on a failed deploy. The operation's `error` now names the first failure.
+- **`--async` work no longer times out after 30 seconds.** The node call inside
+  a dispatched operation still used the request timeout. An install or deploy
+  longer than that was marked failed while the node carried on and finished
+  it. Dispatched work now gets `--operation-timeout`.
+- **Resolved resources no longer arrive on the node with `origin` and
+  `overrides` in their params.** Decoding folded every non-reserved key into
+  `params`.
+- **A provider can say a different version is drift.** Convergence compared
+  `ensure` and nothing else, so a release installed at 1.0.140 satisfied a
+  declaration of 1.0.141.
+
+---
+
 ## 0.17.2
 
 ### Changed

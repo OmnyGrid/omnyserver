@@ -127,6 +127,16 @@ class ConvergeResult {
     );
   }
 
+  /// JSON form — what `--output json` prints.
+  Map<String, dynamic> toJson() => {
+    'success': success,
+    'changed': changed,
+    'skipped': skipped,
+    if (changes.isNotEmpty) 'changes': [for (final c in changes) c.toJson()],
+    if (results.isNotEmpty) 'results': [for (final r in results) r.toJson()],
+    if (notes.isNotEmpty) 'notes': notes,
+  };
+
   @override
   String toString() =>
       'ConvergeResult(${success ? 'ok' : 'failed'}, $changed changed)';

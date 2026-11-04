@@ -5,7 +5,7 @@ description: >-
   capability detection, presets, formulas and desired-state reconciliation,
   exposed both as first-class Dart APIs and a REST HTTP API. Ships Hub, Node and
   CLI implementations.
-version: 0.17.2
+version: 0.18.0
 repository: https://github.com/OmnyGrid/omnyserver
 
 environment:
@@ -15,6 +15,9 @@ executables:
   omnyserver: omnyserver
 
 dependencies:
+  # Unpacks the bundle a `release` resource installs. Pure Dart, and the same
+  # zip reader release_updater uses to write those bundles.
+  archive: ^4.5.2
   args: ^2.7.0
   cryptography: ^2.9.0
   # Used by 'ai test' to make a live provider request.

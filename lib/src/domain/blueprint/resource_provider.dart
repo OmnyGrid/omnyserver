@@ -51,3 +51,63 @@ abstract class ResourceProvider {
     FormulaContext context,
   );
 }
+
+// The optional halves of a provider. Interfaces rather than methods with a
+// default body on [ResourceProvider]: a provider written as `implements
+// ResourceProvider` — the natural way to write one, and how every test fake is
+// written — would otherwise stop compiling the day a method is added. The
+// planner asks with `is`, and a provider that has never heard of these keeps
+// working exactly as it did.
+
+/// A provider that decides for itself whether a reading satisfies a
+/// declaration.
+///
+/// The default — [ResourceState.satisfies] — compares the status with `ensure`
+/// and nothing else, which is right for a formula and wrong for anything with
+/// contents. A release that is `installed` at 1.0.140 does not satisfy a
+/// declaration of 1.0.141, however installed it is; nor does a service whose
+/// unit runs a different command than the one declared.
+abstract interface class ConvergenceJudge {
+  /// Whether [state] already is what [resource] declares.
+  ///
+  /// Must not be more lenient than [ResourceState.satisfies]: an `unknown`
+  /// reading satisfies nothing, whatever else is true.
+  bool satisfies(ResolvedResource resource, ResourceState state);
+}
+
+/// A provider whose resources can be refreshed in place — a service restarted —
+/// without being reinstalled.
+///
+/// What `restartOn` calls when something the resource depends on changed in the
+/// same apply. A resource type without this cannot be the subject of a
+/// `restartOn`: the node advertises which types can, and the Hub refuses the
+/// blueprint before it is ever sent rather than letting the restart silently
+/// not happen.
+abstract interface class RefreshableProvider {
+  /// Refreshes [resource], which is already in its declared state.
+  ///
+  /// Reports `update` when it did, `failed` with a reason when it could not.
+  Future<ResourceChange> refresh(
+    ResolvedResource resource,
+    FormulaContext context,
+  );
+}
+
+/// A provider that can put a resource back the way it was before an apply
+/// changed it — a release whose previous version is still on disk.
+///
+/// The planner calls this when something that `restartOn`s the resource failed
+/// in the same apply: the new version went in, the service it runs would not
+/// come up healthy, and the honest recovery is the version that worked.
+abstract interface class RevertibleProvider {
+  /// Restores [resource] to [before] — the reading taken before this apply
+  /// touched it.
+  ///
+  /// Reports `update` when it restored it, and `failed` when it could not —
+  /// in which case the machine is in the new state, and the change says so.
+  Future<ResourceChange> revert(
+    ResolvedResource resource,
+    ResourceState before,
+    FormulaContext context,
+  );
+}

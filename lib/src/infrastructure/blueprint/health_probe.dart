@@ -1,0 +1,89 @@
+import 'dart:async';
+import 'dart:io';
+
+/// Decides whether a service that has just been started is actually working.
+///
+/// "The unit is active" is not that: systemd reports a process as running for
+/// the instant between `exec` and the crash, and a service that is up but
+/// answering 500s is running by every measure the OS has. A health check asks
+/// the service itself.
+abstract interface class HealthProbe {
+  /// `null` when healthy, otherwise why not — in a sentence for an operator.
+  Future<String?> check(HealthCheck check);
+}
+
+/// One way of asking a service whether it is healthy.
+class HealthCheck {
+  /// A URL whose GET must answer 2xx.
+  final Uri? url;
+
+  /// A shell command that must exit 0.
+  final String? command;
+
+  /// Creates a health check.
+  const HealthCheck({this.url, this.command});
+
+  /// Whether there is anything to check.
+  bool get isEmpty => url == null && command == null;
+
+  @override
+  String toString() => url != null ? 'GET $url' : 'command `$command`';
+}
+
+/// The real probe: an HTTP GET, or a command through the platform shell.
+class DefaultHealthProbe implements HealthProbe {
+  /// How long one attempt may take.
+  final Duration attemptTimeout;
+
+  /// Creates the probe.
+  const DefaultHealthProbe({this.attemptTimeout = const Duration(seconds: 5)});
+
+  @override
+  Future<String?> check(HealthCheck check) async {
+    if (check.url != null) return _http(check.url!);
+    if (check.command != null) return _command(check.command!);
+    return null;
+  }
+
+  Future<String?> _http(Uri url) async {
+    final client = HttpClient()..connectionTimeout = attemptTimeout;
+    try {
+      final request = await client.getUrl(url).timeout(attemptTimeout);
+      final response = await request.close().timeout(attemptTimeout);
+      await response.drain<void>();
+      final ok = response.statusCode >= 200 && response.statusCode < 300;
+      return ok ? null : 'GET $url answered HTTP ${response.statusCode}';
+    } on TimeoutException {
+      final within = attemptTimeout.inMilliseconds < 1000
+          ? '${attemptTimeout.inMilliseconds}ms'
+          : '${attemptTimeout.inSeconds}s';
+      return 'GET $url did not answer within $within';
+    } on Object catch (e) {
+      return 'GET $url failed: $e';
+    } finally {
+      client.close(force: true);
+    }
+  }
+
+  Future<String?> _command(String command) async {
+    final shell = Platform.isWindows ? 'cmd' : '/bin/sh';
+    final args = Platform.isWindows ? ['/c', command] : ['-c', command];
+    // Started rather than run, so an attempt that hangs can be killed: a
+    // timeout on `Process.run` stops waiting but leaves the child behind, one
+    // more on every attempt of every apply.
+    final process = await Process.start(shell, args);
+    final stderrText = process.stderr
+        .transform(const SystemEncoding().decoder)
+        .join();
+    unawaited(process.stdout.drain<void>());
+    try {
+      final code = await process.exitCode.timeout(attemptTimeout * 6);
+      if (code == 0) return null;
+      final err = (await stderrText).trim();
+      return '`$command` exited $code${err.isEmpty ? '' : ': $err'}';
+    } on TimeoutException {
+      process.kill(ProcessSignal.sigkill);
+      return '`$command` did not finish';
+    }
+  }
+}

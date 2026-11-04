@@ -28,8 +28,22 @@ class DesiredState {
   /// thing an operator thinks they are editing.
   final BlueprintId? blueprint;
 
+  /// This node's values for the [blueprint]'s `vars`, overriding the
+  /// blueprint's own defaults.
+  ///
+  /// Kept *on the assignment*, not passed with one apply. An override that
+  /// lasted a single run would be undone by the next one: `apply --set
+  /// version=1.0.141` followed by a plain `apply` — or a reconcile on a timer —
+  /// would quietly put production back on whatever version the blueprint
+  /// document names. Stored here, the node stays on what it was last told until
+  /// it is told something else.
+  ///
+  /// Only names the blueprint declares may be overridden; the Hub refuses the
+  /// rest, so a typo is an error rather than a variable nothing reads.
+  final Map<String, String> vars;
+
   /// Creates a desired state.
-  const DesiredState(this.steps, {this.blueprint});
+  const DesiredState(this.steps, {this.blueprint, this.vars = const {}});
 
   /// An empty desired state.
   static const DesiredState empty = DesiredState(<PresetStep>[]);
@@ -38,22 +52,29 @@ class DesiredState {
   factory DesiredState.fromPresets(Iterable<Preset> presets) =>
       DesiredState([for (final p in presets) ...p.steps]);
 
-  /// Assigns [blueprint] to a node.
-  factory DesiredState.fromBlueprint(BlueprintId blueprint) =>
-      DesiredState(const [], blueprint: blueprint);
+  /// Assigns [blueprint] to a node, with this node's [vars].
+  factory DesiredState.fromBlueprint(
+    BlueprintId blueprint, {
+    Map<String, String> vars = const {},
+  }) => DesiredState(const [], blueprint: blueprint, vars: vars);
 
   /// Whether this node is declared by a blueprint rather than by steps.
   bool get isBlueprint => blueprint != null;
 
   /// A one-line summary, for an audit entry or a CLI line.
-  String get summary => blueprint != null
-      ? 'blueprint ${blueprint!.value}'
-      : '${steps.length} steps';
+  String get summary {
+    if (blueprint == null) return '${steps.length} steps';
+    if (vars.isEmpty) return 'blueprint ${blueprint!.value}';
+    final keys = vars.keys.toList()..sort();
+    final set = [for (final k in keys) '$k=${vars[k]}'].join(', ');
+    return 'blueprint ${blueprint!.value} ($set)';
+  }
 
   /// JSON form.
   Map<String, dynamic> toJson() => {
     'steps': steps.map((s) => s.toJson()).toList(),
     if (blueprint != null) 'blueprint': blueprint!.value,
+    if (vars.isNotEmpty) 'vars': vars,
   };
 
   /// Decodes from JSON.
@@ -62,6 +83,7 @@ class DesiredState {
     return DesiredState(
       Json.optObjectList(json, 'steps').map(PresetStep.fromJson).toList(),
       blueprint: blueprint == null ? null : BlueprintId(blueprint),
+      vars: Json.optStringMap(json, 'vars'),
     );
   }
 }

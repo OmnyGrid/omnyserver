@@ -26,6 +26,11 @@ export 'src/infrastructure/service/service_controller.dart';
 // Blueprint providers: what a node knows how to read and change.
 export 'src/infrastructure/blueprint/file_ledger_store.dart';
 export 'src/infrastructure/blueprint/formula_provider.dart';
+export 'src/infrastructure/blueprint/health_probe.dart';
+export 'src/infrastructure/blueprint/release_fetcher.dart';
+export 'src/infrastructure/blueprint/release_provider.dart';
+export 'src/infrastructure/blueprint/service_backend.dart';
+export 'src/infrastructure/blueprint/service_provider.dart';
 
 // Formula engine.
 export 'src/infrastructure/formulas/command_executor.dart';

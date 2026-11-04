@@ -404,4 +404,200 @@ void main() {
       expect(fromLocal.hash, isNot(fromBase.hash));
     });
   });
+
+  group('per-node overrides', () {
+    final app = blueprint(
+      vars: {'version': '1.0.0', 'channel': 'stable'},
+      resources: [
+        Resource(
+          id: ResourceId('release', 'app'),
+          params: {'version': r'${version}', 'url': r'https://x/${channel}'},
+        ),
+      ],
+    );
+
+    test('an override wins over the blueprint default', () {
+      final resolved = resolver.resolve(
+        app,
+        const [],
+        overrides: {'version': '1.0.1'},
+      );
+      final params = resolved.resources.single.resource.params;
+      expect(params['version'], '1.0.1');
+      expect(params['url'], 'https://x/stable');
+    });
+
+    test('different overrides are different hashes', () {
+      final a = resolver.resolve(app, const [], overrides: {'version': '1'});
+      final b = resolver.resolve(app, const [], overrides: {'version': '2'});
+      expect(a.hash, isNot(b.hash));
+      expect(
+        resolver.resolve(app, const []).hash,
+        resolver.resolve(app, const [], overrides: {'version': '1.0.0'}).hash,
+        reason: 'overriding with the default changes nothing a node is sent',
+      );
+    });
+
+    test('an override for a var the blueprint does not declare is refused', () {
+      expect(
+        () => resolver.resolve(app, const [], overrides: {'verison': '2'}),
+        throwsA(
+          isA<ProtocolException>().having(
+            (e) => e.message,
+            'message',
+            allOf(contains('"verison"'), contains('channel, version')),
+          ),
+        ),
+      );
+      expect(
+        () => BlueprintResolver.checkOverrides(blueprint(), {'x': '1'}),
+        throwsA(
+          isA<ProtocolException>().having(
+            (e) => e.message,
+            'message',
+            contains('it declares none'),
+          ),
+        ),
+      );
+    });
+  });
+
+  group('restartOn', () {
+    Resource service(String name, {List<String> restartOn = const []}) =>
+        Resource(
+          id: ResourceId('service', name),
+          ensure: Ensure.running,
+          restartOn: [for (final r in restartOn) ResourceId.parse(r)],
+        );
+    final release = Resource(id: ResourceId('release', 'app'));
+
+    test('orders the restarted resource after what it restarts on', () {
+      // Declared first, but it cannot be settled before the release it runs.
+      final resolved = resolver.resolve(
+        blueprint(
+          resources: [
+            service('api', restartOn: ['release:app']),
+            release,
+          ],
+        ),
+        const [],
+      );
+      expect(
+        [for (final r in resolved.resources) '${r.id}'],
+        ['release:app', 'service:api'],
+      );
+      expect(resolved.resources.last.resource.toJson()['restartOn'], [
+        'release:app',
+      ]);
+    });
+
+    test('naming something undeclared is refused', () {
+      expect(
+        () => resolver.resolve(
+          blueprint(
+            resources: [
+              service('api', restartOn: ['release:gone']),
+            ],
+          ),
+          const [],
+        ),
+        throwsA(
+          isA<ProtocolException>().having(
+            (e) => e.message,
+            'message',
+            contains('restarts on release:gone, which nothing declares'),
+          ),
+        ),
+      );
+    });
+
+    test('restarting on itself is refused', () {
+      expect(
+        () => resolver.resolve(
+          blueprint(
+            resources: [
+              service('api', restartOn: ['service:api']),
+            ],
+          ),
+          const [],
+        ),
+        throwsA(isA<ProtocolException>()),
+      );
+    });
+
+    test('a cycle through restartOn is a cycle', () {
+      expect(
+        () => resolver.resolve(
+          blueprint(
+            resources: [
+              service('a', restartOn: ['service:b']),
+              service('b', restartOn: ['service:a']),
+            ],
+          ),
+          const [],
+        ),
+        throwsA(
+          isA<ProtocolException>().having(
+            (e) => e.message,
+            'message',
+            contains('dependency cycle'),
+          ),
+        ),
+      );
+    });
+  });
+
+  group('built-in provider ensure', () {
+    test('a release cannot be running, and says what it can be', () {
+      expect(
+        () => resolver.resolve(
+          blueprint(
+            resources: [
+              Resource(
+                id: ResourceId('release', 'app'),
+                ensure: Ensure.running,
+              ),
+            ],
+          ),
+          const [],
+        ),
+        throwsA(
+          isA<ProtocolException>().having(
+            (e) => e.message,
+            'message',
+            contains('can only be absent, installed, present'),
+          ),
+        ),
+      );
+    });
+
+    test('a service can be running or stopped', () {
+      for (final ensure in [Ensure.running, Ensure.stopped, Ensure.absent]) {
+        expect(
+          resolver
+              .resolve(
+                blueprint(
+                  resources: [
+                    Resource(id: ResourceId('service', 'x'), ensure: ensure),
+                  ],
+                ),
+                const [],
+              )
+              .resources,
+          hasLength(1),
+        );
+      }
+      expect(
+        () => resolver.resolve(
+          blueprint(
+            resources: [
+              Resource(id: ResourceId('service', 'x'), ensure: Ensure.latest),
+            ],
+          ),
+          const [],
+        ),
+        throwsA(isA<ProtocolException>()),
+      );
+    });
+  });
 }

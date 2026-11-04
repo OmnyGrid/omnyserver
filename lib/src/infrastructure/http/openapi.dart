@@ -163,8 +163,17 @@ Map<String, dynamic> openApiDocument() => {
         'description':
             'Includes expanded, variables substituted, resources in the order '
             'they would be settled, and a hash over all of it. Every resource '
-            'names where it came from and what it overrode.',
-        'parameters': [_pathId],
+            'names where it came from and what it overrode. With `?node=`, '
+            "resolved with that node's own vars — exactly what it is sent.",
+        'parameters': [
+          _pathId,
+          {
+            'name': 'node',
+            'in': 'query',
+            'description': 'Resolve with this assigned node\'s vars',
+            'schema': {'type': 'string'},
+          },
+        ],
         'responses': {'200': _ok('Resolved blueprint'), '404': _err},
       },
     },
@@ -276,14 +285,18 @@ Map<String, dynamic> openApiDocument() => {
             'Three forms: `blueprint` names a saved blueprint (the one to '
             'reach for — it composes shared presets and declares states rather '
             'than actions), `preset` sends one inline, or `steps` sends a bare '
-            'step list.',
+            'step list. With `blueprint`, `vars` are this node\'s values for '
+            "the blueprint's vars and replace any it had; left out, "
+            're-assigning the blueprint a node already has keeps them. A var '
+            'the blueprint does not declare is a 400.',
         'parameters': [_pathId],
         'requestBody': _jsonBody({
           'blueprint': 'string',
+          'vars': 'object',
           'preset': 'object',
           'steps': 'array',
         }),
-        'responses': {'200': _ok('Declared'), '404': _err},
+        'responses': {'200': _ok('Declared'), '400': _err, '404': _err},
       },
       'delete': {
         'summary': 'Stop expecting anything of a node',
@@ -344,16 +357,25 @@ Map<String, dynamic> openApiDocument() => {
         'description':
             'Applies the assigned blueprint, or runs the outstanding preset '
             'steps. `dryRun` plans without changing anything; `async` hands '
-            'back an operation handle instead of waiting.',
+            'back an operation handle instead of waiting — and gives the node '
+            "the Hub's operation timeout rather than its request timeout. "
+            "`vars` and `unset` first change the node's blueprint vars, merged "
+            'into what it has and stored, so later applies keep them; they '
+            'need `state.declare` as well, and cannot be combined with '
+            '`dryRun`. A blueprint that uses a resource type or feature the '
+            'node does not advertise is refused before anything is sent.',
         'parameters': [_pathId],
         'requestBody': _jsonBody({
           'dryRun': 'boolean',
           'purgeAdopted': 'boolean',
           'async': 'boolean',
+          'vars': 'object',
+          'unset': 'array',
         }),
         'responses': {
           '200': _ok('Apply result'),
           '202': _ok('Operation handle (async)'),
+          '400': _err,
           '404': _err,
           '502': _err,
         },

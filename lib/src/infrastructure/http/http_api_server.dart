@@ -258,7 +258,7 @@ class HttpApiServer {
         ..post('/api/v1/blueprints', (r, p) => _saveBlueprint(r))
         ..get(
           '/api/v1/blueprints/<id>/resolved',
-          (r, p) => _resolvedBlueprint(p),
+          (r, p) => _resolvedBlueprint(r, p),
         )
         ..get('/api/v1/blueprints/<id>', (r, p) => _getBlueprint(p))
         ..delete('/api/v1/blueprints/<id>', (r, p) => _deleteBlueprint(r, p))
@@ -446,6 +446,7 @@ class HttpApiServer {
           action,
           version: version,
           principal: principal,
+          timeout: hub.config.operationTimeout,
         )).toJson(),
       );
       return jsonOk(operation.toJson(), status: 202);
@@ -542,8 +543,23 @@ class HttpApiServer {
   /// What a node is actually sent, and what an operator should read when a
   /// blueprint composed from four presets is not doing what they expected —
   /// every resource names where it came from, and what it overrode.
-  Future<HubResponse> _resolvedBlueprint(Map<String, String> params) async {
-    final resolved = await hub.resolvedBlueprint(BlueprintId(params['id']!));
+  /// The blueprint flattened — or, with `?node=<id>`, flattened with that
+  /// node's own `vars`: exactly what it would be sent.
+  Future<HubResponse> _resolvedBlueprint(
+    HubRequest request,
+    Map<String, String> params,
+  ) async {
+    final id = BlueprintId(params['id']!);
+    final node = request.uri.queryParameters['node'];
+    var overrides = const <String, String>{};
+    if (node != null && node.isNotEmpty) {
+      final desired = await hub.desiredStateFor(_parseNodeId(node));
+      if (desired?.blueprint != id) {
+        throw NotFoundException('$node is not assigned ${id.value}');
+      }
+      overrides = desired!.vars;
+    }
+    final resolved = await hub.resolvedBlueprint(id, overrides: overrides);
     return jsonOk(resolved.toJson());
   }
 
@@ -582,8 +598,12 @@ class HttpApiServer {
         nodeId: id,
         summary: preset.id.value,
         principal: principal,
-        work: () async =>
-            (await hub.applyPreset(id, preset, principal: principal)).toJson(),
+        work: () async => (await hub.applyPreset(
+          id,
+          preset,
+          principal: principal,
+          timeout: hub.config.operationTimeout,
+        )).toJson(),
       );
       return jsonOk(operation.toJson(), status: 202);
     }
@@ -732,11 +752,23 @@ class HttpApiServer {
     // preset in hand; or a bare `{steps: [...]}`.
     final DesiredState desired;
     if (body['blueprint'] case final String blueprint) {
-      final id = BlueprintId(blueprint);
-      if (await hub.blueprintFor(id) == null) {
-        throw NotFoundException('unknown blueprint ${id.value}');
+      final blueprintId = BlueprintId(blueprint);
+      if (await hub.blueprintFor(blueprintId) == null) {
+        throw NotFoundException('unknown blueprint ${blueprintId.value}');
       }
-      desired = DesiredState.fromBlueprint(id);
+      // `vars` replaces the node's overrides when it is sent. When it is not,
+      // re-assigning the blueprint a node already has keeps them: a plain
+      // `blueprint assign` over a fleet must not quietly put every node back on
+      // the version the document names — the next apply would downgrade
+      // production.
+      final Map<String, String> vars;
+      if (body.containsKey('vars')) {
+        vars = _stringMap(body['vars'], 'vars');
+      } else {
+        final current = await hub.desiredStateFor(id);
+        vars = current?.blueprint == blueprintId ? current!.vars : const {};
+      }
+      desired = DesiredState.fromBlueprint(blueprintId, vars: vars);
     } else if (body['preset'] case final Map preset) {
       desired = DesiredState.fromPresets([
         Preset.fromJson(preset.cast<String, dynamic>()),
@@ -750,8 +782,29 @@ class HttpApiServer {
       'status': 'declared',
       'nodeId': id.value,
       if (desired.blueprint != null) 'blueprint': desired.blueprint!.value,
+      if (desired.vars.isNotEmpty) 'vars': desired.vars,
       'steps': desired.steps.length,
     });
+  }
+
+  /// A JSON object of strings, refused with a 400 otherwise.
+  ///
+  /// Numbers and booleans are taken as their text — `version: 2` in a JSON body
+  /// means the string a blueprint would substitute — but nothing nested.
+  static Map<String, String> _stringMap(Object? value, String field) {
+    if (value == null) return const {};
+    if (value is! Map) {
+      throw ProtocolException('$field must be an object of strings');
+    }
+    final out = <String, String>{};
+    for (final entry in value.entries) {
+      final v = entry.value;
+      if (v is! String && v is! num && v is! bool) {
+        throw ProtocolException('$field.${entry.key} must be a string');
+      }
+      out['${entry.key}'] = '$v';
+    }
+    return out;
   }
 
   Future<HubResponse> _deleteDesired(
@@ -801,6 +854,7 @@ class HttpApiServer {
           id,
           purgeAdopted: purgeAdopted,
           principal: principal,
+          timeout: hub.config.operationTimeout,
         )).toJson(),
       );
       return jsonOk(operation.toJson(), status: 202);
@@ -874,18 +928,55 @@ class HttpApiServer {
     final principal = _principal(request);
 
     final body = await _readJson(request);
-    final desired = await hub.desiredStateFor(id);
+    var desired = await hub.desiredStateFor(id);
     final blueprint = desired?.blueprint;
+
+    // `vars` / `unset`: change the node's overrides, then apply — one request,
+    // so a deploy cannot store a new version and then fail to ask for it. The
+    // change is stored, not passed for one run (see `DesiredState.vars`), and
+    // it is a declaration, so it needs the right to declare as well.
+    final set = _stringMap(body['vars'], 'vars');
+    final unset = switch (body['unset']) {
+      null => const <String>[],
+      final List list => [for (final v in list) '$v'],
+      _ => throw const ProtocolException('unset must be a list of names'),
+    };
+    if (set.isNotEmpty || unset.isNotEmpty) {
+      if (blueprint == null) {
+        throw NotFoundException(
+          'no blueprint assigned to ${id.value} — vars belong to a blueprint',
+        );
+      }
+      if (body['dryRun'] == true) {
+        throw const ProtocolException(
+          'vars cannot be combined with dryRun: they are stored, and a dry run '
+          'changes nothing',
+        );
+      }
+      _authorize(request, 'state.declare', target: id.value);
+      desired = await hub.setBlueprintVars(
+        id,
+        set: set,
+        unset: unset,
+        principal: principal,
+      );
+    }
 
     // Same endpoint for both, because "make this node what it was declared to
     // be" is one instruction. Only the machinery underneath differs.
-    Future<Map<String, dynamic>> converge() async => blueprint == null
-        ? (await hub.reconcile(id, principal: principal)).toJson()
+    Future<Map<String, dynamic>> converge({Duration? timeout}) async =>
+        blueprint == null
+        ? (await hub.reconcile(
+            id,
+            principal: principal,
+            timeout: timeout,
+          )).toJson()
         : (await hub.applyBlueprint(
             id,
             dryRun: body['dryRun'] == true,
             purgeAdopted: body['purgeAdopted'] == true,
             principal: principal,
+            timeout: timeout,
           )).toJson();
 
     if (body['async'] == true) {
@@ -894,9 +985,12 @@ class HttpApiServer {
         nodeId: id,
         summary: blueprint == null
             ? 'converge to the declared state'
-            : blueprint.value,
+            : (desired?.summary ?? blueprint.value).replaceFirst(
+                'blueprint ',
+                '',
+              ),
         principal: principal,
-        work: converge,
+        work: () => converge(timeout: hub.config.operationTimeout),
       );
       return jsonOk(operation.toJson(), status: 202);
     }

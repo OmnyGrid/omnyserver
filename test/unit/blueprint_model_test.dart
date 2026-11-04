@@ -357,4 +357,62 @@ void main() {
       );
     });
   });
+
+  group('restartOn and provenance on the wire', () {
+    test('restartOn round-trips, and is a dependency', () {
+      final r = Resource.fromJson({
+        'type': 'service',
+        'name': 'api',
+        'ensure': 'running',
+        'requires': ['formula:procps'],
+        'restartOn': ['release:app', 'formula:procps'],
+      });
+      expect(r.restartOn, [
+        ResourceId('release', 'app'),
+        ResourceId('formula', 'procps'),
+      ]);
+      expect(r.params, isEmpty);
+      expect(r.dependencies, [
+        ResourceId('formula', 'procps'),
+        ResourceId('release', 'app'),
+      ]);
+      expect(Resource.fromJson(r.toJson()).toJson(), r.toJson());
+      expect(r.withParams({'x': '1'}).restartOn, r.restartOn);
+    });
+
+    test('a resolved resource decodes without its provenance in params', () {
+      // The resolved form carries `origin` and `overrides` beside the
+      // resource's own fields. Decoding used to fold them into params, so a
+      // node received `params: {origin: local}` on every resource.
+      final resolved = ResolvedResource(
+        resource: Resource(
+          id: ResourceId('release', 'app'),
+          params: {'version': '1.0.0'},
+        ),
+        origin: 'preset:base',
+        overrides: 'local',
+      );
+      final decoded = ResolvedResource.fromJson(resolved.toJson());
+      expect(decoded.resource.params, {'version': '1.0.0'});
+      expect(decoded.origin, 'preset:base');
+      expect(decoded.overrides, 'local');
+    });
+  });
+
+  group('per-node vars on the assignment', () {
+    test('round-trip, and are named in the summary', () {
+      final state = DesiredState.fromBlueprint(
+        BlueprintId('app'),
+        vars: {'version': '1.0.1', 'sha256': 'ab'},
+      );
+      final decoded = DesiredState.fromJson(state.toJson());
+      expect(decoded.vars, {'version': '1.0.1', 'sha256': 'ab'});
+      expect(decoded.blueprint, BlueprintId('app'));
+      expect(state.summary, 'blueprint app (sha256=ab, version=1.0.1)');
+      expect(
+        DesiredState.fromBlueprint(BlueprintId('app')).toJson(),
+        isNot(contains('vars')),
+      );
+    });
+  });
 }

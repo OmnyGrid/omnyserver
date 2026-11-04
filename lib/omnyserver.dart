@@ -45,6 +45,7 @@ export 'src/domain/entities/service_descriptor.dart';
 
 // Blueprints: what a server should be, and how a node reports on it.
 export 'src/domain/blueprint/blueprint.dart';
+export 'src/domain/blueprint/built_in_provider.dart';
 export 'src/domain/blueprint/ledger.dart';
 export 'src/domain/blueprint/resolved_blueprint.dart';
 export 'src/domain/blueprint/resource.dart';
